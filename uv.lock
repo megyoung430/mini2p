@@ -1858,7 +1858,7 @@ wheels = [
 ]
 
 [[package]]
-name = "mini2p-preproc"
+name = "mini2p-preprocessing"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

@@ -1,13 +1,13 @@
 import numpy as np
 import pytest
 
-from mini2p_preproc.bidiphase import (
+from mini2p_preprocessing.bidiphase import (
     adjacent_line_score,
     apply_bidiphase,
     estimate_phase,
     select_alignment,
 )
-from mini2p_preproc.config import ChannelSettings, PhaseSettings
+from mini2p_preprocessing.config import ChannelSettings, PhaseSettings
 from tests.conftest import misalign, textured_image
 
 PHASE = PhaseSettings(max_shift_px=8)

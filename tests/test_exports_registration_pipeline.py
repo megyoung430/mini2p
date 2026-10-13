@@ -7,10 +7,10 @@ import pytest
 
 matplotlib.use("Agg")
 
-from mini2p_preproc import pipeline as pipeline_module  # noqa: E402
-from mini2p_preproc.config import PipelineSettings  # noqa: E402
-from mini2p_preproc.contrast import scale_contrast  # noqa: E402
-from mini2p_preproc.exports import (  # noqa: E402
+from mini2p_preprocessing import pipeline as pipeline_module  # noqa: E402
+from mini2p_preprocessing.config import PipelineSettings  # noqa: E402
+from mini2p_preprocessing.contrast import scale_contrast  # noqa: E402
+from mini2p_preprocessing.exports import (  # noqa: E402
     Contrast,
     export_mean_images,
     find_run_planes,
@@ -18,7 +18,7 @@ from mini2p_preproc.exports import (  # noqa: E402
     write_comparison_pdf,
     write_high_resolution_pdf,
 )
-from mini2p_preproc.registration import check_existing_suite2p_folder  # noqa: E402
+from mini2p_preprocessing.registration import check_existing_suite2p_folder  # noqa: E402
 from tests.conftest import write_interleaved_tiff  # noqa: E402
 
 
