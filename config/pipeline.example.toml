@@ -1,0 +1,90 @@
+# Copy to config/pipeline.toml (git-ignored) and fill in the paths for your machine.
+# Values below are the settings the original notebook used.
+# Top-level keys must come before the first [table] header.
+
+overwrite = true
+# max_timepoints = 300        # uncomment for a quick test run
+
+[channels]
+n_channels = 2          # pages must be ch1 red, ch2 green, interleaved
+structural_channel = 1  # red, 1-based
+functional_channel = 2  # green, calcium/ROI channel
+
+[phase]
+chunk_frames = 100           # 10-25 helps when the phase changes quickly
+estimator = "wide"           # "wide" or "suite2p" (Suite2p searches only ±10 px)
+max_shift_px = 40            # raise only if the phase trace reaches this boundary
+# score_crop_px = 40         # omit to crop max_shift_px from both edges
+boundary_warning_px = 2
+alignment_source = "functional"   # "best_score", "structural" or "functional"
+score_switch_margin = 0.0
+run_second_pass = true
+second_pass_mode = "chunked"      # "chunked" or "whole"
+# second_pass_global_max_frames = 2000
+
+[phase.manual_first_phase_by_start]   # chunk start timepoint = phase in px
+# 200 = -17
+
+[phase.manual_second_phase_by_start]
+
+[destripe]
+enabled = false
+preserve_frame_mean = true
+
+[distortion]
+mode = "local_batched"        # "local_batched", "cluster_full" or "off"
+transform_mat = "/path/to/transform_matrix312_A049.mat"
+calibration_script_dir = "/path/to/folder/with/distortion_correct_full_recording.py"
+z_um = 0
+interpolation_order = 1
+crop_black_borders = true
+crop_padding_px = 1
+batch_frames = 500
+
+[registration]
+fs_hz = 7.52                  # frames/s per channel
+diameter_px = 12
+nonrigid = true
+norm_frames = false
+nimg_init = 1000
+th_badframes = 0.7
+two_step_registration = true
+batch_size = 500
+keep_raw_binary = false
+save_folder = "suite2p"
+run_roi_detection = false
+motion_alignment_source = "functional"
+
+# ---- used by the QC notebook ----
+# Keep run_dir outside derivatives_subject_dir: the batch planner treats a run
+# folder holding a .phase.json but no manifest as finished and skips it.
+[qc]
+input_tiff = "/path/to/rawdata/.../funcimg/71rtask_00040.tif"
+run_dir = "/path/to/scratch/mini2p-qc/MY_71_R/run-02"
+qc_start_timepoint = 0
+qc_registration_frames = 500
+qc_distortion_frames = 100
+
+# ---- used by the batch notebook ----
+[batch]
+raw_subject_dir = "/path/to/rawdata/cohort-01/sub-03_id-MY_71_R"
+derivatives_subject_dir = "/path/to/derivatives/cohort-01/sub-03_id-MY_71_R"
+session_first = 216
+session_last = 231
+source_substring = "71rtask"
+destripe = false
+stop_on_error = true
+retry_incomplete_runs = true
+
+[exports]
+subject_dir = "/path/to/derivatives/cohort-01/sub-03_id-MY_71_R"
+session_first = 216
+session_last = 231
+expected_runs = 68
+run_subdir = ""               # where batch runs put suite2p/ under run-XX/
+black_percentile = 5.0
+white_percentile = 99.5
+gamma = 1.2
+high_resolution_dpi = 400
+overwrite = false             # per-run exports
+pdf_overwrite = false

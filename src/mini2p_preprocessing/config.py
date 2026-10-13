@@ -1,0 +1,190 @@
+"""Validated pipeline settings, loaded once at the boundary and passed explicitly."""
+
+from __future__ import annotations
+
+import tomllib
+from pathlib import Path
+from typing import Literal
+
+import numpy as np
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+ChannelRole = Literal["structural", "functional"]
+WITHOUT_DESTRIPING_SUBDIR = "without_destriping"
+
+
+class _Frozen(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class ChannelSettings(_Frozen):
+    """Interleaved page order: page index = channel + n_channels * timepoint."""
+
+    n_channels: int = Field(2, ge=1)
+    structural_channel: int = Field(1, ge=1)  # red, 1-based (Suite2p numbering)
+    functional_channel: int = Field(2, ge=1)  # green, the calcium/ROI channel
+
+    @model_validator(mode="after")
+    def _channels_exist(self) -> ChannelSettings:
+        for name in ("structural_channel", "functional_channel"):
+            if getattr(self, name) > self.n_channels:
+                raise ValueError(
+                    f"{name}={getattr(self, name)} exceeds n_channels={self.n_channels}"
+                )
+        return self
+
+    @property
+    def channel_by_role(self) -> dict[str, int]:
+        return {"functional": self.functional_channel, "structural": self.structural_channel}
+
+    @property
+    def names(self) -> dict[int, str]:
+        return {
+            self.structural_channel: f"Channel {self.structural_channel} — red / structural",
+            self.functional_channel: f"Channel {self.functional_channel} — green / functional",
+        }
+
+
+class PhaseSettings(_Frozen):
+    """Odd/even-line scan-phase estimation, applied per chunk of timepoints."""
+
+    chunk_frames: int = Field(100, ge=1)
+    estimator: Literal["wide", "suite2p"] = "wide"
+    max_shift_px: int = Field(40, ge=1)
+    # None crops max_shift_px ('wide') or 10 px ('suite2p') from both image edges.
+    score_crop_px: int | None = Field(None, ge=0)
+    boundary_warning_px: int = Field(2, ge=0)
+    alignment_source: Literal["best_score", "structural", "functional"] = "functional"
+    # In 'best_score' mode the functional channel wins only by more than this margin.
+    score_switch_margin: float = 0.0
+    manual_first_phase_by_start: dict[int, int] = Field(default_factory=dict)
+    manual_second_phase_by_start: dict[int, int] = Field(default_factory=dict)
+    run_second_pass: bool = True
+    second_pass_mode: Literal["chunked", "whole"] = "chunked"
+    # None samples every frame for the 'whole' residual (can use a lot of RAM).
+    second_pass_global_max_frames: int | None = Field(None, ge=1)
+
+
+class DestripeSettings(_Frozen):
+    enabled: bool = False
+    preserve_frame_mean: bool = True
+
+
+class DistortionSettings(_Frozen):
+    # Required: registering undistorted data by accident must not be a silent default.
+    mode: Literal["local_batched", "cluster_full", "off"]
+    transform_mat: Path | None = None
+    # Folder holding distortion_correct_full_recording.py; None searches ./scripts then ./
+    calibration_script_dir: Path | None = None
+    z_um: float = 0.0
+    interpolation_order: int = Field(1, ge=0, le=5)
+    crop_black_borders: bool = True
+    crop_padding_px: int = Field(1, ge=0)
+    batch_frames: int = Field(500, ge=1)
+
+    @model_validator(mode="after")
+    def _local_mode_needs_transform(self) -> DistortionSettings:
+        if self.mode == "local_batched" and self.transform_mat is None:
+            raise ValueError("distortion.mode='local_batched' requires distortion.transform_mat")
+        return self
+
+
+class RegistrationSettings(_Frozen):
+    fs_hz: float = Field(7.52, gt=0)  # frames/s per channel
+    diameter_px: int = Field(12, ge=1)
+    nonrigid: bool = True
+    norm_frames: bool = False
+    nimg_init: int = Field(1000, ge=1)
+    th_badframes: float = Field(0.7, gt=0)
+    two_step_registration: bool = True
+    batch_size: int = Field(500, ge=1)
+    keep_raw_binary: bool = False
+    save_folder: str = "suite2p"
+    run_roi_detection: bool = False
+    motion_alignment_source: ChannelRole = "functional"
+
+
+class PipelineSettings(_Frozen):
+    channels: ChannelSettings = ChannelSettings()
+    phase: PhaseSettings = PhaseSettings()
+    destripe: DestripeSettings = DestripeSettings()
+    distortion: DistortionSettings
+    registration: RegistrationSettings = RegistrationSettings()
+    output_dtype: Literal["float32"] = "float32"
+    max_timepoints: int | None = Field(None, ge=1)  # small values make quick test runs
+    overwrite: bool = True
+
+    @property
+    def dtype(self) -> np.dtype:
+        return np.dtype(self.output_dtype)
+
+    @property
+    def correction_suffix(self) -> str:
+        return "dynamic_bidiphase" + ("_destriped" if self.destripe.enabled else "")
+
+    @property
+    def phase_alignment_channel(self) -> int | None:
+        """1-based channel used for phase, or None when chosen per chunk."""
+        return self.channels.channel_by_role.get(self.phase.alignment_source)
+
+    @property
+    def registration_channel(self) -> int:
+        return self.channels.channel_by_role[self.registration.motion_alignment_source]
+
+
+NON_PIPELINE_SECTIONS = ("batch", "exports", "qc")
+
+
+def load_settings(path: Path, **overrides: object) -> PipelineSettings:
+    """Read the pipeline sections of a TOML config; keyword overrides replace whole sections.
+
+    The [batch], [exports] and [qc] tables in the same file are read by their own loaders.
+    """
+    with Path(path).open("rb") as handle:
+        raw = tomllib.load(handle)
+    for section in NON_PIPELINE_SECTIONS:
+        raw.pop(section, None)
+    raw.update(overrides)
+    return PipelineSettings.model_validate(raw)
+
+
+def with_destriping(settings: PipelineSettings, enabled: bool) -> PipelineSettings:
+    destripe = settings.destripe.model_copy(update={"enabled": enabled})
+    return settings.model_copy(update={"destripe": destripe})
+
+
+def variant_output_dir(run_dir: Path, destripe_enabled: bool) -> Path:
+    """Runs without destriping live in their own subfolder so both variants can coexist."""
+    return Path(run_dir) if destripe_enabled else Path(run_dir) / WITHOUT_DESTRIPING_SUBDIR
+
+
+def run_name_from_output_dir(output_dir: Path) -> str:
+    output_dir = Path(output_dir)
+    return (
+        output_dir.parent.name if output_dir.name == WITHOUT_DESTRIPING_SUBDIR else output_dir.name
+    )
+
+
+def corrected_tiff_path(output_dir: Path, input_tiff: Path, settings: PipelineSettings) -> Path:
+    return Path(output_dir) / f"{Path(input_tiff).stem}_{settings.correction_suffix}.tif"
+
+
+def undistorted_tiff_path(output_dir: Path, input_tiff: Path, settings: PipelineSettings) -> Path:
+    return (
+        Path(output_dir) / f"{Path(input_tiff).stem}_{settings.correction_suffix}_undistorted.tif"
+    )
+
+
+class QCRun(_Frozen):
+    """The single recording inspected interactively in the QC notebook."""
+
+    input_tiff: Path
+    run_dir: Path  # e.g. derivatives/.../funcimg/run-02; the variant subfolder is added
+    qc_start_timepoint: int = Field(0, ge=0)
+    qc_registration_frames: int = Field(500, ge=1)
+    qc_distortion_frames: int = Field(100, ge=1)
+
+
+def load_qc_run(path: Path) -> QCRun:
+    with Path(path).open("rb") as handle:
+        return QCRun.model_validate(tomllib.load(handle)["qc"])
