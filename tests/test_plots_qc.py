@@ -5,10 +5,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-from mini2p_preproc import plots, qc  # noqa: E402
-from mini2p_preproc.bidiphase import estimate_phase  # noqa: E402
-from mini2p_preproc.config import PipelineSettings  # noqa: E402
-from mini2p_preproc.correction import correction_stages  # noqa: E402
+from mini2p_preprocessing import plots, qc  # noqa: E402
+from mini2p_preprocessing.bidiphase import estimate_phase  # noqa: E402
+from mini2p_preprocessing.config import PipelineSettings  # noqa: E402
+from mini2p_preprocessing.correction import correction_stages  # noqa: E402
 
 SETTINGS = PipelineSettings.model_validate(
     {

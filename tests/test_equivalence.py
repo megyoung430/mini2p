@@ -11,10 +11,10 @@ import pytest
 import suite2p
 import tifffile
 
-from mini2p_preproc.config import PipelineSettings
-from mini2p_preproc.correction import preprocess_tiff
-from mini2p_preproc.distortion import write_distortion_corrected
-from mini2p_preproc.registration import build_suite2p_db, build_suite2p_settings
+from mini2p_preprocessing.config import PipelineSettings
+from mini2p_preprocessing.correction import preprocess_tiff
+from mini2p_preprocessing.distortion import write_distortion_corrected
+from mini2p_preprocessing.registration import build_suite2p_db, build_suite2p_settings
 from tests.reference import original_notebook as original
 
 SCENARIOS = {

@@ -230,7 +230,7 @@ def worker_command(row: PlannedRun, config_path: Path, destripe: bool) -> list[s
     return [
         sys.executable,
         "-m",
-        "mini2p_preproc.cli",
+        "mini2p_preprocessing.cli",
         "--config",
         str(Path(config_path).resolve()),
         "--input",

@@ -1,5 +1,5 @@
 [project]
-name = "mini2p-preproc"
+name = "mini2p-preprocessing"
 version = "0.1.0"
 description = "Mini2P scan-phase correction, destriping, distortion correction and Suite2p registration"
 requires-python = ">=3.11"
@@ -16,7 +16,7 @@ dependencies = [
 notebook = ["ipywidgets>=8.1", "jupyterlab>=4.1"]
 
 [project.scripts]
-mini2p-preprocess = "mini2p_preproc.cli:main"
+mini2p-preprocess = "mini2p_preprocessing.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0", "ruff>=0.4"]
@@ -26,7 +26,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mini2p_preproc"]
+packages = ["src/mini2p_preprocessing"]
 
 [tool.ruff]
 line-length = 100

@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from mini2p_preproc.config import PipelineSettings
-from mini2p_preproc.correction import correct_chunk, residual_sample_indices
-from mini2p_preproc.destripe import detrend_chunk
+from mini2p_preprocessing.config import PipelineSettings
+from mini2p_preprocessing.correction import correct_chunk, residual_sample_indices
+from mini2p_preprocessing.destripe import detrend_chunk
 from tests.conftest import make_recording
 
 

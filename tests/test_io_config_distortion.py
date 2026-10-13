@@ -5,7 +5,7 @@ import pytest
 import tifffile
 from pydantic import ValidationError
 
-from mini2p_preproc.config import (
+from mini2p_preprocessing.config import (
     PipelineSettings,
     corrected_tiff_path,
     load_settings,
@@ -13,8 +13,8 @@ from mini2p_preproc.config import (
     variant_output_dir,
     with_destriping,
 )
-from mini2p_preproc.distortion import DistortionMaps, apply_distortion_to_chunk
-from mini2p_preproc.tiff_io import (
+from mini2p_preprocessing.distortion import DistortionMaps, apply_distortion_to_chunk
+from mini2p_preprocessing.tiff_io import (
     chunk_bounds,
     count_timepoints,
     read_all_channels,
@@ -107,9 +107,9 @@ def test_identity_distortion_only_crops(rng):
 
 
 def test_example_config_is_valid():
-    from mini2p_preproc.batch import load_batch_settings
-    from mini2p_preproc.config import load_qc_run
-    from mini2p_preproc.exports import load_export_settings
+    from mini2p_preprocessing.batch import load_batch_settings
+    from mini2p_preprocessing.config import load_qc_run
+    from mini2p_preprocessing.exports import load_export_settings
 
     example = Path(__file__).parents[1] / "config" / "pipeline.example.toml"
     settings = load_settings(example)

@@ -3,9 +3,9 @@ import sys
 
 import pytest
 
-from mini2p_preproc import cli
-from mini2p_preproc import pipeline as pipeline_module
-from mini2p_preproc.distortion import load_calibration_module
+from mini2p_preprocessing import cli
+from mini2p_preprocessing import pipeline as pipeline_module
+from mini2p_preprocessing.distortion import load_calibration_module
 
 
 def test_cli_resolves_relative_paths_and_applies_destripe_override(

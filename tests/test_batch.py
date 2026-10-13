@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from mini2p_preproc.batch import (
+from mini2p_preprocessing.batch import (
     BatchSettings,
     ExistingRun,
     acquisition_key,
@@ -106,7 +106,7 @@ def _batch_with_two_sources(tmp_path):
 def _stub_worker(monkeypatch, code: str):
     import sys
 
-    from mini2p_preproc import batch as batch_module
+    from mini2p_preprocessing import batch as batch_module
 
     monkeypatch.setattr(batch_module, "worker_command", lambda *a: [sys.executable, "-c", code])
 
@@ -115,7 +115,7 @@ def test_run_one_marks_failure_with_log_tail(tmp_path, monkeypatch):
     import json
     import subprocess
 
-    from mini2p_preproc.batch import MANIFEST_NAME, run_one
+    from mini2p_preprocessing.batch import MANIFEST_NAME, run_one
 
     batch, config = _batch_with_two_sources(tmp_path)
     row = plan_batch(batch)[0]
@@ -128,7 +128,7 @@ def test_run_one_marks_failure_with_log_tail(tmp_path, monkeypatch):
 
 
 def test_relaunch_replans_and_never_redoes_completed_runs(tmp_path, monkeypatch):
-    from mini2p_preproc import batch as batch_module
+    from mini2p_preprocessing import batch as batch_module
 
     batch, config = _batch_with_two_sources(tmp_path)
     _stub_worker(monkeypatch, "pass")
@@ -154,7 +154,7 @@ def test_relaunch_replans_and_never_redoes_completed_runs(tmp_path, monkeypatch)
 
 
 def test_corrupt_manifest_stops_planning(tmp_path):
-    from mini2p_preproc.batch import MANIFEST_NAME
+    from mini2p_preprocessing.batch import MANIFEST_NAME
 
     batch, _ = _batch_with_two_sources(tmp_path)
     run_dir = plan_batch(batch)[0].run_dir
