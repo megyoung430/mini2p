@@ -55,6 +55,20 @@ save_folder = "suite2p"
 run_roi_detection = false
 motion_alignment_source = "functional"
 
+[fluorescence]
+neuropil_coefficient = 0.7
+baseline = "maximin"          # "maximin" or "prctile"
+win_baseline_s = 60.0
+sig_baseline_frames = 10.0
+prctile_baseline = 8.0
+min_f0 = 0.0                  # ΔF/F0 is NaN where F0 <= this
+tau_s = 1.0                   # indicator decay for OASIS deconvolution
+batch_size = 500
+torch_device = "cpu"          # "cuda" on a GPU machine
+gr_median_window_s = 0.25
+gr_red_floor_percentile = 5.0
+gr_red_floor_min = 0.001
+
 # ---- used by the QC notebook ----
 # Keep run_dir outside derivatives_subject_dir: the batch planner treats a run
 # folder holding a .phase.json but no manifest as finished and skips it.
@@ -64,6 +78,9 @@ run_dir = "/path/to/scratch/mini2p-qc/MY_71_R/run-02"
 qc_start_timepoint = 0
 qc_registration_frames = 500
 qc_distortion_frames = 100
+# cellpose_seg = "/path/to/run-02/without_destriping/suite2p/plane0/meanImg_green_functional_contrast_seg.npy"
+# valid_frames = "/path/to/session/valid_frames.npz"
+valid_frames_key = "valid_frames"
 
 # ---- used by the batch notebook ----
 [batch]

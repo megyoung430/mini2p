@@ -1,4 +1,9 @@
-"""Command-line entry point: ``mini2p-preprocess --config ... --input ... --output-dir ...``."""
+"""Command-line entry points.
+
+``mini2p-preprocess --config ... --input ... --output-dir ...`` runs phase correction,
+distortion correction and registration; ``mini2p-extract --config ... --plane-dir ...
+--seg ...`` extracts fluorescence from Cellpose masks into a Suite2p plane folder.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +12,7 @@ import logging
 from pathlib import Path
 
 from .config import load_settings, with_destriping
+from .extraction import run_cellpose_extraction
 from .pipeline import run_pipeline
 
 
@@ -33,6 +39,16 @@ def main(argv: list[str] | None = None) -> None:
     if args.destripe is not None:
         settings = with_destriping(settings, args.destripe == "1")
     run_pipeline(args.input, args.output_dir, settings)
+
+
+def extract_main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Extract traces from Cellpose masks")
+    parser.add_argument("--config", type=Path, required=True, help="pipeline TOML file")
+    parser.add_argument("--plane-dir", type=Path, required=True, help="suite2p/plane0 folder")
+    parser.add_argument("--seg", type=Path, required=True, help="Cellpose *_seg.npy file")
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
+    run_cellpose_extraction(args.seg, args.plane_dir, load_settings(args.config))
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ dependencies = [
     "matplotlib>=3.8",
     "pydantic>=2.6",
     "suite2p>=1.0",
+    "torch>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -17,6 +18,7 @@ notebook = ["ipywidgets>=8.1", "jupyterlab>=4.1"]
 
 [project.scripts]
 mini2p-preprocess = "mini2p_preprocessing.cli:main"
+mini2p-extract = "mini2p_preprocessing.cli:extract_main"
 
 [dependency-groups]
 dev = ["pytest>=8.0", "ruff>=0.4"]

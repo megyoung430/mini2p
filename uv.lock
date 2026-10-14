@@ -1871,6 +1871,7 @@ dependencies = [
     { name = "suite2p" },
     { name = "tifffile", version = "2026.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "tifffile", version = "2026.9.20", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "torch" },
 ]
 
 [package.optional-dependencies]
@@ -1895,6 +1896,7 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.11" },
     { name = "suite2p", specifier = ">=1.0" },
     { name = "tifffile", specifier = ">=2024.1.30" },
+    { name = "torch", specifier = ">=2.0" },
 ]
 provides-extras = ["notebook"]
 
