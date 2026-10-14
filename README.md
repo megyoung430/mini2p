@@ -38,6 +38,14 @@ CLI and the batch workers all read it, so they cannot drift apart.
    **replaces** `F`, `Fneu`, `stat`, `iscell`, `spks` (and `F_chan2`, `Fneu_chan2`) in
    that folder, recording what it did in `cellpose_extraction.json`. Nothing is written
    if the mask shape or frame rate does not match the plane.
+
+   **Masks drawn on another registration** (e.g. one run on the first 1000 frames):
+   pass that registration's mean image with `--mask-image`, or set `[qc] cellpose_image`.
+   The masks are then shifted rigidly onto this plane's `meanImg`. Extraction refuses
+   if the images do not match, if parts of the image need different shifts (more than
+   `fluorescence.mask_shift_tolerance_px`), or if the shift exceeds
+   `fluorescence.mask_max_shift_px`. Masks pushed mostly off the edge are dropped. The
+   shift and match scores are saved in `cellpose_extraction.json`.
 4. **Audit:** the "Fluorescence audit" section of the QC notebook shows F, Fneu,
    corrected F with its F0, ΔF/F0 and the green/red ratio for each ROI, and flags ROIs
    whose F0 is ever ≤ `fluorescence.min_f0`.
@@ -64,6 +72,7 @@ meaning there. ΔF itself stays finite. The same applies to the green/red ratio,
 | `qc.py`, `contrast.py`, `plots.py` | analysis / plotting | QC computations; figures accept `ax` |
 | `exports.py` | I/O | fixed-contrast exports and review PDFs |
 | `rois.py` | analysis | Cellpose labels ↔ Suite2p `stat`, ROI outlines |
+| `alignment.py` | analysis | rigid shift of Cellpose masks between two mean images |
 | `fluorescence.py` | analysis | neuropil correction, F0, ΔF, ΔF/F0, G/R ratio, audit table |
 | `extraction.py`, `plane.py` | I/O | Cellpose-mask extraction; loading a plane's traces and valid frames |
 

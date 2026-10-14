@@ -48,17 +48,22 @@ def suite2p_like_ops(fs, n_channels):
     }
 
 
-def make_plane(tmp_path, rng, two_channels=True, fs=7.52):
+def make_plane(tmp_path, rng, two_channels=True, fs=7.52, texture=False):
     plane = tmp_path / "suite2p" / "plane0"
     plane.mkdir(parents=True)
     labels = label_image()
     movie = 100.0 + rng.normal(0, 1, (T, LY, LX))
+    if texture:  # tissue-like structure everywhere, so image registration has something to lock on
+        from tests.conftest import textured_image
+
+        movie += 30 * textured_image(rng, shape=(LY, LX))
     for label, value in BRIGHTNESS.items():
         movie[:, labels == label] += value
     movie.astype(np.int16).tofile(plane / "data.bin")
     if two_channels:
         (0.5 * movie).astype(np.int16).tofile(plane / "data_chan2.bin")
     ops = suite2p_like_ops(fs, 2 if two_channels else 1)
+    ops["meanImg"] = movie.astype(np.int16).mean(axis=0).astype(np.float32)
     np.save(plane / "ops.npy", ops, allow_pickle=True)
     seg = tmp_path / "meanImg_seg.npy"
     np.save(seg, {"masks": labels}, allow_pickle=True)
@@ -263,3 +268,46 @@ def test_ops_without_channel_count_fails_instead_of_guessing(tmp_path, rng):
     with pytest.raises(KeyError, match="nchannels"):
         run_cellpose_extraction(seg, plane, SETTINGS)
     assert (plane / "F_chan2.npy").is_file()
+
+
+def offset(array, dy, dx):
+    """``array`` moved by (dy, dx); labels are zero-filled, images mean-filled."""
+    from mini2p_preprocessing.alignment import shift_image
+
+    fill = 0 if array.dtype.kind in "iu" else float(array.mean())
+    return shift_image(array, dy, dx, fill)
+
+
+def test_masks_from_another_registration_are_shifted_onto_the_plane(tmp_path, rng):
+    from tests.conftest import as_contrast_png
+
+    plane, seg = make_plane(tmp_path, rng, texture=True)
+    run_cellpose_extraction(seg, plane, SETTINGS)
+    f_reference = np.load(plane / "F.npy")
+
+    ops = np.load(plane / "ops.npy", allow_pickle=True).item()
+    other_image = offset(ops["meanImg"], -2, 3)  # the other registration sits 2 up, 3 right
+    image_file = as_contrast_png(other_image, tmp_path / "meanImg_green_contrast.png")
+    other_seg = tmp_path / "other_seg.npy"
+    np.save(other_seg, {"masks": offset(label_image(), -2, 3)}, allow_pickle=True)
+
+    run_cellpose_extraction(other_seg, plane, SETTINGS, mask_image=image_file)
+    assert np.allclose(np.load(plane / "F.npy"), f_reference)
+    record = json.loads((plane / EXTRACTION_RECORD).read_text())
+    assert (record["mask_alignment"]["dy"], record["mask_alignment"]["dx"]) == (2, -3)
+    assert record["mask_image"] == str(image_file.resolve())
+
+    run_cellpose_extraction(other_seg, plane, SETTINGS)  # no alignment: wrong pixels
+    assert not np.allclose(np.load(plane / "F.npy"), f_reference)
+    assert json.loads((plane / EXTRACTION_RECORD).read_text())["mask_alignment"] is None
+
+
+def test_mask_image_of_a_different_size_fails_before_writing(tmp_path, rng):
+    import matplotlib.pyplot as plt
+
+    plane, seg = make_plane(tmp_path, rng, texture=True)
+    image_file = tmp_path / "wrong.png"
+    plt.imsave(image_file, np.zeros((LY, LX + 4)), cmap="gray")
+    with pytest.raises(ValueError, match="shape"):
+        run_cellpose_extraction(seg, plane, SETTINGS, mask_image=image_file)
+    assert not (plane / "F.npy").exists()

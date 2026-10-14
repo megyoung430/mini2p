@@ -86,3 +86,38 @@ def mixed_recording(tmp_path, rng):
         noise_by_channel=[[20.0, 3000.0, 20.0], [3000.0, 5.0, 3000.0]],
     )
     return write_interleaved_tiff(tmp_path / "mixed_00001.tif", stacks), stacks
+
+
+def soma_field(
+    rng: np.random.Generator, shape=(256, 256), n_cells=60, vignette=0.0, dark_quadrant=False
+) -> np.ndarray:
+    """Mean-image-like picture: sparse 5-8 px somata on smooth neuropil, plus noise.
+
+    ``vignette`` dims the edges (0 = none, 0.6 = strong); ``dark_quadrant`` blanks
+    the lower-right quadrant, like a large vessel or the edge of the window.
+    """
+    h, w = shape
+    yy, xx = np.mgrid[:h, :w]
+    image = 40 + 25 * gaussian_filter(rng.standard_normal(shape), 12)
+    for cy, cx, radius in zip(
+        rng.uniform(0, h, n_cells),
+        rng.uniform(0, w, n_cells),
+        rng.uniform(2.5, 4.0, n_cells),
+        strict=True,
+    ):
+        image += 120 * np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / (2 * radius**2))
+    if vignette:
+        r2 = ((yy - h / 2) / (h / 2)) ** 2 + ((xx - w / 2) / (w / 2)) ** 2
+        image *= 1 - vignette * np.clip(r2, 0, 1)
+    if dark_quadrant:
+        image[h // 2 :, w // 2 :] = image[h // 2 :, w // 2 :].mean() * 0.1
+    return image + rng.normal(0, 4, shape)
+
+
+def as_contrast_png(image: np.ndarray, path: Path, black=5.0, white=99.5, gamma=1.2) -> Path:
+    """Save the way the QC export does: percentile clip, gamma, grey colormap PNG."""
+    import matplotlib.pyplot as plt
+
+    lo, hi = np.percentile(image, [black, white])
+    plt.imsave(path, np.clip((image - lo) / (hi - lo), 0, 1) ** gamma, cmap="gray", vmin=0, vmax=1)
+    return path

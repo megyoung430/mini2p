@@ -102,3 +102,14 @@ def test_time_axis_label_can_say_frames_were_selected():
     ax = plots.plot_dff_trace(result, 0, 7.5, time_label="Valid-frame time (s)")
     assert ax.get_xlabel() == "Valid-frame time (s)"
     plt.close("all")
+
+
+def test_mask_alignment_plot_draws_both_panels():
+    labels = np.zeros((20, 20), np.int32)
+    labels[5:9, 5:9] = 1
+    fig, axes = plt.subplots(1, 2)
+    drawn = plots.plot_mask_alignment(
+        np.ones((20, 20)), labels, np.roll(labels, 2, axis=0), axes=axes, title="dy=2, dx=0"
+    )
+    assert drawn[0].figure is fig and "dy=2" in drawn[1].get_title()
+    plt.close("all")

@@ -1,8 +1,10 @@
 """Fluorescence extraction from Cellpose masks on the Suite2p registered binaries.
 
-Third step of the workflow, after registration and Cellpose segmentation of the
-registered mean image. Suite2p's own outputs in the plane folder (F, Fneu, stat,
-iscell, spks and, with two channels, F_chan2 and Fneu_chan2) are replaced.
+Third step of the workflow, after registration and Cellpose segmentation of a
+registered mean image: this plane's own, or another registration's if the masks
+are first aligned (see alignment.py). Suite2p's own outputs in the plane folder
+(F, Fneu, stat, iscell, spks and, with two channels, F_chan2 and Fneu_chan2) are
+replaced.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from suite2p.extraction import oasis
 from suite2p.extraction.extract import extraction_wrapper
 from suite2p.extraction.masks import create_masks
 
+from .alignment import align_labels, load_reference_image
 from .config import FluorescenceSettings, PipelineSettings
 from .fluorescence import baseline, neuropil_correct
 from .registration import resolve_registered_binary
@@ -209,6 +212,8 @@ def write_extraction(
     plane_dir: Path,
     seg_file: Path,
     settings: PipelineSettings,
+    mask_image: Path | None = None,
+    alignment: dict | None = None,
 ) -> None:
     plane_dir = Path(plane_dir)
     fl = settings.fluorescence
@@ -225,6 +230,8 @@ def write_extraction(
         arrays.update({"F_chan2": result.f_chan2, "Fneu_chan2": result.fneu_chan2})
     record = {
         "seg_file": str(Path(seg_file).resolve()),
+        "mask_image": str(Path(mask_image).resolve()) if mask_image else None,
+        "mask_alignment": alignment,
         "n_rois": int(len(result.stat)),
         "channels": 2 if two_channel else 1,
         "fluorescence_settings": fl.model_dump(),
@@ -235,13 +242,55 @@ def write_extraction(
     _replace_files(plane_dir, arrays, record, remove=() if two_channel else RED_TRACE_FILES)
 
 
+def align_to_plane(
+    labels: np.ndarray, mask_image: Path, ops: dict, settings: PipelineSettings
+) -> tuple[np.ndarray, dict]:
+    """Shift masks drawn on ``mask_image`` onto this plane's own mean image."""
+    if "meanImg" not in ops:
+        raise KeyError("ops.npy has no 'meanImg' to align the masks to; was it registered?")
+    fl = settings.fluorescence
+    aligned, report = align_labels(
+        labels,
+        load_reference_image(mask_image),
+        np.asarray(ops["meanImg"], dtype=np.float32),
+        max_shift_px=fl.mask_max_shift_px,
+        tolerance_px=fl.mask_shift_tolerance_px,
+        min_correlation=fl.mask_min_correlation,
+        min_retained_fraction=fl.mask_min_retained_fraction,
+        background_sigma_px=2.0 * settings.registration.diameter_px,
+    )
+    log.info(
+        "Masks shifted by dy=%d, dx=%d px (rank correlation %.3f -> %.3f)",
+        report["dy"],
+        report["dx"],
+        report["rank_correlation_before"],
+        report["rank_correlation_after"],
+    )
+    if report["quadrants_used"] < 2:
+        log.warning(
+            "Only %d image quadrant(s) had enough structure to check the shift is uniform",
+            report["quadrants_used"],
+        )
+    if report["dropped_labels"]:
+        log.warning("Masks dropped, mostly pushed off the image: %s", report["dropped_labels"])
+    return aligned, report
+
+
 def run_cellpose_extraction(
-    seg_file: Path, plane_dir: Path, settings: PipelineSettings
+    seg_file: Path, plane_dir: Path, settings: PipelineSettings, mask_image: Path | None = None
 ) -> ExtractionResult:
-    """Extract from Cellpose masks and replace the plane's Suite2p trace files."""
+    """Extract from Cellpose masks and replace the plane's Suite2p trace files.
+
+    ``mask_image`` is the image the masks were drawn on, when that comes from a
+    different registration of the recording; the masks are then shifted onto this
+    plane's mean image first, and the shift is recorded.
+    """
     plane_dir = Path(plane_dir)
     ops = np.load(plane_dir / "ops.npy", allow_pickle=True).item()
-    result = extract_traces(load_cellpose_labels(seg_file), ops, plane_dir, settings)
-    write_extraction(result, ops, plane_dir, seg_file, settings)
+    labels, alignment = load_cellpose_labels(seg_file), None
+    if mask_image is not None:
+        labels, alignment = align_to_plane(labels, mask_image, ops, settings)
+    result = extract_traces(labels, ops, plane_dir, settings)
+    write_extraction(result, ops, plane_dir, seg_file, settings, mask_image, alignment)
     log.info("Extracted %d Cellpose ROIs into %s", len(result.stat), plane_dir)
     return result

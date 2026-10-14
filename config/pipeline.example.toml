@@ -68,6 +68,10 @@ torch_device = "cpu"          # "cuda" on a GPU machine
 gr_median_window_s = 0.25
 gr_red_floor_percentile = 5.0
 gr_red_floor_min = 0.001
+mask_max_shift_px = 50          # largest offset allowed when aligning masks
+mask_shift_tolerance_px = 1     # allowed disagreement between image quadrants
+mask_min_correlation = 0.5      # rank correlation required after the shift
+mask_min_retained_fraction = 0.5  # masks keeping less of their pixels are dropped
 
 # ---- used by the QC notebook ----
 # Keep run_dir outside derivatives_subject_dir: the batch planner treats a run
@@ -79,6 +83,8 @@ qc_start_timepoint = 0
 qc_registration_frames = 500
 qc_distortion_frames = 100
 # cellpose_seg = "/path/to/run-02/without_destriping/suite2p/plane0/meanImg_green_functional_contrast_seg.npy"
+# Only if the masks were drawn on another registration's mean image (e.g. first 1000 frames):
+# cellpose_image = "/path/to/that/meanImg_green_functional_contrast.png"
 # valid_frames = "/path/to/session/valid_frames.npz"
 valid_frames_key = "valid_frames"
 
