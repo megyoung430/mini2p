@@ -106,12 +106,35 @@ class RegistrationSettings(_Frozen):
     motion_alignment_source: ChannelRole = "functional"
 
 
+class FluorescenceSettings(_Frozen):
+    """Neuropil correction, F0 baseline, ΔF/F0 and Cellpose-mask extraction."""
+
+    neuropil_coefficient: float = Field(0.7, ge=0)
+    # Suite2p's "constant" baseline takes one minimum over all ROIs together, so it
+    # is not a per-cell F0 and is deliberately not offered here.
+    baseline: Literal["maximin", "prctile"] = "maximin"
+    win_baseline_s: float = Field(60.0, gt=0)  # maximin min/max window
+    sig_baseline_frames: float = Field(10.0, gt=0)  # maximin Gaussian smoothing
+    prctile_baseline: float = Field(8.0, ge=0, le=100)
+    # ΔF/F0 is NaN wherever F0 <= min_f0; a non-positive F0 has no meaningful ratio.
+    min_f0: float = 0.0
+    tau_s: float = Field(1.0, gt=0)  # indicator decay time used by OASIS deconvolution
+    batch_size: int = Field(500, ge=1)
+    torch_device: str = "cpu"  # "cuda" on a GPU machine; "cpu" works everywhere
+    # Green/red median filter before the ratio. Its width is int(fs * window) | 1
+    # frames, so at 7.52 Hz the default 0.25 s is 1 frame: no smoothing.
+    gr_median_window_s: float = Field(0.25, gt=0)
+    gr_red_floor_percentile: float = Field(5.0, ge=0, le=100)
+    gr_red_floor_min: float = Field(1e-3, gt=0)
+
+
 class PipelineSettings(_Frozen):
     channels: ChannelSettings = ChannelSettings()
     phase: PhaseSettings = PhaseSettings()
     destripe: DestripeSettings = DestripeSettings()
     distortion: DistortionSettings
     registration: RegistrationSettings = RegistrationSettings()
+    fluorescence: FluorescenceSettings = FluorescenceSettings()
     output_dtype: Literal["float32"] = "float32"
     max_timepoints: int | None = Field(None, ge=1)  # small values make quick test runs
     overwrite: bool = True
@@ -192,6 +215,9 @@ class QCRun(_Frozen):
     qc_start_timepoint: int = Field(0, ge=0)
     qc_registration_frames: int = Field(500, ge=1)
     qc_distortion_frames: int = Field(100, ge=1)
+    cellpose_seg: Path | None = None  # Cellpose *_seg.npy of this run's registered mean image
+    valid_frames: Path | None = None  # .npz from behaviour alignment; None audits every frame
+    valid_frames_key: str = "valid_frames"
 
 
 def load_qc_run(path: Path) -> QCRun:

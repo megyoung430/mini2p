@@ -163,3 +163,138 @@ def plot_contrast_panels(
         ax.set_title(title)
         ax.axis("off")
     return axes
+
+
+def plot_trace_audit(
+    f: np.ndarray,
+    fneu: np.ndarray,
+    result,
+    roi: int,
+    fs_hz: float,
+    frames: slice = slice(None),
+    axes=None,
+    time_label: str = "Time (s)",
+) -> np.ndarray:
+    """One ROI: raw F and Fneu; corrected F with its F0; ΔF/F0 (gaps where F0 is invalid)."""
+    axes = _axes_grid(axes, 3, 1, (12, 8)).ravel()
+    t = np.arange(f.shape[1])[frames] / fs_hz
+    axes[0].plot(t, f[roi, frames], color="tab:green", linewidth=0.7, label="F")
+    axes[0].plot(t, fneu[roi, frames], color="0.4", linewidth=0.7, label="Fneu")
+    axes[0].set(ylabel="Raw fluorescence", title=f"ROI {roi}")
+    axes[1].plot(
+        t, result.f_corr[roi, frames], color="tab:green", linewidth=0.7, label="Fcorr = F − c·Fneu"
+    )
+    axes[1].plot(t, result.f0[roi, frames], color="black", linewidth=1.2, label="F0")
+    axes[1].axhline(0, color="tab:red", linewidth=0.8, linestyle=":")
+    invalid = result.invalid_f0[roi, frames]
+    if invalid.any():
+        axes[1].fill_between(
+            t,
+            0,
+            1,
+            where=invalid,
+            color="tab:red",
+            alpha=0.15,
+            transform=axes[1].get_xaxis_transform(),
+            label="F0 ≤ min_f0",
+        )
+    axes[1].set_ylabel("Corrected F")
+    axes[2].plot(t, result.dff[roi, frames], color="tab:blue", linewidth=0.7)
+    axes[2].axhline(0, color="0.6", linewidth=0.8)
+    axes[2].set(ylabel="ΔF/F0", xlabel=time_label)
+    _note_if_undefined(axes[2], result.dff[roi, frames])
+    for ax in axes:
+        ax.set_xlim(t[0], t[-1])
+    for ax in axes[:2]:
+        ax.legend(loc="upper right", fontsize=8)
+    return axes
+
+
+def plot_f0_overview(table: dict, min_f0: float, axes=None) -> np.ndarray:
+    """Left: median F0 per ROI. Right: how often corrected F goes negative vs F0."""
+    axes = _axes_grid(axes, 1, 2, (12, 4)).ravel()
+    axes[0].hist(table["median_f0"], bins=40, color="0.5")
+    axes[0].axvline(min_f0, color="tab:red", linestyle="--", label=f"min_f0 = {min_f0:g}")
+    axes[0].set(xlabel="Median F0 per ROI", ylabel="ROIs")
+    axes[0].legend()
+    flagged = table["frac_invalid_f0"] > 0
+    axes[1].scatter(
+        table["median_f0"][~flagged],
+        table["frac_negative_fcorr"][~flagged],
+        s=12,
+        color="0.4",
+        label="F0 valid throughout",
+    )
+    axes[1].scatter(
+        table["median_f0"][flagged],
+        table["frac_negative_fcorr"][flagged],
+        s=12,
+        color="tab:red",
+        label="F0 invalid somewhere",
+    )
+    axes[1].set(xlabel="Median F0 per ROI", ylabel="Fraction of frames with Fcorr < 0")
+    axes[1].legend()
+    return axes
+
+
+def plot_cell_fov(
+    roi: int, mean_img: np.ndarray, labels: np.ndarray, axes=None, margin_px: int = 10
+) -> np.ndarray:
+    """ROI ``roi`` (red outline) and the other ROIs (blue), zoomed and in the full field."""
+    from .rois import outline_labels
+
+    ys, xs = np.nonzero(labels == roi + 1)
+    if not len(ys):
+        raise ValueError(f"ROI {roi} is not in the label image")
+    axes = _axes_grid(axes, 1, 2, (10, 5)).ravel()
+    outline = outline_labels(labels)
+    overlay = np.zeros((*labels.shape, 4), np.float32)
+    overlay[(outline != 0) & (outline != roi + 1)] = (0.2, 0.4, 1.0, 0.8)
+    overlay[outline == roi + 1] = (1.0, 0.1, 0.1, 1.0)
+    y0, y1 = max(0, ys.min() - margin_px), min(labels.shape[0], ys.max() + margin_px + 1)
+    x0, x1 = max(0, xs.min() - margin_px), min(labels.shape[1], xs.max() + margin_px + 1)
+    views = [
+        ((slice(y0, y1), slice(x0, x1)), f"ROI {roi} zoomed in"),
+        ((slice(None), slice(None)), f"ROI {roi} in the full field of view"),
+    ]
+    for ax, (window, title) in zip(axes, views, strict=True):
+        ax.imshow(mean_img[window], cmap="gray", interpolation="nearest")
+        ax.imshow(overlay[window], interpolation="nearest")
+        ax.set_title(title)
+        ax.axis("off")
+    return axes
+
+
+def plot_dff_trace(
+    result,
+    roi: int,
+    fs_hz: float,
+    frames: slice = slice(None),
+    ax=None,
+    label: str = "ΔF/F0",
+    color: str = "tab:blue",
+    time_label: str = "Time (s)",
+):
+    """A single ΔF/F0-style trace, e.g. the green/red ratio from ``green_red_dff``."""
+    if ax is None:
+        _, ax = plt.subplots(figsize=(12, 2.5))
+    t = np.arange(result.dff.shape[1])[frames] / fs_hz
+    ax.plot(t, result.dff[roi, frames], color=color, linewidth=0.7, label=label)
+    ax.axhline(0, color="0.6", linewidth=0.8)
+    ax.set(xlabel=time_label, ylabel=label, xlim=(t[0], t[-1]))
+    _note_if_undefined(ax, result.dff[roi, frames])
+    return ax
+
+
+def _note_if_undefined(ax, values: np.ndarray) -> None:
+    """An all-NaN ΔF/F0 trace would otherwise look like an empty, broken panel."""
+    if not np.isfinite(values).any():
+        ax.text(
+            0.5,
+            0.5,
+            "undefined here: F0 ≤ min_f0 in every frame shown",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            color="tab:red",
+        )
