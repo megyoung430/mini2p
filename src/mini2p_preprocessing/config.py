@@ -126,6 +126,11 @@ class FluorescenceSettings(_Frozen):
     gr_median_window_s: float = Field(0.25, gt=0)
     gr_red_floor_percentile: float = Field(5.0, ge=0, le=100)
     gr_red_floor_min: float = Field(1e-3, gt=0)
+    # Aligning masks drawn on another registration's mean image (see alignment.py).
+    mask_max_shift_px: int = Field(50, ge=1)  # Suite2p allows ~0.1 x frame size
+    mask_shift_tolerance_px: int = Field(1, ge=0)  # allowed quadrant disagreement
+    mask_min_correlation: float = Field(0.5, ge=0, le=1)  # rank correlation after the shift
+    mask_min_retained_fraction: float = Field(0.5, gt=0, le=1)  # else the mask is dropped
 
 
 class PipelineSettings(_Frozen):
@@ -215,7 +220,10 @@ class QCRun(_Frozen):
     qc_start_timepoint: int = Field(0, ge=0)
     qc_registration_frames: int = Field(500, ge=1)
     qc_distortion_frames: int = Field(100, ge=1)
-    cellpose_seg: Path | None = None  # Cellpose *_seg.npy of this run's registered mean image
+    cellpose_seg: Path | None = None  # Cellpose *_seg.npy file
+    # Image the masks were drawn on, when it comes from a different registration
+    # than this run (e.g. first 1000 frames vs full session); masks are shifted to fit.
+    cellpose_image: Path | None = None
     valid_frames: Path | None = None  # .npz from behaviour alignment; None audits every frame
     valid_frames_key: str = "valid_frames"
 

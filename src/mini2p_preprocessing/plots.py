@@ -298,3 +298,26 @@ def _note_if_undefined(ax, values: np.ndarray) -> None:
             va="center",
             color="tab:red",
         )
+
+
+def plot_mask_alignment(
+    plane_image: np.ndarray, original: np.ndarray, aligned: np.ndarray, axes=None, title: str = ""
+) -> np.ndarray:
+    """Outlines as segmented (left) and after shifting onto this plane (right)."""
+    from .rois import outline_labels
+
+    axes = _axes_grid(axes, 1, 2, (14, 7)).ravel()
+    for ax, labels, label, color in zip(
+        axes,
+        (original, aligned),
+        ("Masks as segmented", "Masks shifted onto this plane"),
+        ((1.0, 0.3, 0.1, 1.0), (0.1, 1.0, 0.3, 1.0)),
+        strict=True,
+    ):
+        overlay = np.zeros((*labels.shape, 4), np.float32)
+        overlay[outline_labels(labels) != 0] = color
+        ax.imshow(plane_image, cmap="gray", interpolation="nearest")
+        ax.imshow(overlay, interpolation="nearest")
+        ax.set_title(f"{label}\n{title}".strip())
+        ax.axis("off")
+    return axes

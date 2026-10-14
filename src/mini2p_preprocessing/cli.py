@@ -46,9 +46,14 @@ def extract_main(argv: list[str] | None = None) -> None:
     parser.add_argument("--config", type=Path, required=True, help="pipeline TOML file")
     parser.add_argument("--plane-dir", type=Path, required=True, help="suite2p/plane0 folder")
     parser.add_argument("--seg", type=Path, required=True, help="Cellpose *_seg.npy file")
+    parser.add_argument(
+        "--mask-image",
+        type=Path,
+        help="image the masks were drawn on, if from another registration",
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
-    run_cellpose_extraction(args.seg, args.plane_dir, load_settings(args.config))
+    run_cellpose_extraction(args.seg, args.plane_dir, load_settings(args.config), args.mask_image)
 
 
 if __name__ == "__main__":
