@@ -9,6 +9,7 @@ from mini2p_preprocessing.config import (
     PipelineSettings,
     corrected_tiff_path,
     load_settings,
+    qc_output_dir,
     run_name_from_output_dir,
     variant_output_dir,
     with_destriping,
@@ -89,6 +90,7 @@ def test_output_naming_follows_destriping_variant():
     assert variant_output_dir(Path("/d/run-02"), True) == Path("/d/run-02")
     assert run_name_from_output_dir(Path("/d/run-02/without_destriping")) == "run-02"
     assert run_name_from_output_dir(Path("/d/run-02")) == "run-02"
+    assert run_name_from_output_dir(Path("/d/run-02/with_destriping")) == "run-02"
     assert corrected_tiff_path(Path("/o"), Path("/r/a_001.tif"), base).name == (
         "a_001_dynamic_bidiphase.tif"
     )
@@ -117,3 +119,10 @@ def test_example_config_is_valid():
     assert load_batch_settings(example).session_first == 216
     assert load_export_settings(example).expected_runs == 68
     assert load_qc_run(example).qc_registration_frames == 500
+
+
+def test_qc_keeps_both_destriping_variants_side_by_side():
+    run_dir = Path("/qc/run-02")
+    assert qc_output_dir(run_dir, False) == run_dir / "without_destriping"
+    assert qc_output_dir(run_dir, True) == run_dir / "with_destriping"
+    assert variant_output_dir(run_dir, True) == run_dir  # batch layout unchanged

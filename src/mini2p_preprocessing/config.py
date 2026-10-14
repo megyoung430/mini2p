@@ -11,6 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 ChannelRole = Literal["structural", "functional"]
 WITHOUT_DESTRIPING_SUBDIR = "without_destriping"
+WITH_DESTRIPING_SUBDIR = "with_destriping"
+VARIANT_SUBDIRS = (WITHOUT_DESTRIPING_SUBDIR, WITH_DESTRIPING_SUBDIR)
 
 
 class _Frozen(BaseModel):
@@ -158,11 +160,18 @@ def variant_output_dir(run_dir: Path, destripe_enabled: bool) -> Path:
     return Path(run_dir) if destripe_enabled else Path(run_dir) / WITHOUT_DESTRIPING_SUBDIR
 
 
+def qc_output_dir(run_dir: Path, destripe_enabled: bool) -> Path:
+    """QC runs put each destriping variant in its own subfolder so both can be compared.
+
+    Batch runs keep the variant_output_dir layout, which existing derivatives use.
+    """
+    subdir = WITH_DESTRIPING_SUBDIR if destripe_enabled else WITHOUT_DESTRIPING_SUBDIR
+    return Path(run_dir) / subdir
+
+
 def run_name_from_output_dir(output_dir: Path) -> str:
     output_dir = Path(output_dir)
-    return (
-        output_dir.parent.name if output_dir.name == WITHOUT_DESTRIPING_SUBDIR else output_dir.name
-    )
+    return output_dir.parent.name if output_dir.name in VARIANT_SUBDIRS else output_dir.name
 
 
 def corrected_tiff_path(output_dir: Path, input_tiff: Path, settings: PipelineSettings) -> Path:
