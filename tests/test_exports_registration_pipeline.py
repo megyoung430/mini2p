@@ -134,3 +134,23 @@ def test_refused_overwrite_keeps_settings_record_consistent(tmp_path, recording,
         pipeline_module.run_pipeline(raw_tiff, out, refused)
     record = json.loads((out / pipeline_module.SETTINGS_RECORD).read_text())
     assert record["phase"]["chunk_frames"] == 20
+
+
+def test_both_qc_variants_coexist_with_correct_run_name(tmp_path, recording, monkeypatch):
+    from mini2p_preprocessing.config import qc_output_dir, with_destriping
+
+    raw_tiff, _ = recording
+    monkeypatch.setattr(pipeline_module, "run_registration", lambda tiff, out, s: out)
+    base = PipelineSettings.model_validate(
+        {"phase": {"chunk_frames": 20, "max_shift_px": 8}, "distortion": {"mode": "off"}}
+    )
+    run_dir = tmp_path / "run-02"
+    for enabled in (False, True):
+        pipeline_module.run_pipeline(
+            raw_tiff, qc_output_dir(run_dir, enabled), with_destriping(base, enabled)
+        )
+    sidecars = sorted(run_dir.glob("*/*.phase.json"))
+    assert [p.parent.name for p in sidecars] == ["with_destriping", "without_destriping"]
+    metas = [json.loads(p.read_text()) for p in sidecars]
+    assert [m["run_name"] for m in metas] == ["run-02", "run-02"]
+    assert [m["destriping_enabled"] for m in metas] == [True, False]
