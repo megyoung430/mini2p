@@ -257,8 +257,9 @@ def plot_cell_fov(
         ((slice(y0, y1), slice(x0, x1)), f"ROI {roi} zoomed in"),
         ((slice(None), slice(None)), f"ROI {roi} in the full field of view"),
     ]
+    grey_range = {"vmin": np.nanmin(mean_img), "vmax": np.nanmax(mean_img)}  # zoom keeps it
     for ax, (window, title) in zip(axes, views, strict=True):
-        ax.imshow(mean_img[window], cmap="gray", interpolation="nearest")
+        ax.imshow(mean_img[window], cmap="gray", interpolation="nearest", **grey_range)
         ax.imshow(overlay[window], interpolation="nearest")
         ax.set_title(title)
         ax.axis("off")

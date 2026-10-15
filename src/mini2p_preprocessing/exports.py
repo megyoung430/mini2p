@@ -25,7 +25,7 @@ RUN_PATTERN = re.compile(r"^run-(\d+)$")
 
 GREEN_PNG = "meanImg_green_functional_contrast.png"
 RED_PNG = "meanImg_red_structural_contrast.png"
-OLDER_SETTINGS_JSON = "meanImg_contrast_settings.json"
+CHOSEN_SETTINGS_JSON = "meanImg_contrast_settings.json"
 FIXED_SETTINGS_JSON = "meanImg_fixed_contrast_settings.json"
 
 
@@ -253,7 +253,7 @@ def save_contrast_choice(
         "overlay PNG": plane_dir / "meanImg_red_green_overlay.png",
         "green raw TIFF": plane_dir / "meanImg_green_raw.tif",
         "red raw TIFF": plane_dir / "meanImg_red_raw.tif",
-        "settings JSON": plane_dir / OLDER_SETTINGS_JSON,
+        "settings JSON": plane_dir / CHOSEN_SETTINGS_JSON,
     }
     plt.imsave(paths["green PNG"], green_display, cmap="gray", vmin=0, vmax=1)
     plt.imsave(paths["red PNG"], red_display, cmap="gray", vmin=0, vmax=1)
@@ -277,6 +277,47 @@ def save_contrast_choice(
     return paths
 
 
+def _saved_contrast_record(plane_dir: Path) -> dict:
+    path = Path(plane_dir) / CHOSEN_SETTINGS_JSON
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"No saved contrast choice at {path}. Save the contrast for this plane first "
+            "(the QC notebook cell that calls save_contrast_choice)"
+        )
+    return json.loads(path.read_text())
+
+
+def load_contrast_choice(plane_dir: Path) -> dict[str, Contrast]:
+    """The green and red contrast saved by ``save_contrast_choice`` for this plane."""
+    record = _saved_contrast_record(plane_dir)
+    return {
+        name: Contrast(
+            record[name]["black_percentile"],
+            record[name]["white_percentile"],
+            record[name]["gamma"],
+        )
+        for name in ("green", "red")
+    }
+
+
+def with_saved_contrast(plane_dir: Path, image: np.ndarray, channel: str) -> np.ndarray:
+    """``image`` scaled as in the plane's saved ``meanImg_<channel>_contrast.png``.
+
+    Refuses if ``image`` is not the mean image the contrast was saved for (its black
+    and white values differ), e.g. after registration was re-run.
+    """
+    saved = _saved_contrast_record(plane_dir)[channel]
+    display, black, white = scale_contrast(
+        image, saved["black_percentile"], saved["white_percentile"], saved["gamma"]
+    )
+    if not np.allclose([black, white], [saved["black_value"], saved["white_value"]], rtol=1e-4):
+        raise ValueError(
+            f"The {channel} contrast in {Path(plane_dir) / CHOSEN_SETTINGS_JSON} was saved for a "
+            "different mean image (black/white values differ); save the contrast again"
+        )
+    return display
+
+
 # ---- I/O: review PDFs -------------------------------------------------------------
 
 
@@ -284,7 +325,7 @@ def runs_with_both_settings_files(runs: list[RunPlane]) -> list[RunPlane]:
     return [
         r
         for r in runs
-        if (r.plane_dir / OLDER_SETTINGS_JSON).is_file()
+        if (r.plane_dir / CHOSEN_SETTINGS_JSON).is_file()
         and (r.plane_dir / FIXED_SETTINGS_JSON).is_file()
     ]
 

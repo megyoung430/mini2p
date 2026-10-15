@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 matplotlib.use("Agg")
+import matplotlib.image  # noqa: E402
 
 from mini2p_preprocessing import pipeline as pipeline_module  # noqa: E402
 from mini2p_preprocessing.config import PipelineSettings  # noqa: E402
@@ -14,7 +15,10 @@ from mini2p_preprocessing.exports import (  # noqa: E402
     Contrast,
     export_mean_images,
     find_run_planes,
+    load_contrast_choice,
     require_run_count,
+    save_contrast_choice,
+    with_saved_contrast,
     write_comparison_pdf,
     write_high_resolution_pdf,
 )
@@ -154,3 +158,25 @@ def test_both_qc_variants_coexist_with_correct_run_name(tmp_path, recording, mon
     metas = [json.loads(p.read_text()) for p in sidecars]
     assert [m["run_name"] for m in metas] == ["run-02", "run-02"]
     assert [m["destriping_enabled"] for m in metas] == [True, False]
+
+
+def test_display_with_saved_contrast_reproduces_the_saved_png(tmp_path, rng):
+    green_raw, red_raw = rng.gamma(2, 50, (2, 20, 24))
+    green, red = Contrast(2.0, 99.0, 0.8), Contrast(1.0, 99.8, 1.5)
+    paths = save_contrast_choice(tmp_path, green_raw, red_raw, green, red)
+    assert load_contrast_choice(tmp_path) == {"green": green, "red": red}
+    png = matplotlib.image.imread(paths["green PNG"])[..., 0]
+    shown = with_saved_contrast(tmp_path, green_raw, "green")
+    assert np.allclose(png, shown, atol=2 / 255)  # 8-bit grey levels
+
+
+def test_saved_contrast_refuses_a_different_mean_image(tmp_path, rng):
+    green_raw, red_raw = rng.gamma(2, 50, (2, 20, 24))
+    save_contrast_choice(tmp_path, green_raw, red_raw, Contrast(), Contrast())
+    with pytest.raises(ValueError, match="different mean image"):
+        with_saved_contrast(tmp_path, green_raw * 1.5, "green")
+
+
+def test_missing_contrast_choice_names_the_cell_that_writes_it(tmp_path):
+    with pytest.raises(FileNotFoundError, match="Save the contrast"):
+        with_saved_contrast(tmp_path, np.ones((4, 4)), "green")
