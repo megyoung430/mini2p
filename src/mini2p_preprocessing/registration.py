@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,7 +11,7 @@ import numpy as np
 import suite2p
 import tifffile
 
-from .config import PipelineSettings
+from .config import VARIANT_SUBDIRS, PipelineSettings
 
 log = logging.getLogger(__name__)
 
@@ -98,6 +99,33 @@ def check_existing_suite2p_folder(
             )
 
 
+def clear_earlier_registration(suite2p_dir: Path, settings: PipelineSettings) -> None:
+    """Remove an earlier registration of the same file so Suite2p registers afresh.
+
+    Suite2p reuses an existing binary and skips registration, which would keep the old
+    result. Only a folder inside a with_/without_destriping subfolder is removed, never
+    ``run-XX/suite2p``; refuses without ``overwrite``, or if Cellpose masks are inside.
+    """
+    suite2p_dir = Path(suite2p_dir)
+    if not suite2p_dir.exists():
+        return
+    if suite2p_dir.parent.name not in VARIANT_SUBDIRS:
+        raise RuntimeError(
+            f"Not replacing {suite2p_dir}: only registrations inside a variant subfolder "
+            f"{VARIANT_SUBDIRS} are replaced; this may be the one Cellpose masks were drawn on"
+        )
+    if not settings.overwrite:
+        raise FileExistsError(f"{suite2p_dir} exists; set overwrite=true to register again")
+    masks = sorted(suite2p_dir.rglob("*_seg.npy"))
+    if masks:
+        raise RuntimeError(
+            f"Not replacing {suite2p_dir}: it holds Cellpose masks {[m.name for m in masks]}; "
+            "move them out first"
+        )
+    log.info("Removing earlier registration %s", suite2p_dir)
+    shutil.rmtree(suite2p_dir)
+
+
 def run_registration(
     suite2p_input_tiff: Path, output_dir: Path, settings: PipelineSettings
 ) -> Path:
@@ -106,6 +134,7 @@ def run_registration(
     if not suite2p_input_tiff.is_file():
         raise FileNotFoundError(f"Suite2p input does not exist: {suite2p_input_tiff}")
     check_existing_suite2p_folder(output_dir, suite2p_input_tiff, settings.registration.save_folder)
+    clear_earlier_registration(Path(output_dir) / settings.registration.save_folder, settings)
     db = build_suite2p_db(output_dir, suite2p_input_tiff, settings)
     log.info("Suite2p file_list: %s", db["file_list"])
     from suite2p.run_s2p import run_s2p

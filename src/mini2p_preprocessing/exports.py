@@ -50,9 +50,9 @@ class ExportSettings(BaseModel):
     session_first: int
     session_last: int
     expected_runs: int  # exports and PDFs refuse to run on any other count
-    # Folder between run-XX/ and suite2p/: "without_destriping" or "with_destriping"
-    # ("" only for older derivatives with suite2p/ directly in run-XX/).
-    run_subdir: Literal["without_destriping", "with_destriping", ""]
+    # The variant to export. Never "": run-XX/suite2p holds the image the Cellpose
+    # masks were drawn on, which an export would overwrite.
+    run_subdir: Literal["without_destriping", "with_destriping"]
     black_percentile: float = 5.0
     white_percentile: float = 99.5
     gamma: float = 1.2
@@ -67,8 +67,7 @@ class ExportSettings(BaseModel):
     @property
     def session_label(self) -> str:
         """Names the summary and PDFs, so each destriping variant gets its own files."""
-        sessions = f"sessions-{self.session_first}-{self.session_last}"
-        return f"{sessions}_{self.run_subdir}" if self.run_subdir else sessions
+        return f"sessions-{self.session_first}-{self.session_last}_{self.run_subdir}"
 
 
 def load_export_settings(path: Path) -> ExportSettings:

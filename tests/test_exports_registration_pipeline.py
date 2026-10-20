@@ -188,13 +188,14 @@ def test_each_variant_gets_its_own_summary_and_pdf_names(tmp_path):
     common = {"subject_dir": tmp_path, "session_first": 1, "session_last": 4, "expected_runs": 1}
     labels = {
         sub: ExportSettings(**common, run_subdir=sub).session_label
-        for sub in ("without_destriping", "with_destriping", "")
+        for sub in ("without_destriping", "with_destriping")
     }
     assert labels == {
         "without_destriping": "sessions-1-4_without_destriping",
         "with_destriping": "sessions-1-4_with_destriping",
-        "": "sessions-1-4",
     }
+    with pytest.raises(ValueError, match="run_subdir"):  # never export into run-XX/suite2p
+        ExportSettings(**common, run_subdir="")
 
 
 def test_export_summary_is_named_by_label(tmp_path, rng):
@@ -215,3 +216,80 @@ def test_output_folder_must_match_the_destriping_setting(tmp_path, recording, mo
     with pytest.raises(ValueError, match="with_destriping.*destriping is off"):
         pipeline_module.run_pipeline(raw_tiff, tmp_path / "run-01" / "with_destriping", off)
     assert not (tmp_path / "run-01").exists()
+
+
+def _registered_folder(tmp_path, tiff_name="x.tif", shape=(4, 6)):
+    """A variant folder, run-01/without_destriping, holding an earlier registration."""
+    import tifffile
+
+    out = tmp_path / "run-01" / "without_destriping"
+    plane = out / "suite2p" / "plane0"
+    plane.mkdir(parents=True)
+    tiff = out / tiff_name
+    tifffile.imwrite(tiff, np.zeros((2, *shape), np.int16))
+    np.save(out / "suite2p" / "db.npy", {"file_list": [tiff_name]}, allow_pickle=True)
+    np.save(plane / "ops.npy", {"Ly": shape[0], "Lx": shape[1]}, allow_pickle=True)
+    (plane / "data.bin").write_bytes(b"old registration")
+    return tiff, plane
+
+
+def _stub_suite2p(monkeypatch):
+    import importlib
+
+    module = importlib.import_module("suite2p.run_s2p")  # the package re-exports a function
+    calls = []
+    monkeypatch.setattr(module, "run_s2p", lambda settings, db: calls.append(db))
+    return calls
+
+
+def test_overwrite_replaces_an_earlier_registration(tmp_path, monkeypatch):
+    # Suite2p reuses an existing binary and skips registration, so it must be cleared.
+    from mini2p_preprocessing.registration import run_registration
+
+    tiff, plane = _registered_folder(tmp_path)
+    calls = _stub_suite2p(monkeypatch)
+    settings = PipelineSettings.model_validate({"distortion": {"mode": "off"}})
+    run_registration(tiff, tiff.parent, settings)
+    assert len(calls) == 1 and not (plane / "data.bin").exists()
+
+
+def test_earlier_registration_is_kept_without_overwrite_or_with_masks(tmp_path, monkeypatch):
+    from mini2p_preprocessing.registration import run_registration
+
+    tiff, plane = _registered_folder(tmp_path)
+    calls = _stub_suite2p(monkeypatch)
+    keep = PipelineSettings.model_validate({"overwrite": False, "distortion": {"mode": "off"}})
+    with pytest.raises(FileExistsError, match="overwrite"):
+        run_registration(tiff, tiff.parent, keep)
+    (plane / "meanImg_seg.npy").write_bytes(b"masks")
+    replace = keep.model_copy(update={"overwrite": True})
+    with pytest.raises(RuntimeError, match="meanImg_seg.npy"):
+        run_registration(tiff, tiff.parent, replace)
+    assert calls == [] and (plane / "data.bin").exists()
+
+
+def test_registration_outside_a_variant_folder_is_never_cleared(tmp_path, monkeypatch):
+    # run-XX/suite2p holds the registration the Cellpose masks were drawn on.
+    import shutil
+
+    from mini2p_preprocessing.registration import run_registration
+
+    tiff, plane = _registered_folder(tmp_path)
+    run_dir = tmp_path / "run-01"
+    shutil.move(str(plane.parent), run_dir / "suite2p")
+    shutil.move(str(tiff), run_dir / tiff.name)
+    calls = _stub_suite2p(monkeypatch)
+    settings = PipelineSettings.model_validate({"distortion": {"mode": "off"}})
+    with pytest.raises(RuntimeError, match="variant"):
+        run_registration(run_dir / tiff.name, run_dir, settings)
+    assert calls == [] and (run_dir / "suite2p" / "plane0" / "data.bin").exists()
+
+
+@pytest.mark.parametrize("folder", ["", ".", "..", "a/b", "/abs"])
+def test_suite2p_save_folder_must_be_a_plain_name(folder):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="save_folder"):
+        PipelineSettings.model_validate(
+            {"registration": {"save_folder": folder}, "distortion": {"mode": "off"}}
+        )

@@ -9,6 +9,7 @@ replaced.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -65,6 +66,10 @@ def build_stat(labels: np.ndarray, ly: int, lx: int, diameter: int) -> np.ndarra
     return stat
 
 
+class ExtractionRefused(ValueError):
+    """The inputs do not fit this plane (masks, image or plane); nothing was written."""
+
+
 def classify_rois(
     stat: np.ndarray, f: np.ndarray, fneu: np.ndarray, coefficient: float
 ) -> np.ndarray:
@@ -80,7 +85,7 @@ def classify_rois(
     if flat.size:
         # A constant trace gives NaN features that the classifier still scores highly;
         # it usually means the ROI sits in a cropped or saturated part of the image.
-        raise ValueError(
+        raise ExtractionRefused(
             f"ROIs {flat.tolist()} have constant traces; remove them from the Cellpose masks"
         )
     snr = 1 - 0.5 * np.diff(delta, axis=1).var(axis=1) / delta.var(axis=1)
@@ -121,6 +126,10 @@ def updated_ops(ops: dict, fl: FluorescenceSettings) -> dict:
 
 
 # ---- I/O --------------------------------------------------------------------------
+
+
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def load_cellpose_labels(seg_file: Path) -> np.ndarray:
@@ -230,7 +239,9 @@ def write_extraction(
         arrays.update({"F_chan2": result.f_chan2, "Fneu_chan2": result.fneu_chan2})
     record = {
         "seg_file": str(Path(seg_file).resolve()),
+        "seg_sha256": file_sha256(seg_file),
         "mask_image": str(Path(mask_image).resolve()) if mask_image else None,
+        "mask_image_sha256": file_sha256(mask_image) if mask_image else None,
         "mask_alignment": alignment,
         "n_rois": int(len(result.stat)),
         "channels": 2 if two_channel else 1,
@@ -281,15 +292,22 @@ def run_cellpose_extraction(
 ) -> ExtractionResult:
     """Extract from Cellpose masks and replace the plane's Suite2p trace files.
 
+    Raises ``ExtractionRefused``, writing nothing, if the inputs do not fit the plane.
+
     ``mask_image`` is the image the masks were drawn on, when that comes from a
     different registration of the recording; the masks are then shifted onto this
     plane's mean image first, and the shift is recorded.
     """
     plane_dir = Path(plane_dir)
-    ops = np.load(plane_dir / "ops.npy", allow_pickle=True).item()
-    labels, alignment = load_cellpose_labels(seg_file), None
-    if mask_image is not None:
-        labels, alignment = align_to_plane(labels, mask_image, ops, settings)
+    try:  # every check on the inputs, before any traces are computed
+        ops = np.load(plane_dir / "ops.npy", allow_pickle=True).item()
+        labels, alignment = load_cellpose_labels(seg_file), None
+        if mask_image is not None:
+            labels, alignment = align_to_plane(labels, mask_image, ops, settings)
+        _check_plane(labels, ops, settings, plane_dir)
+        registered_binaries(ops, plane_dir)
+    except (ValueError, KeyError, FileNotFoundError) as error:
+        raise ExtractionRefused(str(error).strip("'\"")) from error
     result = extract_traces(labels, ops, plane_dir, settings)
     write_extraction(result, ops, plane_dir, seg_file, settings, mask_image, alignment)
     log.info("Extracted %d Cellpose ROIs into %s", len(result.stat), plane_dir)

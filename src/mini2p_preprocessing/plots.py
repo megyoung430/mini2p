@@ -301,6 +301,21 @@ def _note_if_undefined(ax, values: np.ndarray) -> None:
         )
 
 
+def plot_masks_on(
+    image: np.ndarray, labels: np.ndarray, ax, title: str = "", color=(1.0, 0.3, 0.1, 1.0)
+):
+    """Mask outlines on ``image``, on one axis."""
+    from .rois import outline_labels
+
+    overlay = np.zeros((*labels.shape, 4), np.float32)
+    overlay[outline_labels(labels) != 0] = color
+    ax.imshow(image, cmap="gray", interpolation="nearest")
+    ax.imshow(overlay, interpolation="nearest")
+    ax.set_title(title)
+    ax.axis("off")
+    return ax
+
+
 def plot_mask_alignment(
     plane_image: np.ndarray, original: np.ndarray, aligned: np.ndarray, axes=None, title: str = ""
 ) -> np.ndarray:

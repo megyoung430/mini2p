@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -8,8 +9,8 @@ from mini2p_preprocessing.batch import (
     acquisition_key,
     decide_action,
     find_sessions,
-    older_layout_conflict,
     plan_batch,
+    run_folder_conflict,
 )
 
 IDENTITY = {"source_size_bytes": 10, "source_mtime_ns": 5}
@@ -30,6 +31,7 @@ def decide(**kwargs):
         "prior_elsewhere": None,
         "prior_here": None,
         "retry_incomplete": True,
+        "rerun_before": None,
     }
     return decide_action(**{**args, **kwargs})[0]
 
@@ -53,6 +55,16 @@ def test_decisions_cover_every_branch():
     assert decide(prior_here=manifest_run("running")) == "skip"
     sidecar = ExistingRun(RUN, SRC, {}, "phase sidecar")
     assert decide(prior_here=sidecar) == "skip"
+    cutoff = datetime(2026, 10, 21, 9, tzinfo=UTC)
+    assert decide(prior_here=sidecar, rerun_before=cutoff) == "run"  # no finish time: older
+    finished = lambda iso: ExistingRun(  # noqa: E731
+        RUN, SRC, {**IDENTITY, "status": "complete", "finished_utc": iso}, "manifest"
+    )
+    assert decide(prior_here=finished("2026-10-21T08:59:00+00:00"), rerun_before=cutoff) == "run"
+    assert decide(prior_here=finished("2026-10-21T10:01:00+01:00"), rerun_before=cutoff) == "skip"
+    assert decide(prior_here=manifest_run("running"), rerun_before=cutoff) == "skip"
+    elsewhere = manifest_run("complete", run_dir=Path("/der/run-01"))
+    assert decide(prior_elsewhere=elsewhere, rerun_before=cutoff) == "skip"
 
 
 def make_raw_tree(root: Path, sessions: dict[int, list[str]]) -> Path:
@@ -182,44 +194,70 @@ def test_both_destriping_variants_coexist_in_either_order(tmp_path, monkeypatch,
         assert [p.action for p in again] == ["skip", "skip"]
 
 
-def test_older_destriped_output_directly_in_run_folder_is_flagged(tmp_path):
+def test_segmentation_registration_in_run_folder_is_left_alone(tmp_path):
     import json
 
     from mini2p_preprocessing.batch import MANIFEST_NAME
 
     batch, _ = _batch_with_two_sources(tmp_path)
-    source = plan_batch(batch)[0].source
-    old_layout = tmp_path / "der" / "ses-005_date-x" / "funcimg" / "run-01"
-    old_layout.mkdir(parents=True)
-    (old_layout / MANIFEST_NAME).write_text(
-        json.dumps({"source_tiff": str(source), "status": "complete", "destriping_enabled": True})
-    )
-    destriped = plan_batch(batch.model_copy(update={"destripe": True}))
-    assert destriped[0].action == "conflict"
-    assert "with_destriping" in destriped[0].reason
-    assert destriped[1].action == "run"
-    assert [p.action for p in plan_batch(batch)] == ["run", "run"]  # other variant unaffected
-
-
-OLD = Path("/der/run-02")
-
-
-def older(enabled, source=SRC, evidence="manifest"):
-    metadata = {} if enabled is None else {"destriping_enabled": enabled}
-    return ExistingRun(OLD, source, metadata, evidence)
-
-
-def test_older_layout_names_where_its_files_belong():
-    assert older_layout_conflict(None, SRC, destripe=True) is None
-    assert "move it into with_destriping/" in older_layout_conflict(older(True), SRC, True)
-    assert older_layout_conflict(older(True), SRC, destripe=False) is None  # other variant
-    assert older_layout_conflict(older(False), SRC, destripe=True) is None
-    assert "move it into without_destriping/" in older_layout_conflict(older(False), SRC, False)
-    sidecar = older_layout_conflict(older(None, evidence="phase sidecar"), SRC, True)
-    assert "unknown" in sidecar and "phase sidecar" in sidecar and "move it into" not in sidecar
+    first_source = plan_batch(batch)[0].source
+    runs = tmp_path / "der" / "ses-005_date-x" / "funcimg"
+    for run in ("run-01", "run-02"):
+        (runs / run).mkdir(parents=True)
+        (runs / run / MANIFEST_NAME).write_text(json.dumps({"source_tiff": str(first_source)}))
     for destripe in (False, True):
-        other = older_layout_conflict(older(True, Path("/raw/other.tif")), SRC, destripe)
-        assert "other.tif" in other
+        plan = plan_batch(batch.model_copy(update={"destripe": destripe}))
+        assert plan[0].action == "run"  # run-01/ registered the same TIFF
+        assert plan[1].action == "conflict"  # run-02/ belongs to run-01's TIFF
+        assert "71rtask_00001.tif" in plan[1].reason
+
+
+def test_rerun_cutoff_replaces_older_runs_once(tmp_path, monkeypatch):
+    from mini2p_preprocessing import batch as batch_module
+
+    batch, config = _batch_with_two_sources(tmp_path)
+    _stub_worker(monkeypatch, "pass")
+    batch_module.run_batch(batch, config)
+    rerun = batch.model_copy(update={"rerun_completed_before": datetime.now(UTC)})
+    first = batch_module.run_batch(rerun, config)
+    assert [p.action for p in first] == ["run", "run"]
+    assert all("rerun_completed_before" in p.reason for p in first)
+    # Relaunching with the same cutoff keeps what the rerun already replaced.
+    assert [p.action for p in plan_batch(rerun)] == ["skip", "skip"]
+
+
+def test_rerun_cutoff_needs_a_time_zone():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="rerun_completed_before"):
+        BatchSettings(
+            raw_subject_dir="/r",
+            derivatives_subject_dir="/d",
+            session_first=1,
+            session_last=1,
+            source_substring="x",
+            rerun_completed_before=datetime(2026, 10, 21, 9),
+        )
+
+
+def test_rerun_refuses_a_config_that_will_not_overwrite(tmp_path, monkeypatch):
+    from mini2p_preprocessing import batch as batch_module
+
+    batch, config = _batch_with_two_sources(tmp_path)
+    _stub_worker(monkeypatch, "pass")
+    batch_module.run_batch(batch, config)
+    config.write_text('overwrite = false\n[distortion]\nmode = "off"\n')
+    with pytest.raises(ValueError, match="overwrite"):
+        rerun = batch.model_copy(update={"rerun_completed_before": datetime.now(UTC)})
+        batch_module.run_batch(rerun, config)
+
+
+def test_only_a_different_tiff_in_the_run_folder_conflicts():
+    here = Path("/der/run-02")
+    assert run_folder_conflict(None, SRC) is None
+    assert run_folder_conflict(ExistingRun(here, SRC, {}, "manifest"), SRC) is None
+    other = ExistingRun(here, Path("/raw/other.tif"), {}, "phase sidecar")
+    assert "other.tif" in run_folder_conflict(other, SRC)
 
 
 def test_config_snapshots_never_overwrite_each_other(tmp_path):

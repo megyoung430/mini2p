@@ -7,6 +7,7 @@ from mini2p_preprocessing import extraction as extraction_module
 from mini2p_preprocessing.config import PipelineSettings
 from mini2p_preprocessing.extraction import (
     EXTRACTION_RECORD,
+    ExtractionRefused,
     build_stat,
     classify_rois,
     deconvolve,
@@ -209,7 +210,7 @@ def test_registered_binaries_are_found_where_ops_says(tmp_path, rng):
 def test_missing_red_binary_for_two_channel_plane_fails_before_writing(tmp_path, rng):
     plane, seg = make_plane(tmp_path, rng)
     (plane / "data_chan2.bin").unlink()
-    with pytest.raises(FileNotFoundError, match="data_chan2.bin"):
+    with pytest.raises(ExtractionRefused, match="data_chan2.bin"):
         run_cellpose_extraction(seg, plane, SETTINGS)
     assert not (plane / "F.npy").exists()
 
@@ -255,7 +256,7 @@ def test_constant_traces_are_refused_by_the_classifier_step():
     stat = build_stat(label_image(), LY, LX, diameter=12)
     f = np.full((len(stat), T), 300.0, np.float32)
     f[0] += np.random.default_rng(0).normal(0, 5, T)  # ROI 0 varies; ROIs 1 and 2 are flat
-    with pytest.raises(ValueError, match=r"\[1, 2\].*constant"):
+    with pytest.raises(ExtractionRefused, match=r"\[1, 2\].*constant"):
         classify_rois(stat, f, np.zeros_like(f), 0.7)
 
 
@@ -265,7 +266,7 @@ def test_ops_without_channel_count_fails_instead_of_guessing(tmp_path, rng):
     del ops["nchannels"]
     np.save(plane / "ops.npy", ops, allow_pickle=True)
     np.save(plane / "F_chan2.npy", np.ones((3, T)))
-    with pytest.raises(KeyError, match="nchannels"):
+    with pytest.raises(ExtractionRefused, match="nchannels"):
         run_cellpose_extraction(seg, plane, SETTINGS)
     assert (plane / "F_chan2.npy").is_file()
 
