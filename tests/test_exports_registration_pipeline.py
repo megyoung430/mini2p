@@ -141,7 +141,7 @@ def test_refused_overwrite_keeps_settings_record_consistent(tmp_path, recording,
 
 
 def test_both_qc_variants_coexist_with_correct_run_name(tmp_path, recording, monkeypatch):
-    from mini2p_preprocessing.config import qc_output_dir, with_destriping
+    from mini2p_preprocessing.config import variant_output_dir, with_destriping
 
     raw_tiff, _ = recording
     monkeypatch.setattr(pipeline_module, "run_registration", lambda tiff, out, s: out)
@@ -151,7 +151,7 @@ def test_both_qc_variants_coexist_with_correct_run_name(tmp_path, recording, mon
     run_dir = tmp_path / "run-02"
     for enabled in (False, True):
         pipeline_module.run_pipeline(
-            raw_tiff, qc_output_dir(run_dir, enabled), with_destriping(base, enabled)
+            raw_tiff, variant_output_dir(run_dir, enabled), with_destriping(base, enabled)
         )
     sidecars = sorted(run_dir.glob("*/*.phase.json"))
     assert [p.parent.name for p in sidecars] == ["with_destriping", "without_destriping"]
@@ -180,3 +180,38 @@ def test_saved_contrast_refuses_a_different_mean_image(tmp_path, rng):
 def test_missing_contrast_choice_names_the_cell_that_writes_it(tmp_path):
     with pytest.raises(FileNotFoundError, match="Save the contrast"):
         with_saved_contrast(tmp_path, np.ones((4, 4)), "green")
+
+
+def test_each_variant_gets_its_own_summary_and_pdf_names(tmp_path):
+    from mini2p_preprocessing.exports import ExportSettings
+
+    common = {"subject_dir": tmp_path, "session_first": 1, "session_last": 4, "expected_runs": 1}
+    labels = {
+        sub: ExportSettings(**common, run_subdir=sub).session_label
+        for sub in ("without_destriping", "with_destriping", "")
+    }
+    assert labels == {
+        "without_destriping": "sessions-1-4_without_destriping",
+        "with_destriping": "sessions-1-4_with_destriping",
+        "": "sessions-1-4",
+    }
+
+
+def test_export_summary_is_named_by_label(tmp_path, rng):
+    from mini2p_preprocessing.exports import export_all_mean_images
+
+    export_mean_images(fake_plane(tmp_path, 1, 1, rng, "with_destriping"), Contrast())
+    runs = find_run_planes(tmp_path, 1, 1, "with_destriping")
+    path = export_all_mean_images(runs, tmp_path, "sessions-1-1_with_destriping", Contrast())
+    assert path.name == "meanImg_export_summary_sessions-1-1_with_destriping.json"
+
+
+def test_output_folder_must_match_the_destriping_setting(tmp_path, recording, monkeypatch):
+    raw_tiff, _ = recording
+    monkeypatch.setattr(pipeline_module, "run_registration", lambda tiff, out, s: out)
+    off = PipelineSettings.model_validate(
+        {"phase": {"chunk_frames": 20, "max_shift_px": 8}, "distortion": {"mode": "off"}}
+    )
+    with pytest.raises(ValueError, match="with_destriping.*destriping is off"):
+        pipeline_module.run_pipeline(raw_tiff, tmp_path / "run-01" / "with_destriping", off)
+    assert not (tmp_path / "run-01").exists()

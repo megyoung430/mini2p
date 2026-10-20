@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import shutil
 import subprocess
 import sys
 import tomllib
@@ -22,7 +21,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from .config import WITHOUT_DESTRIPING_SUBDIR
+from .config import variant_output_dir
 
 log = logging.getLogger(__name__)
 MANIFEST_NAME = "source_tiff.json"
@@ -79,6 +78,33 @@ def acquisition_key(tiff_path: Path) -> tuple:
     if match:
         return (0, int(match.group(1)), tiff_path.name.lower())
     return (1, tiff_path.name.lower())
+
+
+def older_layout_conflict(older: ExistingRun | None, source: Path, destripe: bool) -> str | None:
+    """Why output found directly in ``run-XX/`` blocks this variant, or None if it doesn't.
+
+    Output there predates the with_/without_destriping subfolders. It blocks the
+    variant it belongs to (or both, if its record does not say), and any run whose
+    folder it shares with another TIFF.
+    """
+    if older is None:
+        return None
+    where = f"{older.run_dir.name}/ ({older.evidence})"
+    if older.source != source:
+        return f"{where} holds older output of {older.source.name}; move it out of the run folder"
+    enabled = older.metadata.get("destriping_enabled")
+    if enabled is None:
+        return (
+            f"older output of this TIFF sits directly in {where} and its destriping is "
+            "unknown; check it and put it in the variant subfolder it belongs to"
+        )
+    if enabled != destripe:
+        return None
+    variant = variant_output_dir(Path(), enabled).name
+    return (
+        f"older output of this TIFF sits directly in {where}; move it into {variant}/ to "
+        "keep it, or out of the run folder to redo it"
+    )
 
 
 def decide_action(
@@ -168,7 +194,7 @@ def find_sessions(raw_subject_dir: Path, first: int, last: int) -> list[tuple[in
 
 
 def plan_batch(batch: BatchSettings) -> list[PlannedRun]:
-    subdir = "" if batch.destripe else WITHOUT_DESTRIPING_SUBDIR
+    subdir = variant_output_dir(Path(), batch.destripe).name
     plan = []
     for session, session_dir in find_sessions(
         batch.raw_subject_dir, batch.session_first, batch.session_last
@@ -196,15 +222,20 @@ def plan_batch(batch: BatchSettings) -> list[PlannedRun]:
             run_dir = derivative_funcimg / run_name / subdir
             identity = source_identity(source)
             resolved = source.resolve()
-            action, reason = decide_action(
-                resolved,
-                identity,
-                run_dir,
-                run_dir.exists(),
-                existing_by_source.get(resolved),
-                read_existing_run(run_dir) if run_dir.exists() else None,
-                batch.retry_incomplete_runs,
-            )
+            older = read_existing_run(run_dir.parent) if run_dir.parent.is_dir() else None
+            blocked = older_layout_conflict(older, resolved, batch.destripe)
+            if blocked:
+                action, reason = "conflict", blocked
+            else:
+                action, reason = decide_action(
+                    resolved,
+                    identity,
+                    run_dir,
+                    run_dir.exists(),
+                    existing_by_source.get(resolved),
+                    read_existing_run(run_dir) if run_dir.exists() else None,
+                    batch.retry_incomplete_runs,
+                )
             plan.append(PlannedRun(session, source, run_name, run_dir, identity, action, reason))
     return plan
 
@@ -281,10 +312,11 @@ def run_one(row: PlannedRun, config_path: Path, destripe: bool) -> None:
 
 def snapshot_config(config_path: Path, destination_dir: Path) -> Path:
     """Freeze the config for this launch so later edits cannot reach running workers."""
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     destination_dir.mkdir(parents=True, exist_ok=True)
     snapshot = destination_dir / f"batch_config_{stamp}.toml"
-    shutil.copyfile(config_path, snapshot)
+    with snapshot.open("xb") as frozen:  # never replaces a snapshot another launch uses
+        frozen.write(Path(config_path).read_bytes())
     return snapshot
 
 

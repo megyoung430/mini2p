@@ -8,6 +8,7 @@ from mini2p_preprocessing.batch import (
     acquisition_key,
     decide_action,
     find_sessions,
+    older_layout_conflict,
     plan_batch,
 )
 
@@ -162,3 +163,69 @@ def test_corrupt_manifest_stops_planning(tmp_path):
     (run_dir / MANIFEST_NAME).write_text("{not json")
     with pytest.raises(ValueError, match="Corrupt JSON"):
         plan_batch(batch)
+
+
+@pytest.mark.parametrize("first", [False, True])
+def test_both_destriping_variants_coexist_in_either_order(tmp_path, monkeypatch, first):
+    from mini2p_preprocessing import batch as batch_module
+
+    batch, config = _batch_with_two_sources(tmp_path)
+    _stub_worker(monkeypatch, "pass")
+    for destripe in (first, not first):
+        plan = batch_module.run_batch(batch.model_copy(update={"destripe": destripe}), config)
+        assert [p.action for p in plan] == ["run", "run"]
+        expected = "with_destriping" if destripe else "without_destriping"
+        assert [p.run_dir.name for p in plan] == [expected, expected]
+        assert [p.run_dir.parent.name for p in plan] == ["run-01", "run-02"]
+    for destripe in (False, True):
+        again = plan_batch(batch.model_copy(update={"destripe": destripe}))
+        assert [p.action for p in again] == ["skip", "skip"]
+
+
+def test_older_destriped_output_directly_in_run_folder_is_flagged(tmp_path):
+    import json
+
+    from mini2p_preprocessing.batch import MANIFEST_NAME
+
+    batch, _ = _batch_with_two_sources(tmp_path)
+    source = plan_batch(batch)[0].source
+    old_layout = tmp_path / "der" / "ses-005_date-x" / "funcimg" / "run-01"
+    old_layout.mkdir(parents=True)
+    (old_layout / MANIFEST_NAME).write_text(
+        json.dumps({"source_tiff": str(source), "status": "complete", "destriping_enabled": True})
+    )
+    destriped = plan_batch(batch.model_copy(update={"destripe": True}))
+    assert destriped[0].action == "conflict"
+    assert "with_destriping" in destriped[0].reason
+    assert destriped[1].action == "run"
+    assert [p.action for p in plan_batch(batch)] == ["run", "run"]  # other variant unaffected
+
+
+OLD = Path("/der/run-02")
+
+
+def older(enabled, source=SRC, evidence="manifest"):
+    metadata = {} if enabled is None else {"destriping_enabled": enabled}
+    return ExistingRun(OLD, source, metadata, evidence)
+
+
+def test_older_layout_names_where_its_files_belong():
+    assert older_layout_conflict(None, SRC, destripe=True) is None
+    assert "move it into with_destriping/" in older_layout_conflict(older(True), SRC, True)
+    assert older_layout_conflict(older(True), SRC, destripe=False) is None  # other variant
+    assert older_layout_conflict(older(False), SRC, destripe=True) is None
+    assert "move it into without_destriping/" in older_layout_conflict(older(False), SRC, False)
+    sidecar = older_layout_conflict(older(None, evidence="phase sidecar"), SRC, True)
+    assert "unknown" in sidecar and "phase sidecar" in sidecar and "move it into" not in sidecar
+    for destripe in (False, True):
+        other = older_layout_conflict(older(True, Path("/raw/other.tif")), SRC, destripe)
+        assert "other.tif" in other
+
+
+def test_config_snapshots_never_overwrite_each_other(tmp_path):
+    from mini2p_preprocessing.batch import snapshot_config
+
+    config = tmp_path / "pipeline.toml"
+    config.write_text("x = 1\n")
+    first, second = (snapshot_config(config, tmp_path / "der") for _ in range(2))
+    assert first != second and first.read_text() == second.read_text() == "x = 1\n"

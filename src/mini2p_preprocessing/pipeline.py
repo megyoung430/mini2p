@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .config import (
     PipelineSettings,
+    check_variant_folder,
     corrected_tiff_path,
     run_name_from_output_dir,
     undistorted_tiff_path,
@@ -40,6 +41,7 @@ def run_pipeline(input_tiff: Path, output_dir: Path, settings: PipelineSettings)
     input_tiff, output_dir = Path(input_tiff).resolve(), Path(output_dir).resolve()
     if not input_tiff.is_file():
         raise FileNotFoundError(f"Input TIFF not found: {input_tiff}")
+    check_variant_folder(output_dir, settings.destripe.enabled)
     output_dir.mkdir(parents=True, exist_ok=True)
     corrected = corrected_tiff_path(output_dir, input_tiff, settings)
     summary = preprocess_tiff(input_tiff, corrected, settings, run_name_from_output_dir(output_dir))

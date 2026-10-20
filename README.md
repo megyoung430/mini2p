@@ -23,8 +23,29 @@ CLI and the batch workers all read it, so they cannot drift apart.
   figures for each.
 - **One recording, headless:**
   `uv run mini2p-preprocess --config config/pipeline.toml --input RAW.tif --output-dir RUN_DIR/without_destriping`
+  (or `RUN_DIR/with_destriping` with `[destripe] enabled = true`; a folder that disagrees
+  with the setting is refused)
 - **Many sessions:** `notebooks/batch_and_exports.ipynb`. Builds a dry-run plan,
   launches one CLI process per pending TIFF, then exports mean images and PDFs.
+
+### With and without destriping
+
+Each variant has its own subfolder of `run-XX/`: `without_destriping/` and
+`with_destriping/`. The batch picks it from `[batch] destripe`, the QC notebook and
+the CLI from `[destripe] enabled` (the CLI's `--destripe` overrides it).
+
+For both variants over many sessions, run the batch once with `destripe = false` and
+once with `destripe = true`, in either order. Each launch freezes its own copy of the
+config, so the setting can be changed as soon as a batch has started. To export, set
+`[exports] run_subdir` to the variant and run the export cells once per variant; the
+summary JSON and PDFs carry the variant in their names.
+
+Output written directly into `run-XX/` predates the subfolders. The planner flags it
+as a conflict for the variant it belongs to (or for both, if its record does not say)
+instead of re-running or skipping it. Move its files into the matching subfolder to
+keep them, or out of `run-XX/` to redo the run. Paths recorded inside moved files
+(`output_dir` in the manifest, `save_path0` in `ops.npy`) still name the old folder;
+loading works regardless.
 
 ## From registration to ΔF/F0
 
@@ -157,8 +178,10 @@ The extraction and ΔF/F0 code ports those two scripts. The differences are deli
 
 The batch planner treats any run folder that holds a `.phase.json` but no
 `source_tiff.json` manifest as finished output, and skips it. The original batch
-cell did the same. So point `[qc] run_dir` somewhere outside
-`derivatives_subject_dir`, and don't run the CLI by hand inside it.
+cell did the same. QC and batch runs now share the variant subfolder names, so a QC
+run inside the derivatives tree would be taken as that run's batch output. Point
+`[qc] run_dir` somewhere outside `derivatives_subject_dir`, and don't run the CLI by
+hand inside it.
 
 ## Known issues, deliberately left for the follow-up fix step
 
@@ -175,6 +198,3 @@ cell did the same. So point `[qc] run_dir` somewhere outside
    skipped.
 6. Float output can exceed the int16 range when Suite2p converts it. Consider
    clipping before writing.
-7. The batch writes outputs to `run-XX/without_destriping/`, but the export
-   default `run_subdir = ""` looks in `run-XX/`. Set `run_subdir` to match the
-   batch.
