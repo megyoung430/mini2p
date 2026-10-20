@@ -15,6 +15,7 @@ import tifffile
 from .bidiphase import AlignmentChoice, apply_bidiphase, select_alignment
 from .config import PipelineSettings
 from .destripe import detrend_chunk
+from .progress import PROGRESS_EVERY_S, ProgressLog
 from .tiff_io import chunk_bounds, count_timepoints, read_all_channels, write_interleaved
 
 log = logging.getLogger(__name__)
@@ -210,15 +211,19 @@ def estimate_global_residual(
         n_timepoints, settings.phase.second_pass_global_max_frames
     )
     sampled: list[list[np.ndarray]] = [[] for _ in range(n_channels)]
-    for start, end in chunk_bounds(n_timepoints, settings.phase.chunk_frames):
+    bounds = chunk_bounds(n_timepoints, settings.phase.chunk_frames)
+    progress = ProgressLog("Whole-recording residual", len(bounds), log.info, PROGRESS_EVERY_S)
+    for start, end in bounds:
         selected = sample_indices[(sample_indices >= start) & (sample_indices < end)]
         if not len(selected):
+            progress.step_done()  # nearly instant; counted, as skips spread through the loop
             continue
         after_first, _, _ = first_pass(
             read_all_channels(tif, start, end, n_channels), start, settings
         )
         for channel in range(n_channels):
             sampled[channel].append(after_first[channel][selected - start])
+        progress.step_done()
     samples = [np.concatenate(parts, axis=0) for parts in sampled]
     choice = select_alignment(samples, settings.phase, settings.channels)
     log.info(
@@ -249,7 +254,9 @@ def preprocess_tiff(
             else None
         )
         with tifffile.TiffWriter(output_tiff, bigtiff=True) as writer:
-            for start, end in chunk_bounds(n_timepoints, phase.chunk_frames):
+            bounds = chunk_bounds(n_timepoints, phase.chunk_frames)
+            progress = ProgressLog("Phase correction", len(bounds), log.info, PROGRESS_EVERY_S)
+            for start, end in bounds:
                 chunks = read_all_channels(tif, start, end, n_channels)
                 corrected, record = correct_chunk(chunks, start, settings, global_residual)
                 write_interleaved(writer, corrected, settings.dtype)
@@ -268,6 +275,7 @@ def preprocess_tiff(
                 )
                 del chunks, corrected
                 gc.collect()
+                progress.step_done()
     summary = CorrectionSummary(chunks=records, global_residual=global_residual)
     sidecar = output_tiff.with_suffix(".phase.json")
     metadata = phase_metadata(settings, run_name, input_tiff, output_tiff, summary)

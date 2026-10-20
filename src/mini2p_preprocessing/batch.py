@@ -22,6 +22,7 @@ from typing import Literal
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 from .config import load_settings, variant_output_dir
+from .progress import ProgressLog
 
 log = logging.getLogger(__name__)
 MANIFEST_NAME = "source_tiff.json"
@@ -346,6 +347,7 @@ def run_batch(batch: BatchSettings, config_path: Path) -> list[PlannedRun]:
         )
     frozen_config = snapshot_config(config_path, batch.derivatives_subject_dir)
     log.info("Workers use config snapshot %s", frozen_config)
+    progress = ProgressLog("Batch", len(pending), log.info)
     for index, row in enumerate(pending, start=1):
         log.info("[%d/%d] %s -> %s", index, len(pending), row.source, row.run_dir)
         try:
@@ -354,6 +356,8 @@ def run_batch(batch: BatchSettings, config_path: Path) -> list[PlannedRun]:
             log.error("FAILED: %s (log: %s)", row.source, row.run_dir / "preprocess.log")
             if batch.stop_on_error:
                 raise
+            progress.step_done(succeeded=False)
         else:
             log.info("COMPLETE: %s", row.run_dir)
+            progress.step_done()
     return plan

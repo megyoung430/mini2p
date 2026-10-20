@@ -21,6 +21,7 @@ import tifffile
 from scipy.ndimage import map_coordinates
 
 from .config import DistortionSettings, PipelineSettings
+from .progress import PROGRESS_EVERY_S, ProgressLog
 from .tiff_io import chunk_bounds, count_timepoints, read_all_channels, write_interleaved
 
 log = logging.getLogger(__name__)
@@ -159,15 +160,17 @@ def write_distortion_corrected(
         n_timepoints = count_timepoints(tif, n_channels, settings.max_timepoints)
         maps = build_distortion_maps(distortion, tuple(tif.pages[0].shape), calibration)
         with tifffile.TiffWriter(output_tiff, bigtiff=True) as writer:
-            for start, end in chunk_bounds(n_timepoints, distortion.batch_frames):
+            bounds = chunk_bounds(n_timepoints, distortion.batch_frames)
+            progress = ProgressLog("Distortion correction", len(bounds), log.info, PROGRESS_EVERY_S)
+            for start, end in bounds:
                 raw = read_all_channels(tif, start, end, n_channels)
                 warped = [
                     apply_distortion_to_chunk(c, maps, distortion.interpolation_order) for c in raw
                 ]
                 write_interleaved(writer, warped, settings.dtype)
-                log.info("Distortion correction: %7d/%d timepoints", end, n_timepoints)
                 del raw, warped
                 gc.collect()
+                progress.step_done()
     sidecar = output_tiff.with_suffix(".distortion.json")
     sidecar.write_text(
         json.dumps(

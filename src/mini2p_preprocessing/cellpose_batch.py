@@ -30,6 +30,7 @@ from .extraction import (
 )
 from .plane import load_plane_traces
 from .plots import plot_mask_alignment, plot_masks_on
+from .progress import PROGRESS_EVERY_S, ProgressLog
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +168,7 @@ def extract_all(
     runs = find_run_planes(subject_dir, first_session, last_session, variant)
     require_run_count(runs, expected_runs)
     rows = []
+    progress = ProgressLog(f"Cellpose extraction ({variant})", len(runs), log.info)
     for run in sorted(runs, key=lambda r: (r.session, r.run)):
         run_dir = run.plane_dir.parents[2]
         row = summary_row(run.session, run.run_name, variant, run.plane_dir)
@@ -182,6 +184,7 @@ def extract_all(
             )
         )
         log.info("ses-%d %s %s: %s", run.session, run.run_name, variant, rows[-1]["status"])
+        progress.step_done()
     return rows
 
 
@@ -271,8 +274,10 @@ def write_mask_alignment_pdf(
         raise FileExistsError(f"{output} already exists; pass overwrite=True to replace it")
     with PdfPages(output) as pdf:
         pdf.infodict()["Title"] = title
+        progress = ProgressLog("Mask-alignment PDF", len(rows), log.info, PROGRESS_EVERY_S)
         for row in rows:
             fig = draw_review_page(row, load_review_images(row, contrast))
             pdf.savefig(fig)
             plt.close(fig)
+            progress.step_done()
     return output
