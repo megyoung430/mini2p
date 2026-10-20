@@ -95,7 +95,7 @@ derivatives_subject_dir = "/path/to/derivatives/cohort-01/sub-03_id-MY_71_R"
 session_first = 216
 session_last = 231
 source_substring = "71rtask"
-destripe = false
+destripe = false              # false -> run-XX/without_destriping/, true -> run-XX/with_destriping/
 stop_on_error = true
 retry_incomplete_runs = true
 
@@ -104,7 +104,7 @@ subject_dir = "/path/to/derivatives/cohort-01/sub-03_id-MY_71_R"
 session_first = 216
 session_last = 231
 expected_runs = 68
-run_subdir = ""               # where batch runs put suite2p/ under run-XX/
+run_subdir = "without_destriping"  # or "with_destriping": the variant to export
 black_percentile = 5.0
 white_percentile = 99.5
 gamma = 1.2

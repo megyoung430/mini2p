@@ -184,17 +184,17 @@ def with_destriping(settings: PipelineSettings, enabled: bool) -> PipelineSettin
 
 
 def variant_output_dir(run_dir: Path, destripe_enabled: bool) -> Path:
-    """Runs without destriping live in their own subfolder so both variants can coexist."""
-    return Path(run_dir) if destripe_enabled else Path(run_dir) / WITHOUT_DESTRIPING_SUBDIR
-
-
-def qc_output_dir(run_dir: Path, destripe_enabled: bool) -> Path:
-    """QC runs put each destriping variant in its own subfolder so both can be compared.
-
-    Batch runs keep the variant_output_dir layout, which existing derivatives use.
-    """
+    """``run_dir/with_destriping`` or ``run_dir/without_destriping``, so both variants coexist."""
     subdir = WITH_DESTRIPING_SUBDIR if destripe_enabled else WITHOUT_DESTRIPING_SUBDIR
     return Path(run_dir) / subdir
+
+
+def check_variant_folder(output_dir: Path, destripe_enabled: bool) -> None:
+    """Refuse a with_/without_destriping folder that disagrees with the destriping setting."""
+    name = Path(output_dir).name
+    if name in VARIANT_SUBDIRS and name != variant_output_dir(Path(), destripe_enabled).name:
+        state = "on" if destripe_enabled else "off"
+        raise ValueError(f"Output folder {output_dir} is {name}/ but destriping is {state}")
 
 
 def run_name_from_output_dir(output_dir: Path) -> str:

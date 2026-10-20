@@ -9,7 +9,6 @@ from mini2p_preprocessing.config import (
     PipelineSettings,
     corrected_tiff_path,
     load_settings,
-    qc_output_dir,
     run_name_from_output_dir,
     variant_output_dir,
     with_destriping,
@@ -87,7 +86,7 @@ def test_distortion_mode_must_be_stated(tmp_path):
 def test_output_naming_follows_destriping_variant():
     base = PipelineSettings.model_validate({"distortion": {"mode": "off"}})
     assert variant_output_dir(Path("/d/run-02"), False) == Path("/d/run-02/without_destriping")
-    assert variant_output_dir(Path("/d/run-02"), True) == Path("/d/run-02")
+    assert variant_output_dir(Path("/d/run-02"), True) == Path("/d/run-02/with_destriping")
     assert run_name_from_output_dir(Path("/d/run-02/without_destriping")) == "run-02"
     assert run_name_from_output_dir(Path("/d/run-02")) == "run-02"
     assert run_name_from_output_dir(Path("/d/run-02/with_destriping")) == "run-02"
@@ -121,8 +120,20 @@ def test_example_config_is_valid():
     assert load_qc_run(example).qc_registration_frames == 500
 
 
-def test_qc_keeps_both_destriping_variants_side_by_side():
-    run_dir = Path("/qc/run-02")
-    assert qc_output_dir(run_dir, False) == run_dir / "without_destriping"
-    assert qc_output_dir(run_dir, True) == run_dir / "with_destriping"
-    assert variant_output_dir(run_dir, True) == run_dir  # batch layout unchanged
+def test_export_run_subdir_must_be_stated(tmp_path):
+    from mini2p_preprocessing.exports import load_export_settings
+
+    path = tmp_path / "p.toml"
+    path.write_text(
+        "[exports]\nsubject_dir = '/d'\nsession_first = 1\nsession_last = 2\nexpected_runs = 3\n"
+    )
+    with pytest.raises(ValidationError, match="run_subdir"):
+        load_export_settings(path)
+
+
+def test_export_run_subdir_is_a_variant_folder():
+    from mini2p_preprocessing.exports import ExportSettings
+
+    common = {"subject_dir": "/d", "session_first": 1, "session_last": 2, "expected_runs": 3}
+    with pytest.raises(ValidationError, match="run_subdir"):
+        ExportSettings(**common, run_subdir="with_destripping")

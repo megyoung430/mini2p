@@ -24,7 +24,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output-dir",
         type=Path,
         required=True,
-        help="final output folder, including any without_destriping subfolder",
+        help="final output folder, e.g. RUN_DIR/without_destriping or RUN_DIR/with_destriping",
     )
     parser.add_argument(
         "--destripe", choices=["0", "1"], help="override destripe.enabled from the config"
