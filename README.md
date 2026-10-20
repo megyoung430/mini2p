@@ -29,8 +29,11 @@ CLI and the batch workers all read it, so they cannot drift apart.
 ## From registration to ΔF/F0
 
 1. **Register:** the pipeline above (bidiphase, optional destriping, distortion, Suite2p).
-2. **Segment:** run Cellpose on the registered mean image, e.g.
-   `meanImg_green_functional_contrast.png`, and save its `*_seg.npy`.
+2. **Segment:** run Cellpose on the registered mean image, either
+   `meanImg_green_contrast.png` (the contrast chosen in the QC notebook) or
+   `meanImg_green_functional_contrast.png` (the batch export's fixed contrast), and save
+   its `*_seg.npy`. The QC notebook's mask and ROI views use the contrast saved in the
+   QC notebook.
 3. **Extract:**
    `uv run mini2p-extract --config config/pipeline.toml --plane-dir RUN_DIR/.../suite2p/plane0 --seg MEAN_seg.npy`,
    or the extraction cell in the QC notebook. This builds Suite2p `stat` from the masks,

@@ -113,3 +113,12 @@ def test_mask_alignment_plot_draws_both_panels():
     )
     assert drawn[0].figure is fig and "dy=2" in drawn[1].get_title()
     plt.close("all")
+
+
+def test_zoomed_roi_view_keeps_the_full_field_grey_scale():
+    labels = np.zeros((40, 40), np.int32)
+    labels[5:9, 5:9] = 1
+    image = np.linspace(0, 1, 1600).reshape(40, 40)  # the ROI sits in the dim corner
+    axes = plots.plot_cell_fov(0, image, labels)
+    assert [ax.images[0].get_clim() for ax in axes] == [(0.0, 1.0), (0.0, 1.0)]
+    plt.close("all")
