@@ -18,6 +18,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 from pydantic import BaseModel, ConfigDict
 
 from .contrast import red_green_overlay, scale_contrast
+from .progress import PROGRESS_EVERY_S, ProgressLog
 from .qc import suite2p_mean_images
 
 log = logging.getLogger(__name__)
@@ -206,6 +207,7 @@ def export_all_mean_images(
 ) -> Path:
     """Export every run's mean images; write ``meanImg_export_summary_<label>.json``."""
     summary = []
+    progress = ProgressLog("Mean-image exports", len(runs), log.info, PROGRESS_EVERY_S)
     for index, run in enumerate(runs, start=1):
         states = export_mean_images(run.plane_dir, contrast, overwrite)
         summary.append(
@@ -217,6 +219,7 @@ def export_all_mean_images(
             }
         )
         log.info("[%02d/%02d] ses-%d %s: %s", index, len(runs), run.session, run.run_name, states)
+        progress.step_done()
     path = Path(subject_dir) / f"meanImg_export_summary_{label}.json"
     path.write_text(
         json.dumps(
@@ -353,6 +356,7 @@ def write_comparison_pdf(
         info = pdf.infodict()
         info["Title"], info["Author"] = title, "Mini2P preprocessing pipeline"
         info["Subject"] = f"Suite2p green and red mean images; {contrast.label()}"
+        progress = ProgressLog("Comparison PDF", len(runs), log.info, PROGRESS_EVERY_S)
         for page, run in enumerate(runs, start=1):
             fig, axes = plt.subplots(1, 2, figsize=(11.69, 7.25), facecolor="white")
             fig.subplots_adjust(left=0.035, right=0.965, bottom=0.075, top=0.84, wspace=0.045)
@@ -393,6 +397,7 @@ def write_comparison_pdf(
             )
             pdf.savefig(fig, dpi=180, facecolor="white")
             plt.close(fig)
+            progress.step_done()
     return Path(output)
 
 
@@ -415,6 +420,7 @@ def write_high_resolution_pdf(
             f"{n_pages} pages: green then red for each of {len(runs)} runs; {contrast.label()}"
         )
         page = 0
+        progress = ProgressLog("High-resolution PDF", len(runs), log.info, PROGRESS_EVERY_S)
         for run in runs:
             green_raw, red_raw = load_means(run.plane_dir)
             channel_pages = [
@@ -479,4 +485,5 @@ def write_high_resolution_pdf(
                 )
                 pdf.savefig(fig, dpi=dpi, facecolor="white", bbox_inches=None)
                 plt.close(fig)
+            progress.step_done()
     return Path(output)
