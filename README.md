@@ -40,12 +40,35 @@ config, so the setting can be changed as soon as a batch has started. To export,
 `[exports] run_subdir` to the variant and run the export cells once per variant; the
 summary JSON and PDFs carry the variant in their names.
 
-Output written directly into `run-XX/` predates the subfolders. The planner flags it
-as a conflict for the variant it belongs to (or for both, if its record does not say)
-instead of re-running or skipping it. Move its files into the matching subfolder to
-keep them, or out of `run-XX/` to redo the run. Paths recorded inside moved files
-(`output_dir` in the manifest, `save_path0` in `ops.npy`) still name the old folder;
-loading works regardless.
+`run-XX/suite2p/` itself is the registration the Cellpose masks were drawn on, and
+the batch never changes it. The planner only checks that whatever is recorded
+directly in `run-XX/` came from the same TIFF as the run, and flags a conflict if not.
+
+### Re-running, extraction and outputs
+
+`[batch] rerun_completed_before = <time>` registers again every run that finished
+before that time, e.g. `2026-10-21T09:00:00+01:00` (a time zone is required). Keep the
+same time when relaunching after a failure, so runs the rerun already replaced are
+skipped. Each run's `suite2p/` folder is cleared first, because Suite2p would otherwise
+reuse the old binary and skip registration. Clearing needs `overwrite = true` (checked
+at launch), happens only inside a `with_destriping/` or `without_destriping/` folder,
+and is refused if the folder holds any `*_seg.npy`.
+
+After a batch, the last cells of the batch notebook (run once per variant, with
+`[exports] run_subdir` set to it):
+
+1. **Contrast exports:** green and red mean images per run, as raw TIFFs and as
+   contrast PNGs with a red/green overlay, using the `[exports]` contrast.
+2. **Review PDFs** of those mean images across runs.
+3. **Cellpose extraction:** `run-XX/<cellpose_seg>`, drawn on `run-XX/<cellpose_image>`,
+   is aligned onto the variant's mean image and extracted into its `suite2p/plane0`
+   (`stat`, `F`, `Fneu`, `iscell`, `spks`, red traces, `cellpose_extraction.json`).
+   Nothing is written for a run whose alignment is refused or whose masks' registration
+   is of a different TIFF (`failed`). An extraction from the same masks and settings is
+   kept; one from other masks is kept unless `EXTRACT_OVERWRITE`.
+4. **Alignment review:** `cellpose_extraction_summary_<label>.json` and
+   `mask_alignment_<label>.pdf`, one page per run with the masks as segmented and as
+   shifted onto the variant's mean image.
 
 ## From registration to ΔF/F0
 
@@ -99,6 +122,7 @@ meaning there. ΔF itself stays finite. The same applies to the green/red ratio,
 | `alignment.py` | analysis | rigid shift of Cellpose masks between two mean images |
 | `fluorescence.py` | analysis | neuropil correction, F0, ΔF, ΔF/F0, G/R ratio, audit table |
 | `extraction.py`, `plane.py` | I/O | Cellpose-mask extraction; loading a plane's traces and valid frames |
+| `cellpose_batch.py` | I/O | extraction for every batch run; summary and mask-alignment review PDF |
 
 Distortion calibration still comes from your `distortion_correct_full_recording.py`,
 which is shared with the SLURM worker. Set `distortion.calibration_script_dir` to

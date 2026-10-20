@@ -19,9 +19,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import AwareDatetime, BaseModel, ConfigDict
 
-from .config import variant_output_dir
+from .config import load_settings, variant_output_dir
 
 log = logging.getLogger(__name__)
 MANIFEST_NAME = "source_tiff.json"
@@ -40,7 +40,14 @@ class BatchSettings(BaseModel):
     source_substring: str
     destripe: bool = False
     stop_on_error: bool = True
-    retry_incomplete_runs: bool = True  # retries failed/interrupted, never completed runs
+    retry_incomplete_runs: bool = True  # retries failed/interrupted runs
+    # Register again, replacing them, the runs that finished before this time (with a
+    # time zone, e.g. 2026-10-21T09:00:00+01:00). Relaunching with the same time never
+    # redoes a run the rerun has already replaced.
+    rerun_completed_before: AwareDatetime | None = None
+    # Cellpose masks for run-XX and the image they were drawn on, relative to run-XX/.
+    cellpose_seg: str = "suite2p/plane0/meanImg_green_functional_contrast_seg.npy"
+    cellpose_image: str = "suite2p/plane0/meanImg_green_functional_contrast.png"
 
 
 def load_batch_settings(path: Path) -> BatchSettings:
@@ -80,30 +87,17 @@ def acquisition_key(tiff_path: Path) -> tuple:
     return (1, tiff_path.name.lower())
 
 
-def older_layout_conflict(older: ExistingRun | None, source: Path, destripe: bool) -> str | None:
-    """Why output found directly in ``run-XX/`` blocks this variant, or None if it doesn't.
+def run_folder_conflict(here: ExistingRun | None, source: Path) -> str | None:
+    """Why output directly in ``run-XX/`` blocks this run, or None if it doesn't.
 
-    Output there predates the with_/without_destriping subfolders. It blocks the
-    variant it belongs to (or both, if its record does not say), and any run whose
-    folder it shares with another TIFF.
+    ``run-XX/suite2p`` holds the registration the Cellpose masks were drawn on, so it
+    must come from the same TIFF as the run's variant subfolders.
     """
-    if older is None:
+    if here is None or here.source == source:
         return None
-    where = f"{older.run_dir.name}/ ({older.evidence})"
-    if older.source != source:
-        return f"{where} holds older output of {older.source.name}; move it out of the run folder"
-    enabled = older.metadata.get("destriping_enabled")
-    if enabled is None:
-        return (
-            f"older output of this TIFF sits directly in {where} and its destriping is "
-            "unknown; check it and put it in the variant subfolder it belongs to"
-        )
-    if enabled != destripe:
-        return None
-    variant = variant_output_dir(Path(), enabled).name
     return (
-        f"older output of this TIFF sits directly in {where}; move it into {variant}/ to "
-        "keep it, or out of the run folder to redo it"
+        f"{here.run_dir.name}/ holds output of {here.source.name} ({here.evidence}), "
+        "a different TIFF; check the run numbering"
     )
 
 
@@ -115,6 +109,7 @@ def decide_action(
     prior_elsewhere: ExistingRun | None,
     prior_here: ExistingRun | None,
     retry_incomplete: bool,
+    rerun_before: datetime | None,
 ) -> tuple[Action, str]:
     """Whether to run, skip or flag one source/run-directory assignment."""
     if prior_elsewhere is not None and prior_elsewhere.run_dir != run_dir:
@@ -132,6 +127,8 @@ def decide_action(
             f"run directory belongs to {prior_here.source.name} ({prior_here.evidence})",
         )
     if prior_here.evidence != "manifest":
+        if rerun_before is not None:
+            return "run", f"rerun_completed_before: replacing older output ({prior_here.evidence})"
         return "skip", f"matching older output found via {prior_here.evidence}"
     meta = prior_here.metadata
     if (meta.get("source_size_bytes"), meta.get("source_mtime_ns")) != (
@@ -141,6 +138,11 @@ def decide_action(
         return "conflict", "source path matches but file size/mtime changed"
     status = meta.get("status")
     if status == "complete":
+        finished = meta.get("finished_utc")
+        if rerun_before is not None and (
+            finished is None or datetime.fromisoformat(finished) < rerun_before
+        ):
+            return "run", f"rerun_completed_before: replacing the run finished {finished}"
         return "skip", "completed manifest already exists"
     if retry_incomplete and status in {"failed", "interrupted"}:
         return "run", f"retrying manifest status={status}"
@@ -222,8 +224,8 @@ def plan_batch(batch: BatchSettings) -> list[PlannedRun]:
             run_dir = derivative_funcimg / run_name / subdir
             identity = source_identity(source)
             resolved = source.resolve()
-            older = read_existing_run(run_dir.parent) if run_dir.parent.is_dir() else None
-            blocked = older_layout_conflict(older, resolved, batch.destripe)
+            here = read_existing_run(run_dir.parent) if run_dir.parent.is_dir() else None
+            blocked = run_folder_conflict(here, resolved)
             if blocked:
                 action, reason = "conflict", blocked
             else:
@@ -235,6 +237,7 @@ def plan_batch(batch: BatchSettings) -> list[PlannedRun]:
                     existing_by_source.get(resolved),
                     read_existing_run(run_dir) if run_dir.exists() else None,
                     batch.retry_incomplete_runs,
+                    batch.rerun_completed_before,
                 )
             plan.append(PlannedRun(session, source, run_name, run_dir, identity, action, reason))
     return plan
@@ -335,6 +338,12 @@ def run_batch(batch: BatchSettings, config_path: Path) -> list[PlannedRun]:
     if not pending:
         log.info("Nothing to run.")
         return plan
+    replacing = [p.run_dir for p in pending if p.run_dir.exists()]
+    if replacing and not load_settings(config_path).overwrite:
+        raise ValueError(
+            f"{len(replacing)} run(s) would replace existing output (e.g. {replacing[0]}) but "
+            "the config sets overwrite = false"
+        )
     frozen_config = snapshot_config(config_path, batch.derivatives_subject_dir)
     log.info("Workers use config snapshot %s", frozen_config)
     for index, row in enumerate(pending, start=1):

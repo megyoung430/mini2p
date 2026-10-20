@@ -98,6 +98,12 @@ source_substring = "71rtask"
 destripe = false              # false -> run-XX/without_destriping/, true -> run-XX/with_destriping/
 stop_on_error = true
 retry_incomplete_runs = true
+# Register again, replacing them, the runs that finished before this time; keep the
+# same time when relaunching after a failure. Needs overwrite = true.
+# rerun_completed_before = 2026-10-21T09:00:00+01:00
+# Cellpose masks for each run-XX and the image they were drawn on, relative to run-XX/
+cellpose_seg = "suite2p/plane0/meanImg_green_functional_contrast_seg.npy"
+cellpose_image = "suite2p/plane0/meanImg_green_functional_contrast.png"
 
 [exports]
 subject_dir = "/path/to/derivatives/cohort-01/sub-03_id-MY_71_R"

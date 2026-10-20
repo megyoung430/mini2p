@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 ChannelRole = Literal["structural", "functional"]
 WITHOUT_DESTRIPING_SUBDIR = "without_destriping"
@@ -101,9 +101,17 @@ class RegistrationSettings(_Frozen):
     two_step_registration: bool = True
     batch_size: int = Field(500, ge=1)
     keep_raw_binary: bool = False
-    save_folder: str = "suite2p"
+    # One plain folder name inside the output folder; it is cleared when re-registering.
+    save_folder: str = Field("suite2p", pattern=r"^[A-Za-z0-9_.-]+$")
     run_roi_detection: bool = False
     motion_alignment_source: ChannelRole = "functional"
+
+    @field_validator("save_folder")
+    @classmethod
+    def _plain_folder_name(cls, value: str) -> str:
+        if value in {".", ".."}:
+            raise ValueError("save_folder must name a folder inside the output folder")
+        return value
 
 
 class FluorescenceSettings(_Frozen):
