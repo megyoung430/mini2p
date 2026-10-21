@@ -27,6 +27,9 @@ CLI and the batch workers all read it, so they cannot drift apart.
   with the setting is refused)
 - **Many sessions:** `notebooks/batch_and_exports.ipynb`. Builds a dry-run plan,
   launches one CLI process per pending TIFF, then exports mean images and PDFs.
+- **Sessions the batch has finished, while it runs:** `notebooks/post_batch_sessions.ipynb`,
+  in a second kernel. Exports, Cellpose extraction and an alignment review for the chosen
+  sessions, only for runs the batch completed since `rerun_completed_before`.
 
 ### With and without destriping
 

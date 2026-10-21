@@ -267,3 +267,68 @@ def test_config_snapshots_never_overwrite_each_other(tmp_path):
     config.write_text("x = 1\n")
     first, second = (snapshot_config(config, tmp_path / "der") for _ in range(2))
     assert first != second and first.read_text() == second.read_text() == "x = 1\n"
+
+
+def test_finished_by_batch_needs_a_complete_manifest_since_the_cutoff(tmp_path):
+    import json
+
+    from mini2p_preprocessing.batch import MANIFEST_NAME, finished_by_batch
+
+    variant = tmp_path / "run-01" / "without_destriping"
+    variant.mkdir(parents=True)
+    cutoff = datetime(2026, 10, 21, 6, tzinfo=UTC)
+    assert not finished_by_batch(variant, cutoff)  # no manifest yet
+
+    def record(**fields):
+        (variant / MANIFEST_NAME).write_text(json.dumps({"source_tiff": "/raw/a.tif", **fields}))
+
+    record(status="running", started_utc="2026-10-21T06:30:00+00:00")
+    assert not finished_by_batch(variant, cutoff)
+    record(status="complete", finished_utc="2026-10-20T23:00:00+00:00")
+    assert not finished_by_batch(variant, cutoff)  # finished before the rerun: old output
+    assert finished_by_batch(variant, None)  # no rerun cutoff: any completed run
+    record(status="complete", finished_utc="2026-10-21T07:10:00+01:00")
+    assert finished_by_batch(variant, cutoff)
+    (variant / MANIFEST_NAME).unlink()
+    (variant / "a.phase.json").write_text(json.dumps({"input_tiff": "/raw/a.tif"}))
+    assert not finished_by_batch(variant, None)  # older output without a batch record
+
+
+def test_each_run_folder_says_why_it_is_or_is_not_ready(tmp_path):
+    import json
+
+    from mini2p_preprocessing.batch import MANIFEST_NAME, run_state
+
+    cutoff = datetime(2026, 10, 21, 6, tzinfo=UTC)
+    variant = tmp_path / "run-01" / "without_destriping"
+    assert run_state(variant, cutoff) == "not started"
+    variant.mkdir(parents=True)
+    assert run_state(variant, cutoff) == "no batch record"
+
+    def state(**fields):
+        (variant / MANIFEST_NAME).write_text(json.dumps({"source_tiff": "/raw/a.tif", **fields}))
+        return run_state(variant, cutoff)
+
+    assert state(status="running") == "running"
+    assert state(status="failed") == "failed"
+    assert state(status="interrupted") == "interrupted"
+    assert state(status="complete") == "awaiting rerun"  # no finish time recorded
+    assert state(status="complete", finished_utc="2026-10-21T05:59:59+00:00") == "awaiting rerun"
+    assert state(status="complete", finished_utc="2026-10-21T06:00:00+00:00") == "ready"
+    assert run_state(variant, None) == "ready"
+
+
+def test_the_cutoff_comes_from_the_running_batch_not_the_live_config(tmp_path):
+    from mini2p_preprocessing.batch import launch_cutoff
+
+    with pytest.raises(FileNotFoundError, match="batch_config"):
+        launch_cutoff(tmp_path)
+    body = '[batch]\nraw_subject_dir = "/r"\nderivatives_subject_dir = "/d"\nsession_first = 1\n'
+    body += 'session_last = 2\nsource_substring = "x"\n'
+    (tmp_path / "batch_config_20261020T224733321160Z.toml").write_text(
+        body + "rerun_completed_before = 2026-10-20T23:00:00+01:00\n"
+    )
+    (tmp_path / "batch_config_20261021T055000000000Z.toml").write_text(
+        body + "rerun_completed_before = 2026-10-21T06:00:00+01:00\n"
+    )
+    assert launch_cutoff(tmp_path) == datetime(2026, 10, 21, 5, tzinfo=UTC)
