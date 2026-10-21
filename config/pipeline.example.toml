@@ -52,6 +52,8 @@ two_step_registration = true
 batch_size = 500
 keep_raw_binary = false
 save_folder = "suite2p"
+# fast_disk = "/Users/you/suite2p_fast"  # local folder for Suite2p's working binaries
+#   (~7 GB per run); much faster and more robust than writing them to a network share
 run_roi_detection = false
 motion_alignment_source = "functional"
 

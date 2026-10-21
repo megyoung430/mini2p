@@ -47,6 +47,16 @@ summary JSON and PDFs carry the variant in their names.
 the batch never changes it. The planner only checks that whatever is recorded
 directly in `run-XX/` came from the same TIFF as the run, and flags a conflict if not.
 
+### Suite2p binaries on a local disk
+
+Suite2p writes each run's registered movie (`data.bin`, `data_chan2.bin`, about 3.4 GB each
+for a 7,000-frame two-channel run) and rereads it several times while registering. Over a
+network share this is slow and can fail with `OSError: [Errno 5] Input/output error`. Set
+`[registration] fast_disk` to a local folder: the binaries go to
+`<fast_disk>/<session>_funcimg_<run>_<variant>/`, everything else still goes beside the run,
+and `ops["reg_file"]` records where the binary is. Cellpose extraction reads the binary, so
+keep a run's folder until it has been extracted.
+
 ### Re-running, extraction and outputs
 
 `[batch] rerun_completed_before = <time>` registers again every run that finished

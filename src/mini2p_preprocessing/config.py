@@ -105,6 +105,10 @@ class RegistrationSettings(_Frozen):
     save_folder: str = Field("suite2p", pattern=r"^[A-Za-z0-9_.-]+$")
     run_roi_detection: bool = False
     motion_alignment_source: ChannelRole = "functional"
+    # Local folder for Suite2p's working binaries (data.bin, data_chan2.bin), e.g. on the
+    # laptop's SSD; results still go beside the run. Each run gets its own subfolder.
+    # Unset: the binaries sit in the run's suite2p folder.
+    fast_disk: Path | None = None
 
     @field_validator("save_folder")
     @classmethod
