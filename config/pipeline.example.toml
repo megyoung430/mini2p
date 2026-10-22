@@ -155,3 +155,11 @@ gamma = 1.0
 spatial_sigma_px = 0.0        # Gaussian smoothing of the averaged movie; unaveraged never is
 upscale = 1                   # pixels drawn upscale x upscale
 label = true                  # stage, time, frames, speed and channel burnt into each frame
+
+[natex]                       # mini2p-natex; NATEX's defaults (see README "NATEX")
+moving_window_s = 30.0        # running window for F0 and the local SD
+lowpass_hz = 2.0              # low-pass, for finding transients only
+transient_s = 0.75            # a significant transient lasts at least this
+extend_s = 0.4                # margin added on both sides of a transient
+# neuropil_coefficient = 0.7  # default: [fluorescence] neuropil_coefficient
+only_iscell = false           # true: Suite2p "cells" only, as NATEX does

@@ -4,7 +4,8 @@
 distortion correction and registration; ``mini2p-extract --config ... --plane-dir ...
 --seg ...`` extracts fluorescence from Cellpose masks into a Suite2p plane folder;
 ``mini2p-movie --config ...`` writes the movies of a run's preprocessing stages set in the
-config's ``[movies]`` section (any setting can be overridden, e.g. ``--session 224``).
+config's ``[movies]`` section (any setting can be overridden, e.g. ``--session 224``);
+``mini2p-natex --config ... --plane-dir ...`` runs NATEX's calcium processing on a plane.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from pathlib import Path
 from .config import load_settings, with_destriping
 from .extraction import run_cellpose_extraction
 from .movies import MovieSettings, load_movie_settings, make_movies
+from .natex import load_natex_settings, run_natex
 from .pipeline import run_pipeline
 
 
@@ -131,6 +133,31 @@ def movie_main(argv: list[str] | None = None) -> None:
         parser.error(str(error))
     for path in written:
         print(path)
+
+
+def natex_main(argv: list[str] | None = None) -> None:
+    """NATEX (MINI2P toolbox) on Suite2p plane folders: ΔF/F, transients, SNR, events."""
+    parser = argparse.ArgumentParser(
+        description="NATEX's calcium processing on a plane: ΔF/F, significant transients, SNR "
+        "and cleaned events per ROI, saved with a QC PDF in <plane>/natex (settings: [natex])"
+    )
+    parser.add_argument("--config", type=Path, required=True, help="pipeline TOML file")
+    parser.add_argument(
+        "--plane-dir", type=Path, required=True, nargs="+", help="suite2p/plane0 folder(s)"
+    )
+    parser.add_argument("--output-dir", type=Path, help="instead of <plane>/natex (one plane)")
+    parser.add_argument("--overwrite", action="store_true", help="replace earlier results")
+    args = parser.parse_args(argv)
+    if args.output_dir and len(args.plane_dir) > 1:
+        parser.error("--output-dir takes one plane folder")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
+    try:
+        settings = load_natex_settings(args.config)
+        coefficient = load_settings(args.config).fluorescence.neuropil_coefficient
+        for plane_dir in args.plane_dir:
+            print(run_natex(plane_dir, settings, coefficient, args.output_dir, args.overwrite))
+    except (ValueError, FileNotFoundError, FileExistsError) as error:  # incl. ValidationError
+        parser.error(str(error))
 
 
 if __name__ == "__main__":

@@ -174,13 +174,13 @@ class PipelineSettings(_Frozen):
         return self.channels.channel_by_role[self.registration.motion_alignment_source]
 
 
-NON_PIPELINE_SECTIONS = ("batch", "exports", "qc", "movies")
+NON_PIPELINE_SECTIONS = ("batch", "exports", "qc", "movies", "natex")
 
 
 def load_settings(path: Path, **overrides: object) -> PipelineSettings:
     """Read the pipeline sections of a TOML config; keyword overrides replace whole sections.
 
-    The [batch], [exports], [qc] and [movies] tables in the same file are read by their own loaders.
+    The [batch], [exports], [qc], [movies] and [natex] tables are read by their own loaders.
     """
     with Path(path).open("rb") as handle:
         raw = tomllib.load(handle)

@@ -145,6 +145,60 @@ separately), so whole-run movies read about 2 x 14 GB per TIFF stage over the sh
 TIFF is read page by page from its start, so frames late in a run take longer to reach. Prefer
 frame ranges for the TIFF stages; an unaveraged movie of a whole run is also large (1-2 GB).
 
+### NATEX: transients, SNR and cleaned events per ROI
+
+`mini2p-natex` runs the calcium-trace part of NATEX, the MINI2P toolbox's post-Suite2p app
+(Zong et al., Cell 2022; [kavli-ntnu/MINI2P_toolbox](https://github.com/kavli-ntnu/MINI2P_toolbox)),
+ported from MATLAB:
+
+```bash
+uv run mini2p-natex --config config/pipeline.toml \
+    --plane-dir /path/to/run-01/without_destriping/suite2p/plane0
+```
+
+Per ROI, from the neuropil-corrected trace (`[fluorescence] neuropil_coefficient`, unless
+`[natex] neuropil_coefficient` is set):
+
+- **ΔF/F**: F0 is the 8th percentile in a running 30 s window, lifted by the mean distance
+  between the trace and that percentile in the quietest stretches (local SD in the lowest
+  10 % of its range);
+- **significant transients**: the 2 Hz low-passed ΔF/F above twice its local SD for at least
+  0.75 s, widened by 0.4 s on either side;
+- **SNR**: median of the top 10 % of ΔF/F within transients minus the median outside them,
+  over the SD of the whole ΔF/F;
+- **cleaned events**: `spks` kept only within transients, minus their mean outside them,
+  outliers capped, scaled to the peak ΔF/F; the **event count** is the frames with an event;
+- **bad**: raw F zero throughout.
+
+Results go to `<plane>/natex/` (or `--output-dir`): `natex_dff.npy`, `natex_f0.npy`,
+`natex_dff_lowpassed.npy`, `natex_significant.npy`, `natex_events.npy` (ROIs x frames,
+rows in `natex_rois.npy`), `natex_cells.csv` (SNR, event count, fraction of time in
+transients, fraction of frames with F0 <= 0, bad) and `natex_settings.json`, with
+`natex_qc.pdf`: SNR and event-count histograms, the ROIs coloured by SNR, and example
+cells from highest to lowest SNR with
+their transients shaded. The parameters are NATEX's defaults, set in `[natex]`; all ROIs are
+used (`only_iscell = true` keeps Suite2p "cells" only, as NATEX does). Low SNR or few
+transients flag ROIs to look at, or to leave out; the ΔF/F here is an alternative to the
+maximin ΔF/F0 of the QC notebook, not a replacement.
+
+Each step follows the MATLAB code. `smooth_percentile`, the transient loops of
+`DetaF_T_baselinecorrect`, `CalculateSNR` and NATEXplorer's event clean-up are tested against
+line-by-line transcriptions; `movstd` and `lowpass` against their documented behaviour. The
+differences:
+
+- MATLAB's `lowpass` (a minimum-order equiripple FIR) is approximated by a Kaiser-window FIR
+  with the same band edges and attenuation, and the trace is reflected at its ends where
+  MATLAB pads with zeros, so the first and last ~7 s can differ;
+- ΔF/F is NaN where F0 <= 0 (MATLAB gives infinities); SNR then uses the other frames, and
+  `undefined_fraction` in `natex_cells.csv` says how many frames were left out;
+- arrays are saved as float32.
+
+`movstd` with NATEX's non-integer windows (0.75 s and 30 s x 7.52 Hz) is taken to use MATLAB's
+half-open window rule, t - k/2 <= j < t + k/2 (5 and 225 frames). One property of NATEX is kept
+on purpose: a cell with events in fewer than ~0.1 % of frames loses them all to the outlier cap,
+so its event count is 0. NATEX's tracking analysis (DeepLabCut), its combination with imaging,
+its detection of one cell in several planes, and its GUI are not ported.
+
 ## From registration to ΔF/F0
 
 1. **Register:** the pipeline above (bidiphase, optional destriping, distortion, Suite2p).
@@ -198,6 +252,7 @@ meaning there. ΔF itself stays finite. The same applies to the green/red ratio,
 | `fluorescence.py` | analysis | neuropil correction, F0, ΔF, ΔF/F0, G/R ratio, audit table |
 | `extraction.py`, `plane.py` | I/O | Cellpose-mask extraction; loading a plane's traces and valid frames |
 | `cellpose_batch.py` | I/O | extraction for every batch run; summary and mask-alignment review PDF |
+| `natex.py` | analysis + I/O | NATEX port: ΔF/F, transients, SNR, cleaned events; results and QC PDF |
 | `movies.py` | analysis + I/O | movies of each stage: frames, contrast, names (pure `plan_movie`); stage readers; MP4 writing |
 
 Distortion calibration still comes from your `distortion_correct_full_recording.py`,
