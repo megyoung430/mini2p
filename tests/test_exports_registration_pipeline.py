@@ -293,3 +293,22 @@ def test_suite2p_save_folder_must_be_a_plain_name(folder):
         PipelineSettings.model_validate(
             {"registration": {"save_folder": folder}, "distortion": {"mode": "off"}}
         )
+
+
+def test_fast_disk_gives_each_run_its_own_local_binary_folder(tmp_path):
+    from mini2p_preprocessing.registration import build_suite2p_db
+
+    output_dir = (
+        tmp_path / "share" / "ses-224_date-20260809" / "funcimg" / "run-01" / "with_destriping"
+    )
+    tiff = output_dir / "a_undistorted.tif"
+    plain = PipelineSettings.model_validate({"distortion": {"mode": "off"}})
+    assert "fast_disk" not in build_suite2p_db(output_dir, tiff, plain)
+    local = PipelineSettings.model_validate(
+        {"distortion": {"mode": "off"}, "registration": {"fast_disk": str(tmp_path / "local")}}
+    )
+    db = build_suite2p_db(output_dir, tiff, local)
+    assert db["fast_disk"] == str(
+        tmp_path / "local" / "ses-224_date-20260809_funcimg_run-01_with_destriping"
+    )
+    assert db["save_path0"] == str(output_dir)  # results still go beside the run

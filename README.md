@@ -27,6 +27,9 @@ CLI and the batch workers all read it, so they cannot drift apart.
   with the setting is refused)
 - **Many sessions:** `notebooks/batch_and_exports.ipynb`. Builds a dry-run plan,
   launches one CLI process per pending TIFF, then exports mean images and PDFs.
+- **Sessions the batch has finished, while it runs:** `notebooks/post_batch_sessions.ipynb`,
+  in a second kernel. Exports, Cellpose extraction and an alignment review for the chosen
+  sessions, only for runs the batch completed since `rerun_completed_before`.
 
 ### With and without destriping
 
@@ -43,6 +46,16 @@ summary JSON and PDFs carry the variant in their names.
 `run-XX/suite2p/` itself is the registration the Cellpose masks were drawn on, and
 the batch never changes it. The planner only checks that whatever is recorded
 directly in `run-XX/` came from the same TIFF as the run, and flags a conflict if not.
+
+### Suite2p binaries on a local disk
+
+Suite2p writes each run's registered movie (`data.bin`, `data_chan2.bin`, about 3.4 GB each
+for a 7,000-frame two-channel run) and rereads it several times while registering. Over a
+network share this is slow and can fail with `OSError: [Errno 5] Input/output error`. Set
+`[registration] fast_disk` to a local folder: the binaries go to
+`<fast_disk>/<session>_funcimg_<run>_<variant>/`, everything else still goes beside the run,
+and `ops["reg_file"]` records where the binary is. Cellpose extraction reads the binary, so
+keep a run's folder until it has been extracted.
 
 ### Re-running, extraction and outputs
 
@@ -69,6 +82,40 @@ After a batch, the last cells of the batch notebook (run once per variant, with
 4. **Alignment review:** `cellpose_extraction_summary_<label>.json` and
    `mask_alignment_<label>.pdf`, one page per run with the masks as segmented and as
    shifted onto the variant's mean image.
+
+### Movies
+
+`mini2p-movie` writes MP4s (H.264, which PowerPoint, Keynote and QuickTime play) of a
+registered run, from Suite2p's registered binaries, into `run-XX/<variant>/movies/`
+(or `[movies] output_dir`):
+
+```bash
+# the whole run
+uv run mini2p-movie --config config/pipeline.toml --cohort cohort-01 --subject sub-03 \
+    --session 224 --run 1 --whole-recording
+# frames 10 to 150 (0-based, both included), green and red merged, bins of 10 frames
+uv run mini2p-movie --config config/pipeline.toml --cohort cohort-01 --subject MY_71_R \
+    --session 224 --run 1 --start-frame 10 --end-frame 150 --channel merge --average-frames 10
+```
+
+or from Python, `movies.make_movies(load_movie_settings(CONFIG), "cohort-01", "sub-03", 224,
+1, whole_recording=False, start_frame=10, end_frame=150)`. Each call writes two movies:
+
+- **raw**: every frame, unsmoothed;
+- **averaged**: each movie frame the mean of `average_frames` frames, in bins (`bin`:
+  fewer frames, each covering more time, the usual choice for talks) or as a running mean
+  (`rolling`: smooth in time at the full frame rate), optionally with spatial Gaussian
+  smoothing (`spatial_sigma_px`, e.g. 1).
+
+Defaults are in `[movies]` (see `config/pipeline.example.toml`); any of them can be given
+on the command line (`--average-frames`, `--average-mode`, `--speed`, `--channel`,
+`--variant`, `--spatial-sigma-px`, `--upscale`, `--output-dir`). Contrast is fixed per
+movie (percentiles of its own frames), so slow brightness changes stay visible; the raw
+and averaged movies therefore have different display ranges. Each frame is labelled with
+the time from the start of the run, its frames and the playback speed. Existing movies are
+refused unless `--overwrite`. Single 7.5 Hz frames are mostly shot noise: for slides,
+bins of 5-10 frames with `spatial_sigma_px = 1` at 4-10x speed usually read best. A raw
+movie of a whole run is large (about 0.9 GB per channel for 7000 frames).
 
 ## From registration to ΔF/F0
 
@@ -123,6 +170,7 @@ meaning there. ΔF itself stays finite. The same applies to the green/red ratio,
 | `fluorescence.py` | analysis | neuropil correction, F0, ΔF, ΔF/F0, G/R ratio, audit table |
 | `extraction.py`, `plane.py` | I/O | Cellpose-mask extraction; loading a plane's traces and valid frames |
 | `cellpose_batch.py` | I/O | extraction for every batch run; summary and mask-alignment review PDF |
+| `movies.py` | analysis + I/O | movie frames and names (pure `plan_movie`); MP4 writing |
 
 Distortion calibration still comes from your `distortion_correct_full_recording.py`,
 which is shared with the SLURM worker. Set `distortion.calibration_script_dir` to

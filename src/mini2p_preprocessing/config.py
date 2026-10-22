@@ -105,6 +105,10 @@ class RegistrationSettings(_Frozen):
     save_folder: str = Field("suite2p", pattern=r"^[A-Za-z0-9_.-]+$")
     run_roi_detection: bool = False
     motion_alignment_source: ChannelRole = "functional"
+    # Local folder for Suite2p's working binaries (data.bin, data_chan2.bin), e.g. on the
+    # laptop's SSD; results still go beside the run. Each run gets its own subfolder.
+    # Unset: the binaries sit in the run's suite2p folder.
+    fast_disk: Path | None = None
 
     @field_validator("save_folder")
     @classmethod
@@ -170,13 +174,13 @@ class PipelineSettings(_Frozen):
         return self.channels.channel_by_role[self.registration.motion_alignment_source]
 
 
-NON_PIPELINE_SECTIONS = ("batch", "exports", "qc")
+NON_PIPELINE_SECTIONS = ("batch", "exports", "qc", "movies")
 
 
 def load_settings(path: Path, **overrides: object) -> PipelineSettings:
     """Read the pipeline sections of a TOML config; keyword overrides replace whole sections.
 
-    The [batch], [exports] and [qc] tables in the same file are read by their own loaders.
+    The [batch], [exports], [qc] and [movies] tables in the same file are read by their own loaders.
     """
     with Path(path).open("rb") as handle:
         raw = tomllib.load(handle)

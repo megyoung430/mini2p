@@ -56,7 +56,7 @@ def build_suite2p_db(
 ) -> dict:
     # An explicit file_list stops Suite2p from also picking up the other TIFFs in
     # output_dir, e.g. the uncropped corrected TIFF beside the cropped undistorted one.
-    return {
+    db = {
         "data_path": [str(output_dir)],
         "file_list": [Path(suite2p_input_tiff).name],
         "look_one_level_down": False,
@@ -67,6 +67,14 @@ def build_suite2p_db(
         "functional_chan": settings.channels.functional_channel,
         "keep_movie_raw": settings.registration.keep_raw_binary,
     }
+    if settings.registration.fast_disk is not None:
+        db["fast_disk"] = str(fast_disk_for(output_dir, settings.registration.fast_disk))
+    return db
+
+
+def fast_disk_for(output_dir: Path, fast_disk: Path) -> Path:
+    """This run's folder under *fast_disk*, named after its session, run and variant."""
+    return Path(fast_disk) / "_".join(Path(output_dir).parts[-4:])
 
 
 # ---- I/O --------------------------------------------------------------------------

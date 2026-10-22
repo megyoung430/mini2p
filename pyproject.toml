@@ -11,6 +11,8 @@ dependencies = [
     "pydantic>=2.6",
     "suite2p>=1.0",
     "torch>=2.0",
+    "imageio-ffmpeg>=0.6.0",
+    "pillow>=10.1",
 ]
 
 [project.optional-dependencies]
@@ -19,6 +21,7 @@ notebook = ["ipywidgets>=8.1", "jupyterlab>=4.1"]
 [project.scripts]
 mini2p-preprocess = "mini2p_preprocessing.cli:main"
 mini2p-extract = "mini2p_preprocessing.cli:extract_main"
+mini2p-movie = "mini2p_preprocessing.cli:movie_main"
 
 [dependency-groups]
 dev = ["pytest>=8.0", "ruff>=0.4"]

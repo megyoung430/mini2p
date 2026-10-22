@@ -175,6 +175,51 @@ def read_existing_run(run_dir: Path) -> ExistingRun | None:
     return None
 
 
+def run_state(variant_dir: Path, since: datetime | None) -> str:
+    """Where the batch is with this run folder, for deciding whether its output is final.
+
+    ``"ready"``: completed (at or after *since*, the rerun cutoff, if given). Otherwise
+    ``"not started"`` (no folder), ``"no batch record"`` (older output), ``"running"``,
+    ``"failed"``, ``"interrupted"``, or ``"awaiting rerun"`` (completed before the
+    cutoff, so still the old output, about to be replaced).
+    """
+    variant_dir = Path(variant_dir)
+    if not variant_dir.is_dir():
+        return "not started"
+    run = read_existing_run(variant_dir)
+    if run is None or run.evidence != "manifest":
+        return "no batch record"
+    status = run.metadata.get("status")
+    if status != "complete":
+        return str(status)
+    finished = run.metadata.get("finished_utc")
+    if since is not None and (finished is None or datetime.fromisoformat(finished) < since):
+        return "awaiting rerun"
+    return "ready"
+
+
+def finished_by_batch(variant_dir: Path, since: datetime | None) -> bool:
+    """Whether :func:`run_state` is ``"ready"``."""
+    return run_state(variant_dir, since) == "ready"
+
+
+def launch_cutoff(derivatives_dir: Path) -> datetime | None:
+    """``rerun_completed_before`` of the newest batch launch, from its frozen config.
+
+    A running batch uses the config it froze at launch, not the live ``pipeline.toml``,
+    which may have been edited since.
+
+    Raises:
+        FileNotFoundError: If no batch has been launched into *derivatives_dir*.
+    """
+    snapshots = sorted(Path(derivatives_dir).glob("batch_config_*.toml"))
+    if not snapshots:
+        raise FileNotFoundError(
+            f"No batch_config_*.toml in {derivatives_dir}; launch the batch first"
+        )
+    return load_batch_settings(snapshots[-1]).rerun_completed_before
+
+
 def source_identity(tiff_path: Path) -> dict:
     stat = tiff_path.stat()
     return {
