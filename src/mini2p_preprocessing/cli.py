@@ -69,6 +69,7 @@ MOVIE_HELP = {
     "subject": "subject folder or part of it, e.g. sub-03 or MY_71_R",
     "session": "session number, e.g. 224",
     "run": "run number, e.g. 1 for run-01",
+    "run_dir": "a run folder by path (laid out like run-XX/), instead of cohort ... run",
     "variant": "destriping variant folder",
     "whole_recording": "every frame (--no-whole-recording: start to end frame)",
     "start_frame": "first frame (0-based); implies --no-whole-recording",
@@ -108,7 +109,14 @@ def _movie_option(name: str) -> dict:
         return {"action": argparse.BooleanOptionalAction}
     if typing.get_origin(kind) is typing.Literal:
         return {"choices": list(typing.get_args(kind))}
-    return {"type": kind}
+    return {"type": _named_path if kind is Path else kind}
+
+
+def _named_path(text: str) -> Path:
+    """A folder or file on the command line; empty (an unset shell variable) is refused."""
+    if not text.strip():
+        raise argparse.ArgumentTypeError("a path must be given, not left empty")
+    return Path(text)
 
 
 def movie_main(argv: list[str] | None = None) -> None:
@@ -122,13 +130,20 @@ def movie_main(argv: list[str] | None = None) -> None:
         parser.add_argument(f"--{name.replace('_', '-')}", help=text, **_movie_option(name))
     args = parser.parse_args(argv)
     chosen = {k: getattr(args, k) for k in MOVIE_HELP if getattr(args, k) is not None}
+    by_name = {"cohort", "subject", "session", "run", "derivatives_root"} & set(chosen)
+    if by_name and "run_dir" in chosen:
+        parser.error("Give --run-dir or the run by name (--cohort ... --run), not both")
+    if by_name:  # the command line chooses the run by name: a run_dir in the config yields
+        chosen["run_dir"] = None
     if {"start_frame", "end_frame"} & set(chosen):
         if chosen.get("whole_recording"):
             parser.error("--whole-recording and --start-frame/--end-frame contradict each other")
         chosen["whole_recording"] = False
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
     try:
-        written = make_movies(load_movie_settings(args.config, **chosen))
+        settings = load_movie_settings(args.config, **chosen)
+        # Only a run given by path without its own settings record needs the config's.
+        written = make_movies(settings, lambda: load_settings(args.config))
     except (ValueError, FileNotFoundError, FileExistsError) as error:  # incl. ValidationError
         parser.error(str(error))
     for path in written:

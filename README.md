@@ -96,18 +96,28 @@ a run at each stage of the preprocessing:
 | registered (`stage_registered`) | Suite2p's `data.bin` / `data_chan2.bin` (+ motion registration) |
 
 Everything is set in the `[movies]` section of the config (see
-`config/pipeline.example.toml`): which run (`cohort`, `subject`, `session`, `run`,
-`variant`), which frames (`whole_recording`, which must be set, or `start_frame` to
-`end_frame`, 0-based and both included; with the whole recording the two frame numbers are
-ignored, with a warning), which stages (the four switches above; only `stage_registered` is on
-unless the config says otherwise) and versions (`unaveraged_movie`, `averaged_movie`), where
-to read
-(`derivatives_root`, `raw_tiff`) and write (`output_dir`, default `run-XX/<variant>/movies/`),
-and how they look. Then:
+`config/pipeline.example.toml`):
+
+- **which run**: by name (`cohort`, `subject`, `session`, `run` under `derivatives_root`), or
+  by path (`run_dir`: any folder laid out like a `run-XX/` folder, e.g. one the QC notebook
+  made). If the config has both, `run_dir` is used and the by-name settings are ignored, with
+  a warning; on the command line, `--run-dir` or a run by name (`--session` ...) overrides
+  whichever the config uses. Then `variant`;
+- **which frames**: `whole_recording` (it must be set), or `start_frame` to `end_frame`,
+  0-based and both included (with the whole recording these two are ignored, with a warning);
+- **which stages**: the four switches above (only `stage_registered` is on unless the
+  config says otherwise), and **versions**: `unaveraged_movie`, `averaged_movie`;
+- **where to read and write**: `derivatives_root`, `raw_tiff`, `output_dir` (default
+  `run-XX/<variant>/movies/`; `~` works in all of them);
+- **how they look**.
+
+Suite2p must have finished on the run: it writes `ops.npy` only at the end. Then:
 
 ```bash
 uv run mini2p-movie --config config/pipeline.toml
-# any setting can be overridden for one call (see --help), e.g. another session and run,
+# a run folder by path instead of cohort/subject/session/run
+uv run mini2p-movie --config config/pipeline.toml --run-dir ~/Desktop/example_ses/img
+# any other setting can be overridden for one call (see --help), e.g. another session and run,
 # or other frames (--start-frame / --end-frame imply --no-whole-recording)
 uv run mini2p-movie --config config/pipeline.toml --session 225 --run 2 \
     --no-stage-raw --no-stage-bidiphase --no-stage-undistorted
@@ -132,8 +142,13 @@ frame is labelled with the stage, the time from the start of the run, its frames
 playback speed.
 
 The TIFF stages take the channel order and file names from the run's own
-`pipeline_settings.json`, not the current config; a run processed without distortion
-correction has no undistorted stage (set `stage_undistorted = false` for it). Every stage has the run's frames (with `max_timepoints`,
+`pipeline_settings.json`, not the current config. A run given by path without one (made by
+the QC notebook, say) takes its channel order and acquired TIFF from its bidiphase TIFF's
+`.phase.json`, whether distortion correction ran from its `.distortion.json`, and the rest
+from the config, with a warning; if the acquired TIFF is no longer where the record says, the
+file of that name beside the variant folder is used (`raw_tiff` overrides both). A run
+processed without distortion correction has no undistorted stage (set
+`stage_undistorted = false` for it). Every stage has the run's frames (with `max_timepoints`,
 the first frames of the acquired TIFF), so a frame number is the same moment in each movie.
 Existing movies are refused unless `overwrite = true`, and every stage's file must exist
 before anything is written.

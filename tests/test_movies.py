@@ -111,6 +111,13 @@ def make_run(
             flat(RED_LEVEL["bidiphase"]),
             green_page,
         )
+        phase = {
+            "input_tiff": str(raw),
+            "n_channels": run.channels.n_channels,
+            "structural_channel_one_based": run.channels.structural_channel,
+            "functional_channel_one_based": run.channels.functional_channel,
+        }
+        (variant_dir / f"71rtask_00039_{suffix}.phase.json").write_text(json.dumps(phase))
         if run.distortion.mode != "off":
             top, bottom, left, right = CROP
             shape = (bottom - top, right - left)
@@ -120,6 +127,7 @@ def make_run(
                 flat(RED_LEVEL["undistorted"], shape),
                 green_page,
             )
+            (variant_dir / f"71rtask_00039_{suffix}_undistorted.distortion.json").write_text("{}")
         if manifest:
             (variant_dir / "source_tiff.json").write_text(json.dumps({"source_tiff": str(raw)}))
     return plane
@@ -381,9 +389,13 @@ def test_a_tiff_shorter_than_the_run_fails_when_read(tmp_path):
             raw.read(40, 60)
 
 
-def test_raw_tiff_needs_the_manifest_or_a_path(tmp_path):
+def test_raw_tiff_needs_a_record_or_a_path(tmp_path):
     plane = make_run(tmp_path, manifest=False)
     ops = np.load(plane / "ops.npy", allow_pickle=True).item()
+    with ExitStack() as stack:  # no manifest: the .phase.json names it
+        raw = open_stage("raw", plane, ops, "green", run_settings(), None, stack)["green"]
+        assert raw.path == tmp_path / "rawdata" / "71rtask_00039.tif"
+    next(plane.parents[1].glob("*.phase.json")).unlink()
     with ExitStack() as stack, pytest.raises(FileNotFoundError, match="raw_tiff"):
         open_stage("raw", plane, ops, "green", run_settings(), None, stack)
     raw = tmp_path / "rawdata" / "71rtask_00039.tif"
@@ -659,3 +671,205 @@ def test_a_switch_set_in_the_config_stays_on_without_its_option(tmp_path):
     movie_main(["--config", str(config)])
     movie_main(["--config", str(config)])  # overwrite = true from the config: no FileExistsError
     assert len(list(movie_dir(tmp_path).glob("*.mp4"))) == 2
+
+
+# ---------------------------------------------------------------- a run folder by path
+
+
+def run_folder_outside_the_batch(root: Path, run: PipelineSettings | None = None) -> Path:
+    """A run folder as the QC notebook leaves it, like Desktop/example_ses/img: the acquired
+    TIFF beside the variant folder, no source_tiff.json, no pipeline_settings.json."""
+    plane = make_run(root / "made", manifest=False, run=run)
+    run_dir = root / "example_ses" / "img"
+    run_dir.parent.mkdir(parents=True)
+    plane.parents[2].rename(run_dir)
+    (run_dir / "without_destriping" / "pipeline_settings.json").unlink()
+    (root / "made" / "rawdata" / "71rtask_00039.tif").rename(run_dir / "71rtask_00039.tif")
+    return run_dir
+
+
+def path_settings(run_dir: Path, **overrides) -> MovieSettings:
+    return MovieSettings(
+        run_dir=run_dir, whole_recording=True, label=False, **{**ALL_STAGES, **overrides}
+    )
+
+
+def config_settings() -> PipelineSettings:
+    """The current config, as the CLI would load it: channel 1 red, channel 2 green."""
+    return run_settings()
+
+
+def test_movies_of_a_run_folder_given_by_path(tmp_path, caplog):
+    run_dir = run_folder_outside_the_batch(tmp_path)
+    written = make_movies(path_settings(run_dir, averaged_movie=False), config_settings)
+    assert [p.name.split("_without_destriping_")[1].split("_")[0] for p in written] == list(
+        movies.STAGES
+    )
+    assert all(p.name.startswith("example_ses_img_without_destriping_") for p in written)
+    assert all(p.parent == run_dir / "without_destriping" / "movies" for p in written)
+    assert "No pipeline_settings.json" in caplog.text
+
+
+def test_the_acquired_tiff_comes_from_the_phase_record(tmp_path):
+    run_dir = run_folder_outside_the_batch(tmp_path)
+    plane = run_dir / "without_destriping" / "suite2p" / "plane0"
+    ops = np.load(plane / "ops.npy", allow_pickle=True).item()
+    with ExitStack() as stack:  # the recorded path moved: the file of that name beside it
+        raw = open_stage("raw", plane, ops, "green", run_settings(), None, stack)["green"]
+        assert raw.path == run_dir / "71rtask_00039.tif"
+        assert raw.read(2, 3)[0, 0, 0] == GREEN_OFFSET["raw"] + 20
+
+
+def test_a_folder_by_path_takes_its_channel_order_from_its_records(tmp_path, caplog):
+    swapped = run_settings(channels={"structural_channel": 2, "functional_channel": 1})
+    run_dir = run_folder_outside_the_batch(tmp_path, run=swapped)
+    run = movies.settings_from_records(run_dir / "without_destriping", config_settings())
+    assert run.channels.functional_channel == 1  # the run's record, not the config's 2
+    assert "channel order from" in caplog.text
+    plane = run_dir / "without_destriping" / "suite2p" / "plane0"
+    ops = np.load(plane / "ops.npy", allow_pickle=True).item()
+    with ExitStack() as stack:
+        sources = open_stage("bidiphase", plane, ops, "side_by_side", run, None, stack)
+        assert sources["green"].read(2, 3)[0, 0, 0] == GREEN_OFFSET["bidiphase"] + 20
+
+
+def test_distortion_follows_the_runs_records_not_the_config(tmp_path):
+    run_dir = run_folder_outside_the_batch(tmp_path)
+    off = run_settings(distortion={"mode": "off"})
+    run = movies.settings_from_records(run_dir / "without_destriping", off)
+    assert run.distortion.mode != "off"  # the run has a .distortion.json
+    next((run_dir / "without_destriping").glob("*.distortion.json")).unlink()
+    run = movies.settings_from_records(run_dir / "without_destriping", run_settings())
+    assert run.distortion.mode == "off"
+
+
+def test_a_run_without_records_or_config_is_refused(tmp_path):
+    run_dir = run_folder_outside_the_batch(tmp_path)
+    with pytest.raises(FileNotFoundError, match="pipeline_settings.json"):
+        make_movies(path_settings(run_dir, stage_raw=False, stage_undistorted=False))
+    next((run_dir / "without_destriping").glob("*.phase.json")).unlink()
+    with pytest.raises(FileNotFoundError, match="channel order is unknown"):
+        make_movies(path_settings(run_dir), config_settings)
+
+
+def test_the_config_fallback_is_only_for_runs_given_by_path(tmp_path):
+    plane = make_run(tmp_path)
+    (plane.parents[1] / "pipeline_settings.json").unlink()
+    with pytest.raises(FileNotFoundError, match="pipeline_settings.json"):
+        make_movies(settings_for(tmp_path, stage_raw=True), config_settings)
+
+
+def test_the_config_is_only_loaded_when_needed(tmp_path):
+    run_dir = run_folder_outside_the_batch(tmp_path)
+
+    def must_not_load():
+        raise AssertionError("loaded the config")
+
+    make_movies(path_settings(run_dir, **ONLY_REGISTERED, averaged_movie=False), must_not_load)
+
+
+def test_a_manifest_without_its_source_is_refused(tmp_path):
+    plane = make_run(tmp_path)
+    (plane.parents[1] / "source_tiff.json").write_text("{}")
+    with pytest.raises(ValueError, match="no source_tiff"):
+        make_movies(settings_for(tmp_path, stage_raw=True))
+
+
+def test_an_unfinished_suite2p_run_is_named(tmp_path):
+    run_dir = run_folder_outside_the_batch(tmp_path)
+    (run_dir / "without_destriping" / "suite2p" / "plane0" / "ops.npy").unlink()
+    with pytest.raises(FileNotFoundError, match="Suite2p has not finished"):
+        make_movies(path_settings(run_dir), config_settings)
+
+
+def test_a_batch_run_given_by_path_keeps_its_subject_and_session_names(tmp_path):
+    plane = make_run(tmp_path, tiffs=False)
+    run_dir = plane.parents[2]
+    (path,) = make_movies(path_settings(run_dir, **ONLY_REGISTERED, averaged_movie=False))
+    by_name = make_movies(settings_for(tmp_path, averaged_movie=False, overwrite=True))
+    assert path.name == by_name[0].name
+    assert path.name.startswith(f"sub-03_id-MY_71_R_{SESSION}_run-01_")
+
+
+def test_a_run_is_given_by_path_or_by_name(tmp_path, caplog):
+    with pytest.raises(ValueError, match="Set run_dir, or all of"):
+        MovieSettings(whole_recording=True, cohort="cohort-01", derivatives_root=tmp_path)
+    run_dir = run_folder_outside_the_batch(tmp_path)
+    settings_for(tmp_path, run_dir=run_dir)  # both in one place: the path wins, with a warning
+    assert (
+        "run_dir is set, so cohort, subject, session, run, derivatives_root are ignored"
+        in caplog.text
+    )
+
+
+def test_an_empty_folder_setting_is_refused():
+    with pytest.raises(ValueError, match="must be named"):
+        path_settings("")
+
+
+def test_a_relative_run_dir_is_named_after_the_real_folders(tmp_path, monkeypatch):
+    run_dir = run_folder_outside_the_batch(tmp_path)
+    monkeypatch.chdir(run_dir)
+    (path,) = make_movies(path_settings(".", **ONLY_REGISTERED, averaged_movie=False))
+    assert path.name.startswith("example_ses_img_")
+
+
+def test_home_is_expanded_in_every_folder_setting(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    settings = path_settings(
+        "~/img", output_dir="~/movies", raw_tiff="~/raw.tif", derivatives_root="~/derivatives"
+    )
+    assert settings.run_dir == tmp_path / "img"
+    assert settings.derivatives_root == tmp_path / "derivatives"
+    assert settings.output_dir == tmp_path / "movies"
+    assert settings.raw_tiff == tmp_path / "raw.tif"
+
+
+def test_command_line_run_dir_and_run_by_name(tmp_path):
+    run_dir = run_folder_outside_the_batch(tmp_path / "desk")  # outside derivatives_root
+    make_run(tmp_path, tiffs=False)
+    config = write_config(tmp_path, "")  # names sub-03 session 224 run 1 under tmp_path
+    movie_main(["--config", str(config), "--run-dir", str(run_dir), "--no-averaged-movie"])
+    assert len(list((run_dir / "without_destriping" / "movies").glob("*.mp4"))) == 1
+    in_config = config.read_text() + f'run_dir = "{run_dir}"\n'
+    config.write_text(in_config)
+    movie_main(["--config", str(config), "--session", "224", "--no-averaged-movie"])
+    assert len(list(movie_dir(tmp_path).glob("*.mp4"))) == 1  # by name: the config's path yields
+    with pytest.raises(SystemExit):
+        movie_main(["--config", str(config), "--run-dir", str(run_dir), "--session", "224"])
+
+
+def test_a_damaged_phase_record_is_named(tmp_path):
+    run_dir = run_folder_outside_the_batch(tmp_path)
+    record = next((run_dir / "without_destriping").glob("*.phase.json"))
+    for broken in (
+        {"input_tiff": "x.tif"},
+        {
+            "input_tiff": "x.tif",
+            "n_channels": 1,
+            "structural_channel_one_based": 1,
+            "functional_channel_one_based": 2,
+        },
+    ):
+        record.write_text(json.dumps(broken))
+        with pytest.raises(ValueError, match="usable channel order"):
+            movies.settings_from_records(run_dir / "without_destriping", config_settings())
+
+
+def test_command_line_refuses_an_empty_path_and_reads_derivatives_root_as_by_name(tmp_path):
+    run_dir = run_folder_outside_the_batch(tmp_path / "desk")
+    make_run(tmp_path, tiffs=False)
+    config = write_config(tmp_path, f'run_dir = "{run_dir}"\n')
+    with pytest.raises(SystemExit):
+        movie_main(["--config", str(config), "--run-dir", ""])
+    movie_main(["--config", str(config), "--derivatives-root", str(tmp_path),
+                "--no-averaged-movie"])  # fmt: skip
+    assert len(list(movie_dir(tmp_path).glob("*.mp4"))) == 1  # the by-name run, not run_dir
+
+
+def test_a_run_with_its_own_record_never_loads_the_config(tmp_path):
+    def must_not_load():
+        raise AssertionError("loaded the config")
+
+    plane = make_run(tmp_path)
+    make_movies(path_settings(plane.parents[2], averaged_movie=False), must_not_load)
