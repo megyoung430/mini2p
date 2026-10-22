@@ -94,7 +94,7 @@ def test_plan_assigns_runs_in_acquisition_order(tmp_path):
         session_last=5,
         source_substring="71rtask",
     )
-    plan = plan_batch(batch)
+    plan = plan_batch(batch, corrected=True)
     assert [(p.run_name, p.source.name, p.action) for p in plan] == [
         ("run-01", "71rtask_00003.tif", "run"),
         ("run-02", "71rtask_00012.tif", "run"),
@@ -131,7 +131,7 @@ def test_run_one_marks_failure_with_log_tail(tmp_path, monkeypatch):
     from mini2p_preprocessing.batch import MANIFEST_NAME, run_one
 
     batch, config = _batch_with_two_sources(tmp_path)
-    row = plan_batch(batch)[0]
+    row = plan_batch(batch, corrected=True)[0]
     _stub_worker(monkeypatch, "print('boom'); raise SystemExit(3)")
     with pytest.raises(subprocess.CalledProcessError):
         run_one(row, config, destripe=False)
@@ -170,11 +170,11 @@ def test_corrupt_manifest_stops_planning(tmp_path):
     from mini2p_preprocessing.batch import MANIFEST_NAME
 
     batch, _ = _batch_with_two_sources(tmp_path)
-    run_dir = plan_batch(batch)[0].run_dir
+    run_dir = plan_batch(batch, corrected=True)[0].run_dir
     run_dir.mkdir(parents=True)
     (run_dir / MANIFEST_NAME).write_text("{not json")
     with pytest.raises(ValueError, match="Corrupt JSON"):
-        plan_batch(batch)
+        plan_batch(batch, corrected=True)
 
 
 @pytest.mark.parametrize("first", [False, True])
@@ -190,7 +190,7 @@ def test_both_destriping_variants_coexist_in_either_order(tmp_path, monkeypatch,
         assert [p.run_dir.name for p in plan] == [expected, expected]
         assert [p.run_dir.parent.name for p in plan] == ["run-01", "run-02"]
     for destripe in (False, True):
-        again = plan_batch(batch.model_copy(update={"destripe": destripe}))
+        again = plan_batch(batch.model_copy(update={"destripe": destripe}), corrected=True)
         assert [p.action for p in again] == ["skip", "skip"]
 
 
@@ -200,13 +200,13 @@ def test_segmentation_registration_in_run_folder_is_left_alone(tmp_path):
     from mini2p_preprocessing.batch import MANIFEST_NAME
 
     batch, _ = _batch_with_two_sources(tmp_path)
-    first_source = plan_batch(batch)[0].source
+    first_source = plan_batch(batch, corrected=True)[0].source
     runs = tmp_path / "der" / "ses-005_date-x" / "funcimg"
     for run in ("run-01", "run-02"):
         (runs / run).mkdir(parents=True)
         (runs / run / MANIFEST_NAME).write_text(json.dumps({"source_tiff": str(first_source)}))
     for destripe in (False, True):
-        plan = plan_batch(batch.model_copy(update={"destripe": destripe}))
+        plan = plan_batch(batch.model_copy(update={"destripe": destripe}), corrected=True)
         assert plan[0].action == "run"  # run-01/ registered the same TIFF
         assert plan[1].action == "conflict"  # run-02/ belongs to run-01's TIFF
         assert "71rtask_00001.tif" in plan[1].reason
@@ -223,7 +223,7 @@ def test_rerun_cutoff_replaces_older_runs_once(tmp_path, monkeypatch):
     assert [p.action for p in first] == ["run", "run"]
     assert all("rerun_completed_before" in p.reason for p in first)
     # Relaunching with the same cutoff keeps what the rerun already replaced.
-    assert [p.action for p in plan_batch(rerun)] == ["skip", "skip"]
+    assert [p.action for p in plan_batch(rerun, corrected=True)] == ["skip", "skip"]
 
 
 def test_rerun_cutoff_needs_a_time_zone():
@@ -349,5 +349,5 @@ def test_runs_without_distortion_correction_get_their_own_folders(tmp_path, monk
             f"run-0{i}/without_distortion_correction/{expected}" for i in (1, 2)
         ]
     for corrected in (True, False):
-        again = plan_batch(batch, corrected)
+        again = plan_batch(batch, corrected=corrected)
         assert [p.action for p in again] == ["skip", "skip"]

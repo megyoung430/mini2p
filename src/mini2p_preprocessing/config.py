@@ -17,6 +17,7 @@ VARIANT_SUBDIRS = (WITHOUT_DESTRIPING_SUBDIR, WITH_DESTRIPING_SUBDIR)
 NO_DISTORTION_SUBDIR = "without_distortion_correction"
 # Every variant folder, relative to run-XX/
 VARIANTS = VARIANT_SUBDIRS + tuple(f"{NO_DISTORTION_SUBDIR}/{v}" for v in VARIANT_SUBDIRS)
+SETTINGS_RECORD = "pipeline_settings.json"  # the exact settings each run used
 
 
 class _Frozen(BaseModel):
@@ -187,9 +188,12 @@ def load_settings(path: Path, **overrides: object) -> PipelineSettings:
     The [batch], [exports], [qc], [movies] and [natex] tables are read by their own loaders.
     """
     with Path(path).open("rb") as handle:
-        raw = tomllib.load(handle)
-    for section in NON_PIPELINE_SECTIONS:
-        raw.pop(section, None)
+        return settings_from_toml(tomllib.load(handle), **overrides)
+
+
+def settings_from_toml(raw: dict, **overrides: object) -> PipelineSettings:
+    """The pipeline settings of an already-parsed config (see ``load_settings``)."""
+    raw = {k: v for k, v in raw.items() if k not in NON_PIPELINE_SECTIONS}
     raw.update(overrides)
     return PipelineSettings.model_validate(raw)
 
@@ -199,7 +203,12 @@ def with_destriping(settings: PipelineSettings, enabled: bool) -> PipelineSettin
     return settings.model_copy(update={"destripe": destripe})
 
 
-def variant_subdir(destripe_enabled: bool, distortion_corrected: bool = True) -> str:
+def distortion_corrected(settings: PipelineSettings) -> bool:
+    """Whether *settings* correct distortion (``[distortion] mode`` is not "off")."""
+    return settings.distortion.mode != "off"
+
+
+def variant_subdir(destripe_enabled: bool, *, distortion_corrected: bool) -> str:
     """The variant folder, relative to ``run-XX/``: ``with_destriping`` or
     ``without_destriping``, inside ``without_distortion_correction/`` when distortion
     correction is off, so every combination has its own folder."""
@@ -209,14 +218,18 @@ def variant_subdir(destripe_enabled: bool, distortion_corrected: bool = True) ->
 
 def settings_variant(settings: PipelineSettings) -> str:
     """The variant folder that *settings* write to."""
-    return variant_subdir(settings.destripe.enabled, settings.distortion.mode != "off")
+    return variant_subdir(
+        settings.destripe.enabled, distortion_corrected=distortion_corrected(settings)
+    )
 
 
 def variant_output_dir(
-    run_dir: Path, destripe_enabled: bool, distortion_corrected: bool = True
+    run_dir: Path, destripe_enabled: bool, *, distortion_corrected: bool
 ) -> Path:
     """``run_dir/<variant_subdir>``, so every variant coexists."""
-    return Path(run_dir) / variant_subdir(destripe_enabled, distortion_corrected)
+    return Path(run_dir) / variant_subdir(
+        destripe_enabled, distortion_corrected=distortion_corrected
+    )
 
 
 def variant_label(variant: str) -> str:
@@ -232,13 +245,16 @@ def run_dir_of(variant_dir: Path) -> Path:
 
 
 def check_variant_folder(
-    output_dir: Path, destripe_enabled: bool, distortion_corrected: bool = True
+    output_dir: Path, destripe_enabled: bool, *, distortion_corrected: bool
 ) -> None:
-    """Refuse a variant folder that disagrees with the destriping or distortion setting."""
+    """Refuse a variant folder that disagrees with the destriping or distortion setting, and
+    the ``without_distortion_correction/`` folder itself, which only holds variants."""
     output_dir = Path(output_dir)
+    expected = variant_subdir(destripe_enabled, distortion_corrected=distortion_corrected)
+    if output_dir.name == NO_DISTORTION_SUBDIR:
+        raise ValueError(f"{output_dir} only holds variant folders; write to .../{expected}/")
     if output_dir.name not in VARIANT_SUBDIRS:
         return  # a plain output folder, as for tests or one-off runs
-    expected = variant_subdir(destripe_enabled, distortion_corrected)
     actual = output_dir.relative_to(run_dir_of(output_dir)).as_posix()
     if actual != expected:
         destripe = "on" if destripe_enabled else "off"

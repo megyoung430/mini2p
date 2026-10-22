@@ -34,12 +34,12 @@ RUN = Path("/d/sub-03/ses-224_date-x/funcimg/run-01")
     ],
 )
 def test_every_combination_has_its_own_folder(destripe, corrected, expected):
-    assert variant_subdir(destripe, corrected) == expected
-    assert variant_output_dir(RUN, destripe, corrected) == RUN / expected
+    assert variant_subdir(destripe, distortion_corrected=corrected) == expected
+    assert variant_output_dir(RUN, destripe, distortion_corrected=corrected) == RUN / expected
     assert expected in VARIANTS
     assert run_dir_of(RUN / expected) == RUN
     assert run_name_from_output_dir(RUN / expected) == "run-01"
-    check_variant_folder(RUN / expected, destripe, corrected)
+    check_variant_folder(RUN / expected, destripe, distortion_corrected=corrected)
 
 
 def test_the_settings_choose_the_folder():
@@ -61,11 +61,11 @@ def test_the_settings_choose_the_folder():
 )
 def test_a_folder_that_disagrees_with_the_settings_is_refused(folder, destripe, corrected):
     with pytest.raises(ValueError, match="which write to"):
-        check_variant_folder(RUN / folder, destripe, corrected)
+        check_variant_folder(RUN / folder, destripe, distortion_corrected=corrected)
 
 
 def test_a_plain_output_folder_is_not_checked():
-    check_variant_folder(Path("/tmp/anything"), True, False)
+    check_variant_folder(Path("/tmp/anything"), True, distortion_corrected=False)
     assert run_name_from_output_dir(Path("/tmp/anything")) == "anything"
 
 
@@ -102,3 +102,52 @@ def test_nested_runs_are_found_for_exports_and_extraction(tmp_path):
     (run,) = find_run_planes(tmp_path, 224, 224, "without_distortion_correction/without_destriping")
     assert run.plane_dir == plane and run.run_name == "run-01"
     assert run_dir_of(plane.parents[1]).name == "run-01"
+
+
+def test_the_distortion_setting_must_be_given():
+    with pytest.raises(TypeError):
+        variant_subdir(True)  # no default: a forgotten argument must not mean "corrected"
+
+
+def test_the_intermediate_folder_is_not_an_output_folder():
+    with pytest.raises(ValueError, match="only holds variant folders"):
+        check_variant_folder(
+            RUN / "without_distortion_correction", False, distortion_corrected=False
+        )
+
+
+def test_a_nested_registration_is_replaced_but_not_the_one_above(tmp_path):
+    from mini2p_preprocessing.registration import clear_earlier_registration
+
+    settings = PipelineSettings.model_validate({"distortion": {"mode": "off"}})
+    nested = (
+        tmp_path / "run-01" / "without_distortion_correction" / "without_destriping" / "suite2p"
+    )
+    nested.mkdir(parents=True)
+    clear_earlier_registration(nested, settings)
+    assert not nested.exists()
+    between = tmp_path / "run-01" / "without_distortion_correction" / "suite2p"
+    between.mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="Not replacing"):
+        clear_earlier_registration(between, settings)
+
+
+def test_variant_choices_are_the_same_everywhere():
+    import typing
+
+    from mini2p_preprocessing.movies import MovieSettings
+
+    for model, field in ((ExportSettings, "run_subdir"), (MovieSettings, "variant")):
+        assert set(typing.get_args(model.model_fields[field].annotation)) == set(VARIANTS)
+
+
+def test_the_launched_batch_names_its_variant(tmp_path):
+    from mini2p_preprocessing.batch import launch_variant, snapshot_config
+
+    config = (
+        '[distortion]\nmode = "off"\n[batch]\nraw_subject_dir = "/r"\n'
+        'derivatives_subject_dir = "/d"\nsession_first = 1\nsession_last = 1\n'
+        'source_substring = "x"\ndestripe = true\n'
+    )
+    snapshot_config(config.encode(), tmp_path)
+    assert launch_variant(tmp_path) == "without_distortion_correction/with_destriping"

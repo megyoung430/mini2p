@@ -113,8 +113,9 @@ def clear_earlier_registration(suite2p_dir: Path, settings: PipelineSettings) ->
     """Remove an earlier registration of the same file so Suite2p registers afresh.
 
     Suite2p reuses an existing binary and skips registration, which would keep the old
-    result. Only a folder inside a with_/without_destriping subfolder is removed, never
-    ``run-XX/suite2p``; refuses without ``overwrite``, or if Cellpose masks are inside.
+    result. Only a folder inside a with_/without_destriping subfolder (also inside
+    ``without_distortion_correction/``) is removed, never ``run-XX/suite2p``; refuses
+    without ``overwrite``, or if Cellpose masks are inside.
     """
     suite2p_dir = Path(suite2p_dir)
     if not suite2p_dir.exists():
@@ -122,7 +123,8 @@ def clear_earlier_registration(suite2p_dir: Path, settings: PipelineSettings) ->
     if suite2p_dir.parent.name not in VARIANT_SUBDIRS:
         raise RuntimeError(
             f"Not replacing {suite2p_dir}: only registrations inside a variant subfolder "
-            f"{VARIANT_SUBDIRS} are replaced; this may be the one Cellpose masks were drawn on"
+            f"({' or '.join(VARIANT_SUBDIRS)}) are replaced; this may be the one Cellpose masks "
+            "were drawn on"
         )
     if not settings.overwrite:
         raise FileExistsError(f"{suite2p_dir} exists; set overwrite=true to register again")

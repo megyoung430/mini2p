@@ -55,6 +55,7 @@ from scipy.ndimage import gaussian_filter
 
 from .batch import MANIFEST_NAME, SESSION_PATTERN
 from .config import (
+    SETTINGS_RECORD,
     VARIANTS,
     WITH_DESTRIPING_SUBDIR,
     ChannelSettings,
@@ -65,7 +66,6 @@ from .config import (
     variant_label,
     with_destriping,
 )
-from .pipeline import SETTINGS_RECORD
 from .progress import ProgressLog
 from .registration import resolve_registered_binary
 from .tiff_io import read_channel_chunk

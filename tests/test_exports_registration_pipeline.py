@@ -151,7 +151,9 @@ def test_both_qc_variants_coexist_with_correct_run_name(tmp_path, recording, mon
     run_dir = tmp_path / "run-02"
     for enabled in (False, True):
         pipeline_module.run_pipeline(
-            raw_tiff, variant_output_dir(run_dir, enabled, False), with_destriping(base, enabled)
+            raw_tiff,
+            variant_output_dir(run_dir, enabled, distortion_corrected=False),
+            with_destriping(base, enabled),
         )
     sidecars = sorted(run_dir.glob("without_distortion_correction/*/*.phase.json"))
     assert [p.parent.name for p in sidecars] == ["with_destriping", "without_destriping"]

@@ -21,7 +21,7 @@ from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
-from .config import load_settings, variant_subdir
+from .config import distortion_corrected, load_settings, settings_from_toml, variant_subdir
 from .progress import ProgressLog
 
 log = logging.getLogger(__name__)
@@ -212,12 +212,16 @@ def launch_cutoff(derivatives_dir: Path) -> datetime | None:
     Raises:
         FileNotFoundError: If no batch has been launched into *derivatives_dir*.
     """
+    return load_batch_settings(_newest_snapshot(derivatives_dir)).rerun_completed_before
+
+
+def _newest_snapshot(derivatives_dir: Path) -> Path:
     snapshots = sorted(Path(derivatives_dir).glob("batch_config_*.toml"))
     if not snapshots:
         raise FileNotFoundError(
             f"No batch_config_*.toml in {derivatives_dir}; launch the batch first"
         )
-    return load_batch_settings(snapshots[-1]).rerun_completed_before
+    return snapshots[-1]
 
 
 def source_identity(tiff_path: Path) -> dict:
@@ -243,14 +247,24 @@ def find_sessions(raw_subject_dir: Path, first: int, last: int) -> list[tuple[in
 
 def batch_distortion_corrected(config_path: Path) -> bool:
     """Whether the config's ``[distortion] mode`` corrects distortion (anything but "off")."""
-    return load_settings(config_path).distortion.mode != "off"
+    return distortion_corrected(load_settings(config_path))
 
 
-def plan_batch(batch: BatchSettings, distortion_corrected: bool = True) -> list[PlannedRun]:
+def launch_variant(derivatives_dir: Path) -> str:
+    """The variant folder the newest batch launch writes to, from its frozen config."""
+    snapshot = _newest_snapshot(derivatives_dir)
+    settings = settings_from_toml(tomllib.loads(snapshot.read_text()))
+    return variant_subdir(
+        load_batch_settings(snapshot).destripe,
+        distortion_corrected=distortion_corrected(settings),
+    )
+
+
+def plan_batch(batch: BatchSettings, *, corrected: bool) -> list[PlannedRun]:
     """What the batch would do with every raw TIFF in the session range. Runs go to
-    ``run-XX/<variant>``, the variant set by ``batch.destripe`` and *distortion_corrected*
-    (``[distortion] mode`` is not "off")."""
-    subdir = variant_subdir(batch.destripe, distortion_corrected)
+    ``run-XX/<variant>``, the variant set by ``batch.destripe`` and *corrected* (the
+    config's ``[distortion] mode`` is not "off")."""
+    subdir = variant_subdir(batch.destripe, distortion_corrected=corrected)
     plan = []
     for session, session_dir in find_sessions(
         batch.raw_subject_dir, batch.session_first, batch.session_last
@@ -368,13 +382,14 @@ def run_one(row: PlannedRun, config_path: Path, destripe: bool) -> None:
     manifest_path.write_text(json.dumps(manifest, indent=2))
 
 
-def snapshot_config(config_path: Path, destination_dir: Path) -> Path:
-    """Freeze the config for this launch so later edits cannot reach running workers."""
+def snapshot_config(config: Path | bytes, destination_dir: Path) -> Path:
+    """Freeze the config (a file, or its bytes as read) for this launch so later edits
+    cannot reach running workers."""
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     destination_dir.mkdir(parents=True, exist_ok=True)
     snapshot = destination_dir / f"batch_config_{stamp}.toml"
     with snapshot.open("xb") as frozen:  # never replaces a snapshot another launch uses
-        frozen.write(Path(config_path).read_bytes())
+        frozen.write(config if isinstance(config, bytes) else Path(config).read_bytes())
     return snapshot
 
 
@@ -384,7 +399,10 @@ def run_batch(batch: BatchSettings, config_path: Path) -> list[PlannedRun]:
     Planning here rather than reusing an earlier plan means relaunching after a
     failure never reprocesses runs that completed in the meantime.
     """
-    plan = plan_batch(batch, batch_distortion_corrected(config_path))
+    # Plan, check and freeze from one reading of the config, so they cannot disagree.
+    config_bytes = Path(config_path).read_bytes()
+    settings = settings_from_toml(tomllib.loads(config_bytes.decode()))
+    plan = plan_batch(batch, corrected=distortion_corrected(settings))
     conflicts = [p for p in plan if p.action == "conflict"]
     if conflicts:
         details = "\n".join(f"  {p.run_dir}: {p.reason}" for p in conflicts)
@@ -394,12 +412,12 @@ def run_batch(batch: BatchSettings, config_path: Path) -> list[PlannedRun]:
         log.info("Nothing to run.")
         return plan
     replacing = [p.run_dir for p in pending if p.run_dir.exists()]
-    if replacing and not load_settings(config_path).overwrite:
+    if replacing and not settings.overwrite:
         raise ValueError(
             f"{len(replacing)} run(s) would replace existing output (e.g. {replacing[0]}) but "
             "the config sets overwrite = false"
         )
-    frozen_config = snapshot_config(config_path, batch.derivatives_subject_dir)
+    frozen_config = snapshot_config(config_bytes, batch.derivatives_subject_dir)
     log.info("Workers use config snapshot %s", frozen_config)
     progress = ProgressLog("Batch", len(pending), log.info)
     for index, row in enumerate(pending, start=1):
