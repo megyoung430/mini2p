@@ -55,15 +55,17 @@ from scipy.ndimage import gaussian_filter
 
 from .batch import MANIFEST_NAME, SESSION_PATTERN
 from .config import (
-    VARIANT_SUBDIRS,
+    SETTINGS_RECORD,
+    VARIANTS,
     WITH_DESTRIPING_SUBDIR,
     ChannelSettings,
     PipelineSettings,
     corrected_tiff_path,
+    run_dir_of,
     undistorted_tiff_path,
+    variant_label,
     with_destriping,
 )
-from .pipeline import SETTINGS_RECORD
 from .progress import ProgressLog
 from .registration import resolve_registered_binary
 from .tiff_io import read_channel_chunk
@@ -98,7 +100,12 @@ class MovieSettings(BaseModel):
     session: int | None = Field(None, ge=0)  # e.g. 224
     run: int | None = Field(None, ge=1)  # e.g. 1 for run-01
     run_dir: Path | None = None  # e.g. "/Users/you/Desktop/example_ses/img"
-    variant: Literal["without_destriping", "with_destriping"] = "without_destriping"
+    variant: Literal[
+        "without_destriping",
+        "with_destriping",
+        "without_distortion_correction/without_destriping",
+        "without_distortion_correction/with_destriping",
+    ] = "without_destriping"
     # Which frames: the whole recording, or start_frame to end_frame (0-based, both included).
     # No default: a whole TIFF stage is ~14 GB to read, so it is never chosen by omission.
     whole_recording: bool
@@ -246,8 +253,8 @@ def find_plane_dir(
     Raises:
         FileNotFoundError: If a level is missing or ambiguous, listing what is there.
     """
-    if variant not in VARIANT_SUBDIRS:
-        raise ValueError(f"variant must be one of {VARIANT_SUBDIRS}, not {variant!r}")
+    if variant not in VARIANTS:
+        raise ValueError(f"variant must be one of {VARIANTS}, not {variant!r}")
     cohort_dir = Path(derivatives_root) / cohort
     subjects = [
         d for d in sorted(cohort_dir.glob("*")) if d.is_dir() and subject_matches(d.name, subject)
@@ -431,7 +438,7 @@ def plan_movie(
     first, last = int(starts[0]), int(starts[-1]) + n - 1
     parts = [
         *names,
-        settings.variant,
+        variant_label(settings.variant),
         stage,
         settings.channel,
         f"frames-{first}-{last}",
@@ -525,7 +532,7 @@ def phase_record(variant_dir: Path, run: PipelineSettings) -> tuple[Path, dict] 
 def acquired_tiff(variant_dir: Path, run: PipelineSettings) -> Path:
     """The acquired TIFF of a run: from its ``source_tiff.json`` (batch runs) or its
     bidiphase TIFF's ``.phase.json``; if the recorded path is not there (the folder was
-    copied), the file of that name beside the variant folder.
+    copied), the file of that name in the run folder.
 
     Raises:
         FileNotFoundError: If neither record names it.
@@ -545,7 +552,7 @@ def acquired_tiff(variant_dir: Path, run: PipelineSettings) -> Path:
             "acquired; set raw_tiff in [movies]"
         )
     recorded = Path(record[1]["input_tiff"])
-    beside = variant_dir.parent / recorded.name
+    beside = run_dir_of(variant_dir) / recorded.name
     return recorded if recorded.is_file() or not beside.is_file() else beside
 
 
@@ -863,7 +870,7 @@ def run_folder(settings: MovieSettings) -> tuple[Path, tuple[str, ...]]:
             settings.variant,
             settings.save_folder,
         )
-        run_dir = plane_dir.parents[2]
+        run_dir = run_dir_of(plane_dir.parents[1])
     else:
         run_dir = Path(settings.run_dir).resolve()
         variant_dir = run_dir / settings.variant

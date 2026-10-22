@@ -85,8 +85,12 @@ def test_distortion_mode_must_be_stated(tmp_path):
 
 def test_output_naming_follows_destriping_variant():
     base = PipelineSettings.model_validate({"distortion": {"mode": "off"}})
-    assert variant_output_dir(Path("/d/run-02"), False) == Path("/d/run-02/without_destriping")
-    assert variant_output_dir(Path("/d/run-02"), True) == Path("/d/run-02/with_destriping")
+    assert variant_output_dir(Path("/d/run-02"), False, distortion_corrected=True) == Path(
+        "/d/run-02/without_destriping"
+    )
+    assert variant_output_dir(Path("/d/run-02"), True, distortion_corrected=True) == Path(
+        "/d/run-02/with_destriping"
+    )
     assert run_name_from_output_dir(Path("/d/run-02/without_destriping")) == "run-02"
     assert run_name_from_output_dir(Path("/d/run-02")) == "run-02"
     assert run_name_from_output_dir(Path("/d/run-02/with_destriping")) == "run-02"

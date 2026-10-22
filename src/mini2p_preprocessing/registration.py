@@ -11,7 +11,7 @@ import numpy as np
 import suite2p
 import tifffile
 
-from .config import VARIANT_SUBDIRS, PipelineSettings
+from .config import VARIANT_SUBDIRS, PipelineSettings, run_dir_of
 
 log = logging.getLogger(__name__)
 
@@ -74,7 +74,9 @@ def build_suite2p_db(
 
 def fast_disk_for(output_dir: Path, fast_disk: Path) -> Path:
     """This run's folder under *fast_disk*, named after its session, run and variant."""
-    return Path(fast_disk) / "_".join(Path(output_dir).parts[-4:])
+    output_dir = Path(output_dir)
+    run_dir = run_dir_of(output_dir)
+    return Path(fast_disk) / "_".join(run_dir.parts[-3:] + output_dir.relative_to(run_dir).parts)
 
 
 # ---- I/O --------------------------------------------------------------------------
@@ -111,8 +113,9 @@ def clear_earlier_registration(suite2p_dir: Path, settings: PipelineSettings) ->
     """Remove an earlier registration of the same file so Suite2p registers afresh.
 
     Suite2p reuses an existing binary and skips registration, which would keep the old
-    result. Only a folder inside a with_/without_destriping subfolder is removed, never
-    ``run-XX/suite2p``; refuses without ``overwrite``, or if Cellpose masks are inside.
+    result. Only a folder inside a with_/without_destriping subfolder (also inside
+    ``without_distortion_correction/``) is removed, never ``run-XX/suite2p``; refuses
+    without ``overwrite``, or if Cellpose masks are inside.
     """
     suite2p_dir = Path(suite2p_dir)
     if not suite2p_dir.exists():
@@ -120,7 +123,8 @@ def clear_earlier_registration(suite2p_dir: Path, settings: PipelineSettings) ->
     if suite2p_dir.parent.name not in VARIANT_SUBDIRS:
         raise RuntimeError(
             f"Not replacing {suite2p_dir}: only registrations inside a variant subfolder "
-            f"{VARIANT_SUBDIRS} are replaced; this may be the one Cellpose masks were drawn on"
+            f"({' or '.join(VARIANT_SUBDIRS)}) are replaced; this may be the one Cellpose masks "
+            "were drawn on"
         )
     if not settings.overwrite:
         raise FileExistsError(f"{suite2p_dir} exists; set overwrite=true to register again")

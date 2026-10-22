@@ -17,7 +17,7 @@ def test_cli_resolves_relative_paths_and_applies_destripe_override(
     )
     monkeypatch.setattr(pipeline_module, "run_registration", lambda tiff, out, s: out)
     monkeypatch.chdir(tmp_path)
-    out = "der/run-03/with_destriping"
+    out = "der/run-03/without_distortion_correction/with_destriping"  # [distortion] is off
     cli.main(
         [
             "--config",

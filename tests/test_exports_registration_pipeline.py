@@ -102,7 +102,7 @@ def test_pipeline_wires_stages_together(tmp_path, recording, monkeypatch):
     settings = PipelineSettings.model_validate(
         {"phase": {"chunk_frames": 20, "max_shift_px": 8}, "distortion": {"mode": "off"}}
     )
-    out = tmp_path / "run-01" / "without_destriping"
+    out = tmp_path / "run-01" / "without_distortion_correction" / "without_destriping"
     result = pipeline_module.run_pipeline(raw_tiff, out, settings)
     assert calls["tiff"] == result.corrected_tiff  # distortion off: register the corrected TIFF
     meta = json.loads(result.corrected_tiff.with_suffix(".phase.json").read_text())
@@ -151,9 +151,11 @@ def test_both_qc_variants_coexist_with_correct_run_name(tmp_path, recording, mon
     run_dir = tmp_path / "run-02"
     for enabled in (False, True):
         pipeline_module.run_pipeline(
-            raw_tiff, variant_output_dir(run_dir, enabled), with_destriping(base, enabled)
+            raw_tiff,
+            variant_output_dir(run_dir, enabled, distortion_corrected=False),
+            with_destriping(base, enabled),
         )
-    sidecars = sorted(run_dir.glob("*/*.phase.json"))
+    sidecars = sorted(run_dir.glob("without_distortion_correction/*/*.phase.json"))
     assert [p.parent.name for p in sidecars] == ["with_destriping", "without_destriping"]
     metas = [json.loads(p.read_text()) for p in sidecars]
     assert [m["run_name"] for m in metas] == ["run-02", "run-02"]

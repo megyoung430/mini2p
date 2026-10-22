@@ -8,9 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import (
+    SETTINGS_RECORD,
     PipelineSettings,
     check_variant_folder,
     corrected_tiff_path,
+    distortion_corrected,
     run_name_from_output_dir,
     undistorted_tiff_path,
 )
@@ -20,7 +22,6 @@ from .progress import format_duration
 from .registration import run_registration
 
 log = logging.getLogger(__name__)
-SETTINGS_RECORD = "pipeline_settings.json"  # the exact settings each run used
 
 
 @dataclass(frozen=True)
@@ -49,7 +50,9 @@ def run_pipeline(input_tiff: Path, output_dir: Path, settings: PipelineSettings)
     input_tiff, output_dir = Path(input_tiff).resolve(), Path(output_dir).resolve()
     if not input_tiff.is_file():
         raise FileNotFoundError(f"Input TIFF not found: {input_tiff}")
-    check_variant_folder(output_dir, settings.destripe.enabled)
+    check_variant_folder(
+        output_dir, settings.destripe.enabled, distortion_corrected=distortion_corrected(settings)
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     corrected = corrected_tiff_path(output_dir, input_tiff, settings)
     started = time.monotonic()
