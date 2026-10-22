@@ -32,9 +32,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import tomllib
 import typing
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,15 +43,25 @@ from typing import Literal, Protocol
 
 import numpy as np
 import tifffile
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from scipy.ndimage import gaussian_filter
 
 from .batch import MANIFEST_NAME, SESSION_PATTERN
 from .config import (
     VARIANT_SUBDIRS,
+    WITH_DESTRIPING_SUBDIR,
+    ChannelSettings,
     PipelineSettings,
     corrected_tiff_path,
     undistorted_tiff_path,
+    with_destriping,
 )
 from .pipeline import SETTINGS_RECORD
 from .progress import ProgressLog
@@ -79,11 +90,14 @@ class MovieSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    # Which run (folders under derivatives_root/<cohort>/<subject>/ses-<session>_*/funcimg/)
-    cohort: str = Field(min_length=1)  # e.g. "cohort-01"
-    subject: str = Field(min_length=1)  # the subject folder or part of it: "sub-03", "MY_71_R"
-    session: int = Field(ge=0)  # e.g. 224
-    run: int = Field(ge=1)  # e.g. 1 for run-01
+    # Which run: by name, under derivatives_root/<cohort>/<subject>/ses-<session>_*/funcimg/
+    # run-<run>, or by path, run_dir (a folder laid out like run-XX/: <variant>/suite2p/...).
+    # run_dir, when set, is used and the four by-name settings are ignored.
+    cohort: str | None = Field(None, min_length=1)  # e.g. "cohort-01"
+    subject: str | None = Field(None, min_length=1)  # subject folder or part of it: "sub-03"
+    session: int | None = Field(None, ge=0)  # e.g. 224
+    run: int | None = Field(None, ge=1)  # e.g. 1 for run-01
+    run_dir: Path | None = None  # e.g. "/Users/you/Desktop/example_ses/img"
     variant: Literal["without_destriping", "with_destriping"] = "without_destriping"
     # Which frames: the whole recording, or start_frame to end_frame (0-based, both included).
     # No default: a whole TIFF stage is ~14 GB to read, so it is never chosen by omission.
@@ -99,7 +113,7 @@ class MovieSettings(BaseModel):
     unaveraged_movie: bool = True
     averaged_movie: bool = True
     # Where to read and write
-    derivatives_root: Path  # holds cohort-XX/<subject>/ses-*/funcimg/run-XX
+    derivatives_root: Path | None = None  # holds cohort-XX/<subject>/ses-*/funcimg/run-XX
     raw_tiff: Path | None = None  # the acquired TIFF, if not where source_tiff.json says
     output_dir: Path | None = None  # None: run-XX/<variant>/movies
     overwrite: bool = False  # replace existing movies
@@ -122,8 +136,28 @@ class MovieSettings(BaseModel):
     contrast_sample_frames: int = Field(200, ge=1)
     quality: float = Field(8.0, ge=0, le=10)  # H.264 quality, 0-10
 
+    @field_validator("run_dir", "derivatives_root", "raw_tiff", "output_dir", mode="before")
+    @classmethod
+    def _expand_home(cls, value):
+        if value is None:
+            return None
+        if not str(value).strip():
+            raise ValueError("a folder must be named, not left empty")
+        return Path(value).expanduser()
+
     @model_validator(mode="after")
     def _consistent(self) -> MovieSettings:
+        by_name = {"cohort": self.cohort, "subject": self.subject, "session": self.session,
+                   "run": self.run, "derivatives_root": self.derivatives_root}  # fmt: skip
+        if self.run_dir is not None:
+            given = [k for k, v in by_name.items() if v is not None]
+            if given:
+                log.warning("run_dir is set, so %s are ignored", ", ".join(given))
+        elif missing := [k for k, v in by_name.items() if v is None]:
+            raise ValueError(
+                f"Set run_dir, or all of cohort, subject, session, run and derivatives_root "
+                f"(missing: {', '.join(missing)})"
+            )
         if self.black_percentile >= self.white_percentile:
             raise ValueError(
                 f"black_percentile ({self.black_percentile}) must be below white_percentile "
@@ -368,12 +402,13 @@ def plan_movie(
     span: tuple[int, int],
     fs: float,
     settings: MovieSettings,
-    names: tuple[str, str, str],
+    names: tuple[str, ...],
 ) -> MoviePlan:
     """The frames, playback rate and file name of one stage's unaveraged or averaged movie
     (pure).
 
-    *names* are the subject, session and run folder names. The unaveraged movie is never
+    *names* start the file name: the subject, session and run folder names, or the last two
+    folders of a run given by path. The unaveraged movie is never
     smoothed.
     The name gives the frames actually shown, so a dropped partial bin does not appear in it.
 
@@ -394,11 +429,8 @@ def plan_movie(
         )
     sigma = 0.0 if unaveraged else settings.spatial_sigma_px
     first, last = int(starts[0]), int(starts[-1]) + n - 1
-    subject, session, run = names
     parts = [
-        subject,
-        session,
-        run,
+        *names,
         settings.variant,
         stage,
         settings.channel,
@@ -478,24 +510,56 @@ def load_run_settings(variant_dir: Path) -> PipelineSettings | None:
     return PipelineSettings.model_validate_json(record.read_text()) if record.is_file() else None
 
 
+def phase_record(variant_dir: Path, run: PipelineSettings) -> tuple[Path, dict] | None:
+    """The ``.phase.json`` the pipeline wrote beside the variant's bidiphase TIFF, if any.
+
+    Raises:
+        ValueError: If there are several.
+    """
+    found = sorted(Path(variant_dir).glob(f"*_{run.correction_suffix}.phase.json"))
+    if len(found) > 1:
+        raise ValueError(f"{variant_dir} has {len(found)} bidiphase records: {found}")
+    return (found[0], json.loads(found[0].read_text())) if found else None
+
+
+def acquired_tiff(variant_dir: Path, run: PipelineSettings) -> Path:
+    """The acquired TIFF of a run: from its ``source_tiff.json`` (batch runs) or its
+    bidiphase TIFF's ``.phase.json``; if the recorded path is not there (the folder was
+    copied), the file of that name beside the variant folder.
+
+    Raises:
+        FileNotFoundError: If neither record names it.
+        ValueError: If ``source_tiff.json`` lacks ``source_tiff``.
+    """
+    variant_dir = Path(variant_dir)
+    manifest = variant_dir / MANIFEST_NAME
+    if manifest.is_file():
+        recorded = json.loads(manifest.read_text()).get("source_tiff")
+        if not recorded:
+            raise ValueError(f"{manifest} has no source_tiff; set raw_tiff in [movies]")
+        return Path(recorded)
+    record = phase_record(variant_dir, run)
+    if record is None:
+        raise FileNotFoundError(
+            f"{variant_dir} has neither {MANIFEST_NAME} nor a .phase.json to say which TIFF was "
+            "acquired; set raw_tiff in [movies]"
+        )
+    recorded = Path(record[1]["input_tiff"])
+    beside = variant_dir.parent / recorded.name
+    return recorded if recorded.is_file() or not beside.is_file() else beside
+
+
 def stage_tiff(
     stage: Stage, variant_dir: Path, run: PipelineSettings, raw_tiff: Path | None
 ) -> Path:
     """The TIFF the pipeline read (``raw``) or wrote (``bidiphase``, ``undistorted``).
 
-    The acquired TIFF comes from *raw_tiff*, else from the run's ``source_tiff.json``.
+    The acquired TIFF is *raw_tiff* if given, else the one the run's records name
+    (``acquired_tiff``).
     """
     variant_dir = Path(variant_dir)
     if raw_tiff is None:
-        manifest = variant_dir / MANIFEST_NAME
-        recorded = (
-            json.loads(manifest.read_text()).get("source_tiff") if manifest.is_file() else None
-        )
-        if recorded is None:
-            raise FileNotFoundError(
-                f"{manifest} does not say which TIFF was acquired; set raw_tiff in [movies]"
-            )
-        raw_tiff = Path(recorded)
+        raw_tiff = acquired_tiff(variant_dir, run)
     if stage == "undistorted" and run.distortion.mode == "off":
         raise ValueError(
             "Distortion correction was off for this run, so it has no undistorted TIFF; "
@@ -689,17 +753,77 @@ class MovieJob:
     fs: float
 
 
-def open_jobs(settings: MovieSettings, plane_dir: Path, stack: ExitStack) -> list[MovieJob]:
-    """Open every stage's files and plan every movie, before anything is written."""
+def settings_from_records(variant_dir: Path, config: PipelineSettings) -> PipelineSettings:
+    """Settings for a run folder without ``pipeline_settings.json``: the config's, with the
+    channel order from the run's ``.phase.json``, destriping from the variant folder's name,
+    and distortion correction as the run's ``.distortion.json`` shows.
+
+    Raises:
+        FileNotFoundError: If the run has no ``.phase.json`` to give its channel order.
+    """
+    variant_dir = Path(variant_dir)
+    run = with_destriping(config, variant_dir.name == WITH_DESTRIPING_SUBDIR)
+    record = phase_record(variant_dir, run)
+    if record is None:
+        raise FileNotFoundError(
+            f"{variant_dir} has neither {SETTINGS_RECORD} nor a .phase.json, so its channel "
+            "order is unknown"
+        )
+    path, phase = record
+    try:
+        channels = ChannelSettings.model_validate(
+            {
+                "n_channels": phase["n_channels"],
+                "structural_channel": phase["structural_channel_one_based"],
+                "functional_channel": phase["functional_channel_one_based"],
+            }
+        )
+    except (KeyError, ValidationError) as error:
+        raise ValueError(f"{path} does not give a usable channel order: {error}") from error
+    if channels != run.channels:
+        log.warning("%s: channel order from %s, not the config's", variant_dir, path.name)
+    undistorted = any(variant_dir.glob(f"*_{run.correction_suffix}_undistorted.distortion.json"))
+    distortion = run.distortion
+    if undistorted and distortion.mode == "off":
+        distortion = distortion.model_copy(update={"mode": "cluster_full"})
+    elif not undistorted and distortion.mode != "off":
+        distortion = distortion.model_copy(update={"mode": "off"})
+    log.warning(
+        "No %s in %s: channel order from %s, file names from the config",
+        SETTINGS_RECORD,
+        variant_dir,
+        path.name,
+    )
+    return run.model_copy(update={"channels": channels, "distortion": distortion})
+
+
+def open_jobs(
+    settings: MovieSettings,
+    plane_dir: Path,
+    names: tuple[str, ...],
+    stack: ExitStack,
+    config: Callable[[], PipelineSettings] | None = None,
+) -> list[MovieJob]:
+    """Open every stage's files and plan every movie, before anything is written.
+
+    The TIFF stages use the run's ``pipeline_settings.json``. A run given by path
+    (``run_dir``) without one, e.g. made by the QC notebook, uses ``settings_from_records``
+    with the config's settings, which *config* loads only then.
+    """
     variant_dir = plane_dir.parents[1]
     stages = settings.stages
     if set(stages) - {"registered"}:
         run = load_run_settings(variant_dir)  # the TIFF stages need it: fail if unreadable
+        if run is None and settings.run_dir is not None and config is not None:
+            run = settings_from_records(variant_dir, config())
     else:
         run = _settings_for_title(variant_dir)
+    if not (plane_dir / "ops.npy").is_file():
+        raise FileNotFoundError(
+            f"No {plane_dir / 'ops.npy'}: Suite2p has not finished (it writes ops.npy at the end)"
+        )
     ops = np.load(plane_dir / "ops.npy", allow_pickle=True).item()
     fs = float(ops["fs"])
-    names = (variant_dir.parents[3].name, variant_dir.parents[2].name, variant_dir.parent.name)
     span = frame_span(int(ops["nframes"]), *settings.frames_requested)
     jobs = []
     for stage in stages:
@@ -722,29 +846,62 @@ def _settings_for_title(variant_dir: Path) -> PipelineSettings | None:
         return None
 
 
-def make_movies(settings: MovieSettings) -> list[Path]:
+RUN_FOLDER = re.compile(r"^run-\d+$")
+
+
+def run_folder(settings: MovieSettings) -> tuple[Path, tuple[str, ...]]:
+    """The run's plane folder, and the folder names that start its movies' file names:
+    subject, session and run, also for a batch run given by path; else the path's last two
+    folders."""
+    if settings.run_dir is None:
+        plane_dir = find_plane_dir(
+            settings.derivatives_root,
+            settings.cohort,
+            settings.subject,
+            settings.session,
+            settings.run,
+            settings.variant,
+            settings.save_folder,
+        )
+        run_dir = plane_dir.parents[2]
+    else:
+        run_dir = Path(settings.run_dir).resolve()
+        variant_dir = run_dir / settings.variant
+        if not variant_dir.is_dir():
+            folders = (
+                sorted(p.name for p in run_dir.iterdir() if p.is_dir()) if run_dir.is_dir() else []
+            )
+            raise FileNotFoundError(f"No {variant_dir}; folders in {run_dir}: {folders}")
+        plane_dir = variant_dir / settings.save_folder / "plane0"
+    in_batch_layout = (
+        RUN_FOLDER.match(run_dir.name)
+        and run_dir.parent.name == "funcimg"
+        and SESSION_PATTERN.match(run_dir.parents[1].name)
+    )
+    if in_batch_layout:
+        return plane_dir, (run_dir.parents[2].name, run_dir.parents[1].name, run_dir.name)
+    return plane_dir, (run_dir.parent.name, run_dir.name)
+
+
+def make_movies(
+    settings: MovieSettings, config: Callable[[], PipelineSettings] | None = None
+) -> list[Path]:
     """Write the movies *settings* ask for (one per stage and version), and return their paths.
 
+    The run is ``settings.run_dir`` if set, else found by cohort, subject, session and run.
     Every stage's files are found and every movie is planned before anything is written, so
     a missing file or an existing movie stops the call before it starts (a TIFF shorter than
     the run is only found when its frames are read). The TIFF stages use the channel order
-    and file names in the run's ``pipeline_settings.json``. Each movie gets its own display
-    range per channel (averaging narrows the range of values, and the stages are on
-    different scales).
+    and file names in the run's ``pipeline_settings.json``; a run given by path without one
+    uses its ``.phase.json`` and the settings *config* loads (see ``settings_from_records``).
+    Each movie gets its own display range per channel (averaging narrows the range of
+    values, and the stages are on different scales).
     """
-    plane_dir = find_plane_dir(
-        settings.derivatives_root,
-        settings.cohort,
-        settings.subject,
-        settings.session,
-        settings.run,
-        settings.variant,
-        settings.save_folder,
-    )
+    plane_dir, names = run_folder(settings)
     variant_dir = plane_dir.parents[1]
     out_dir = Path(settings.output_dir) if settings.output_dir else variant_dir / MOVIE_FOLDER
     with ExitStack() as stack:
-        jobs = open_jobs(settings, plane_dir, stack)
+        jobs = open_jobs(settings, plane_dir, names, stack, config)
         for job in jobs:
             if (out_dir / job.plan.name).exists() and not settings.overwrite:
                 raise FileExistsError(

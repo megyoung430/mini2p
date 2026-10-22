@@ -121,7 +121,8 @@ overwrite = false             # per-run exports
 pdf_overwrite = false
 
 [movies]                      # mini2p-movie; see README "Movies"
-# Which run
+# Which run: by name (cohort, subject, session, run under derivatives_root), or by path
+# run_dir = "/Users/you/Desktop/example_ses/img"   # set: the by-name settings are ignored
 cohort = "cohort-01"
 subject = "sub-03"            # the subject folder or part of it ("MY_71_R" works too)
 session = 224
@@ -140,7 +141,7 @@ stage_registered = true       # + motion registration (Suite2p's binaries)
 unaveraged_movie = true       # every frame
 averaged_movie = true         # average_frames frames per movie frame
 # Where to read and write
-derivatives_root = "/path/to/derivatives"   # holds cohort-XX/<subject>/ses-*/funcimg/run-XX
+derivatives_root = "/path/to/derivatives"   # cohort-XX/<subject>/ses-*/funcimg/run-XX (by name)
 # raw_tiff = "/path/to/71rtask_00039.tif"   # only if not where source_tiff.json says
 # output_dir = "/Users/you/movies"          # default: run-XX/<variant>/movies
 overwrite = false
