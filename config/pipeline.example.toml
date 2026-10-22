@@ -120,16 +120,18 @@ high_resolution_dpi = 400
 overwrite = false             # per-run exports
 pdf_overwrite = false
 
-[movies]                      # mini2p-movie; see README "Movies"
+[movies]                      # mini2p-movie / mini2p-stage-movies; see README "Movies"
 derivatives_root = "/path/to/derivatives"   # holds cohort-XX/<subject>/ses-*/funcimg/run-XX
 variant = "without_destriping"
-channel = "green"             # "green", "red" or "merge" (green in green, red in magenta)
+channel = "side_by_side"      # green (functional) left, red (structural) right; or "green", "red"
+tint = true                   # each channel in its colour; false for grey
 average_frames = 5            # frames per movie frame in the averaged movie (2-256)
 average_mode = "bin"          # "bin" or "rolling"
 speed = 4.0                   # x real time; a movie must play at >= 1 fps
+black_percentile = 1.0        # contrast as in the QC notebook, per channel
+white_percentile = 99.8
+gamma = 1.0
 spatial_sigma_px = 0.0        # Gaussian smoothing of the averaged movie; raw is never smoothed
-low_percentile = 0.5          # display range, from this movie's own frames
-high_percentile = 99.8
 upscale = 1                   # pixels drawn upscale x upscale
-label = true                  # time, frames and speed burnt into each frame
+label = true                  # stage, time, frames and speed burnt into each frame
 # output_dir = "/Users/you/movies"   # default: run-XX/<variant>/movies

@@ -85,21 +85,34 @@ After a batch, the last cells of the batch notebook (run once per variant, with
 
 ### Movies
 
-`mini2p-movie` writes MP4s (H.264, which PowerPoint, Keynote and QuickTime play) of a
-registered run, from Suite2p's registered binaries, into `run-XX/<variant>/movies/`
-(or `[movies] output_dir`):
+`mini2p-movie` writes MP4s (H.264, which PowerPoint, Keynote and QuickTime play) of a run's
+registered frames, and `mini2p-stage-movies` (same options) one set per preprocessing stage:
+
+| Stage | File |
+|---|---|
+| `raw` | the acquired TIFF (from the run's `source_tiff.json`, or `--raw-tiff`) |
+| `bidiphase` | `*_dynamic_bidiphase[_destriped].tif` (phase correction, and destriping) |
+| `undistorted` | `*_undistorted.tif` (+ distortion correction; cropped) |
+| `registered` | Suite2p's `data.bin` / `data_chan2.bin` (+ motion registration) |
+
+The TIFF stages take the channel order and file names from the run's own
+`pipeline_settings.json`, not the current config; a run processed without distortion
+correction has no `undistorted` stage. Every stage has the run's frames (with `max_timepoints`,
+the first frames of the acquired TIFF), so a frame number is the same moment in each movie.
+Movies go to `run-XX/<variant>/movies/` (or `[movies] output_dir`):
 
 ```bash
-# the whole run
-uv run mini2p-movie --config config/pipeline.toml --cohort cohort-01 --subject sub-03 \
-    --session 224 --run 1 --whole-recording
-# frames 10 to 150 (0-based, both included), green and red merged, bins of 10 frames
+# every stage, frames 10 to 150 (0-based, both included)
+uv run mini2p-stage-movies --config config/pipeline.toml --cohort cohort-01 --subject sub-03 \
+    --session 224 --run 1 --start-frame 10 --end-frame 150
+# the registered movie of the whole run, bins of 10 frames
 uv run mini2p-movie --config config/pipeline.toml --cohort cohort-01 --subject MY_71_R \
-    --session 224 --run 1 --start-frame 10 --end-frame 150 --channel merge --average-frames 10
+    --session 224 --run 1 --whole-recording --average-frames 10
 ```
 
 or from Python, `movies.make_movies(load_movie_settings(CONFIG), "cohort-01", "sub-03", 224,
-1, whole_recording=False, start_frame=10, end_frame=150)`. Each call writes two movies:
+1, whole_recording=False, start_frame=10, end_frame=150, stages=None)` (`None`: every stage
+the run has). Each stage gives two movies:
 
 - **raw**: every frame, unsmoothed;
 - **averaged**: each movie frame the mean of `average_frames` frames, in bins (`bin`:
@@ -107,15 +120,28 @@ or from Python, `movies.make_movies(load_movie_settings(CONFIG), "cohort-01", "s
   (`rolling`: smooth in time at the full frame rate), optionally with spatial Gaussian
   smoothing (`spatial_sigma_px`, e.g. 1).
 
-Defaults are in `[movies]` (see `config/pipeline.example.toml`); any of them can be given
-on the command line (`--average-frames`, `--average-mode`, `--speed`, `--channel`,
-`--variant`, `--spatial-sigma-px`, `--upscale`, `--output-dir`). Contrast is fixed per
-movie (percentiles of its own frames), so slow brightness changes stay visible; the raw
-and averaged movies therefore have different display ranges. Each frame is labelled with
-the time from the start of the run, its frames and the playback speed. Existing movies are
-refused unless `--overwrite`. Single 7.5 Hz frames are mostly shot noise: for slides,
-bins of 5-10 frames with `spatial_sigma_px = 1` at 4-10x speed usually read best. A raw
-movie of a whole run is large (about 0.9 GB per channel for 7000 frames).
+The green (functional) channel is on the left and the red (structural) on the right, each in
+its colour (`tint = false` for grey; `channel = "green"` or `"red"` for one alone). Contrast
+uses the QC notebook's formula and defaults (black 1 %, white 99.8 %, gamma 1.0), but the
+percentiles are taken per channel over a sample of the movie's own *frames*, not of the mean
+image, and fixed for the whole movie, so slow brightness changes stay visible. Single frames
+are noisier than the mean image, so the same percentiles give a wider range (a dimmer
+picture) than in the QC panels, most of all in the raw version; each stage and version has its
+own range.
+Each frame is labelled with the stage, the time from the start of the run, its frames and the
+playback speed, and each panel with its channel. Defaults are in `[movies]` (see
+`config/pipeline.example.toml`); any can be given on the command line (`--average-frames`,
+`--average-mode`, `--speed`, `--channel`, `--variant`, `--black-percentile`,
+`--white-percentile`, `--gamma`, `--spatial-sigma-px`, `--upscale`, `--output-dir`).
+Existing movies are refused unless `--overwrite`, and every stage's file must exist before
+anything is written.
+
+Single 7.5 Hz frames are mostly shot noise: for slides, bins of 5-10 frames with
+`spatial_sigma_px = 1` at 4-10x speed usually read best. Movies must play at >= 1 frame/s.
+Each movie reads its frames once more for itself (the raw and averaged versions separately),
+so whole-run stage movies read about 2 x 14 GB per TIFF stage over the share, and a TIFF is
+read page by page from its start, so frames late in a run take longer to reach. Prefer frame
+ranges for the TIFF stages; a raw-version movie of a whole run is also large (1-2 GB).
 
 ## From registration to ΔF/F0
 
@@ -170,7 +196,7 @@ meaning there. ΔF itself stays finite. The same applies to the green/red ratio,
 | `fluorescence.py` | analysis | neuropil correction, F0, ΔF, ΔF/F0, G/R ratio, audit table |
 | `extraction.py`, `plane.py` | I/O | Cellpose-mask extraction; loading a plane's traces and valid frames |
 | `cellpose_batch.py` | I/O | extraction for every batch run; summary and mask-alignment review PDF |
-| `movies.py` | analysis + I/O | movie frames and names (pure `plan_movie`); MP4 writing |
+| `movies.py` | analysis + I/O | movies of each stage: frames, contrast, names (pure `plan_movie`); stage readers; MP4 writing |
 
 Distortion calibration still comes from your `distortion_correct_full_recording.py`,
 which is shared with the SLURM worker. Set `distortion.calibration_script_dir` to

@@ -22,6 +22,7 @@ notebook = ["ipywidgets>=8.1", "jupyterlab>=4.1"]
 mini2p-preprocess = "mini2p_preprocessing.cli:main"
 mini2p-extract = "mini2p_preprocessing.cli:extract_main"
 mini2p-movie = "mini2p_preprocessing.cli:movie_main"
+mini2p-stage-movies = "mini2p_preprocessing.cli:stage_movies_main"
 
 [dependency-groups]
 dev = ["pytest>=8.0", "ruff>=0.4"]
