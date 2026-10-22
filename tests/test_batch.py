@@ -105,7 +105,7 @@ def test_plan_assigns_runs_in_acquisition_order(tmp_path):
 def _batch_with_two_sources(tmp_path):
     raw = make_raw_tree(tmp_path / "raw", {5: ["71rtask_00001.tif", "71rtask_00002.tif"]})
     config = tmp_path / "pipeline.toml"
-    config.write_text('[distortion]\nmode = "off"\n')
+    config.write_text('[distortion]\nmode = "cluster_full"\n')  # corrected: run-XX/<destriping>
     batch = BatchSettings(
         raw_subject_dir=raw,
         derivatives_subject_dir=tmp_path / "der",
@@ -246,7 +246,7 @@ def test_rerun_refuses_a_config_that_will_not_overwrite(tmp_path, monkeypatch):
     batch, config = _batch_with_two_sources(tmp_path)
     _stub_worker(monkeypatch, "pass")
     batch_module.run_batch(batch, config)
-    config.write_text('overwrite = false\n[distortion]\nmode = "off"\n')
+    config.write_text('overwrite = false\n[distortion]\nmode = "cluster_full"\n')
     with pytest.raises(ValueError, match="overwrite"):
         rerun = batch.model_copy(update={"rerun_completed_before": datetime.now(UTC)})
         batch_module.run_batch(rerun, config)
@@ -332,3 +332,22 @@ def test_the_cutoff_comes_from_the_running_batch_not_the_live_config(tmp_path):
         body + "rerun_completed_before = 2026-10-21T06:00:00+01:00\n"
     )
     assert launch_cutoff(tmp_path) == datetime(2026, 10, 21, 5, tzinfo=UTC)
+
+
+def test_runs_without_distortion_correction_get_their_own_folders(tmp_path, monkeypatch):
+    from mini2p_preprocessing import batch as batch_module
+
+    batch, config = _batch_with_two_sources(tmp_path)
+    _stub_worker(monkeypatch, "pass")
+    batch_module.run_batch(batch, config)  # distortion corrected
+    config.write_text('[distortion]\nmode = "off"\n')
+    for destripe in (False, True):
+        plan = batch_module.run_batch(batch.model_copy(update={"destripe": destripe}), config)
+        assert [p.action for p in plan] == ["run", "run"]  # not the corrected runs' folders
+        expected = "with_destriping" if destripe else "without_destriping"
+        assert [p.run_dir.relative_to(p.run_dir.parents[2]).as_posix() for p in plan] == [
+            f"run-0{i}/without_distortion_correction/{expected}" for i in (1, 2)
+        ]
+    for corrected in (True, False):
+        again = plan_batch(batch, corrected)
+        assert [p.action for p in again] == ["skip", "skip"]

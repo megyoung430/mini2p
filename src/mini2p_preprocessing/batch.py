@@ -21,7 +21,7 @@ from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
 
-from .config import load_settings, variant_output_dir
+from .config import load_settings, variant_subdir
 from .progress import ProgressLog
 
 log = logging.getLogger(__name__)
@@ -241,8 +241,16 @@ def find_sessions(raw_subject_dir: Path, first: int, last: int) -> list[tuple[in
     return sessions
 
 
-def plan_batch(batch: BatchSettings) -> list[PlannedRun]:
-    subdir = variant_output_dir(Path(), batch.destripe).name
+def batch_distortion_corrected(config_path: Path) -> bool:
+    """Whether the config's ``[distortion] mode`` corrects distortion (anything but "off")."""
+    return load_settings(config_path).distortion.mode != "off"
+
+
+def plan_batch(batch: BatchSettings, distortion_corrected: bool = True) -> list[PlannedRun]:
+    """What the batch would do with every raw TIFF in the session range. Runs go to
+    ``run-XX/<variant>``, the variant set by ``batch.destripe`` and *distortion_corrected*
+    (``[distortion] mode`` is not "off")."""
+    subdir = variant_subdir(batch.destripe, distortion_corrected)
     plan = []
     for session, session_dir in find_sessions(
         batch.raw_subject_dir, batch.session_first, batch.session_last
@@ -267,10 +275,11 @@ def plan_batch(batch: BatchSettings) -> list[PlannedRun]:
                     existing_by_source[found.source] = found
         for index, source in enumerate(sources, start=1):
             run_name = f"run-{index:02d}"
-            run_dir = derivative_funcimg / run_name / subdir
+            run_folder = derivative_funcimg / run_name
+            run_dir = run_folder / subdir
             identity = source_identity(source)
             resolved = source.resolve()
-            here = read_existing_run(run_dir.parent) if run_dir.parent.is_dir() else None
+            here = read_existing_run(run_folder) if run_folder.is_dir() else None
             blocked = run_folder_conflict(here, resolved)
             if blocked:
                 action, reason = "conflict", blocked
@@ -375,7 +384,7 @@ def run_batch(batch: BatchSettings, config_path: Path) -> list[PlannedRun]:
     Planning here rather than reusing an earlier plan means relaunching after a
     failure never reprocesses runs that completed in the meantime.
     """
-    plan = plan_batch(batch)
+    plan = plan_batch(batch, batch_distortion_corrected(config_path))
     conflicts = [p for p in plan if p.action == "conflict"]
     if conflicts:
         details = "\n".join(f"  {p.run_dir}: {p.reason}" for p in conflicts)

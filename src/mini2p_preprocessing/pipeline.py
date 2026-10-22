@@ -49,7 +49,7 @@ def run_pipeline(input_tiff: Path, output_dir: Path, settings: PipelineSettings)
     input_tiff, output_dir = Path(input_tiff).resolve(), Path(output_dir).resolve()
     if not input_tiff.is_file():
         raise FileNotFoundError(f"Input TIFF not found: {input_tiff}")
-    check_variant_folder(output_dir, settings.destripe.enabled)
+    check_variant_folder(output_dir, settings.destripe.enabled, settings.distortion.mode != "off")
     output_dir.mkdir(parents=True, exist_ok=True)
     corrected = corrected_tiff_path(output_dir, input_tiff, settings)
     started = time.monotonic()

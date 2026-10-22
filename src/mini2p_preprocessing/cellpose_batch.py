@@ -18,7 +18,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 from .alignment import load_reference_image
 from .batch import read_existing_run
-from .config import VARIANT_SUBDIRS, PipelineSettings
+from .config import VARIANTS, PipelineSettings, run_dir_of
 from .contrast import scale_contrast
 from .exports import Contrast, find_run_planes, require_run_count
 from .extraction import (
@@ -163,14 +163,14 @@ def extract_all(
     overwrite: bool = False,
 ) -> list[dict]:
     """Extract every registered ``run-XX/<variant>`` plane from ``run-XX/<seg_relative>``."""
-    if variant not in VARIANT_SUBDIRS:
-        raise ValueError(f"variant must be one of {VARIANT_SUBDIRS}, not {variant!r}")
+    if variant not in VARIANTS:
+        raise ValueError(f"variant must be one of {VARIANTS}, not {variant!r}")
     runs = find_run_planes(subject_dir, first_session, last_session, variant)
     require_run_count(runs, expected_runs)
     rows = []
     progress = ProgressLog(f"Cellpose extraction ({variant})", len(runs), log.info)
     for run in sorted(runs, key=lambda r: (r.session, r.run)):
-        run_dir = run.plane_dir.parents[2]
+        run_dir = run_dir_of(run.plane_dir.parents[1])
         row = summary_row(run.session, run.run_name, variant, run.plane_dir)
         rows.append(
             extract_run(

@@ -11,7 +11,7 @@ import numpy as np
 import suite2p
 import tifffile
 
-from .config import VARIANT_SUBDIRS, PipelineSettings
+from .config import VARIANT_SUBDIRS, PipelineSettings, run_dir_of
 
 log = logging.getLogger(__name__)
 
@@ -74,7 +74,9 @@ def build_suite2p_db(
 
 def fast_disk_for(output_dir: Path, fast_disk: Path) -> Path:
     """This run's folder under *fast_disk*, named after its session, run and variant."""
-    return Path(fast_disk) / "_".join(Path(output_dir).parts[-4:])
+    output_dir = Path(output_dir)
+    run_dir = run_dir_of(output_dir)
+    return Path(fast_disk) / "_".join(run_dir.parts[-3:] + output_dir.relative_to(run_dir).parts)
 
 
 # ---- I/O --------------------------------------------------------------------------

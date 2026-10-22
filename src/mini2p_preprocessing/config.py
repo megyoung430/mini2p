@@ -13,6 +13,10 @@ ChannelRole = Literal["structural", "functional"]
 WITHOUT_DESTRIPING_SUBDIR = "without_destriping"
 WITH_DESTRIPING_SUBDIR = "with_destriping"
 VARIANT_SUBDIRS = (WITHOUT_DESTRIPING_SUBDIR, WITH_DESTRIPING_SUBDIR)
+# Runs without distortion correction go one level down: run-XX/<this>/<destriping folder>.
+NO_DISTORTION_SUBDIR = "without_distortion_correction"
+# Every variant folder, relative to run-XX/
+VARIANTS = VARIANT_SUBDIRS + tuple(f"{NO_DISTORTION_SUBDIR}/{v}" for v in VARIANT_SUBDIRS)
 
 
 class _Frozen(BaseModel):
@@ -195,23 +199,59 @@ def with_destriping(settings: PipelineSettings, enabled: bool) -> PipelineSettin
     return settings.model_copy(update={"destripe": destripe})
 
 
-def variant_output_dir(run_dir: Path, destripe_enabled: bool) -> Path:
-    """``run_dir/with_destriping`` or ``run_dir/without_destriping``, so both variants coexist."""
+def variant_subdir(destripe_enabled: bool, distortion_corrected: bool = True) -> str:
+    """The variant folder, relative to ``run-XX/``: ``with_destriping`` or
+    ``without_destriping``, inside ``without_distortion_correction/`` when distortion
+    correction is off, so every combination has its own folder."""
     subdir = WITH_DESTRIPING_SUBDIR if destripe_enabled else WITHOUT_DESTRIPING_SUBDIR
-    return Path(run_dir) / subdir
+    return subdir if distortion_corrected else f"{NO_DISTORTION_SUBDIR}/{subdir}"
 
 
-def check_variant_folder(output_dir: Path, destripe_enabled: bool) -> None:
-    """Refuse a with_/without_destriping folder that disagrees with the destriping setting."""
-    name = Path(output_dir).name
-    if name in VARIANT_SUBDIRS and name != variant_output_dir(Path(), destripe_enabled).name:
-        state = "on" if destripe_enabled else "off"
-        raise ValueError(f"Output folder {output_dir} is {name}/ but destriping is {state}")
+def settings_variant(settings: PipelineSettings) -> str:
+    """The variant folder that *settings* write to."""
+    return variant_subdir(settings.destripe.enabled, settings.distortion.mode != "off")
+
+
+def variant_output_dir(
+    run_dir: Path, destripe_enabled: bool, distortion_corrected: bool = True
+) -> Path:
+    """``run_dir/<variant_subdir>``, so every variant coexists."""
+    return Path(run_dir) / variant_subdir(destripe_enabled, distortion_corrected)
+
+
+def variant_label(variant: str) -> str:
+    """A variant as one file-name part: ``without_distortion_correction_with_destriping``."""
+    return variant.replace("/", "_")
+
+
+def run_dir_of(variant_dir: Path) -> Path:
+    """The ``run-XX/`` folder of a variant folder (one or two levels up)."""
+    variant_dir = Path(variant_dir)
+    parent = variant_dir.parent
+    return parent.parent if parent.name == NO_DISTORTION_SUBDIR else parent
+
+
+def check_variant_folder(
+    output_dir: Path, destripe_enabled: bool, distortion_corrected: bool = True
+) -> None:
+    """Refuse a variant folder that disagrees with the destriping or distortion setting."""
+    output_dir = Path(output_dir)
+    if output_dir.name not in VARIANT_SUBDIRS:
+        return  # a plain output folder, as for tests or one-off runs
+    expected = variant_subdir(destripe_enabled, distortion_corrected)
+    actual = output_dir.relative_to(run_dir_of(output_dir)).as_posix()
+    if actual != expected:
+        destripe = "on" if destripe_enabled else "off"
+        distortion = "on" if distortion_corrected else "off"
+        raise ValueError(
+            f"Output folder {output_dir} is {actual}/ but destriping is {destripe} and "
+            f"distortion correction is {distortion}, which write to {expected}/"
+        )
 
 
 def run_name_from_output_dir(output_dir: Path) -> str:
     output_dir = Path(output_dir)
-    return output_dir.parent.name if output_dir.name in VARIANT_SUBDIRS else output_dir.name
+    return run_dir_of(output_dir).name if output_dir.name in VARIANT_SUBDIRS else output_dir.name
 
 
 def corrected_tiff_path(output_dir: Path, input_tiff: Path, settings: PipelineSettings) -> Path:

@@ -35,7 +35,22 @@ CLI and the batch workers all read it, so they cannot drift apart.
 
 Each variant has its own subfolder of `run-XX/`: `without_destriping/` and
 `with_destriping/`. The batch picks it from `[batch] destripe`, the QC notebook and
-the CLI from `[destripe] enabled` (the CLI's `--destripe` overrides it).
+the CLI from `[destripe] enabled` (the CLI's `--destripe` overrides it). With
+`[distortion] mode = "off"` the variant goes one level down, so runs with and without
+distortion correction never share a folder:
+
+```
+run-01/
+  with_destriping/                    distortion corrected
+  without_destriping/                 distortion corrected
+  without_distortion_correction/
+    with_destriping/
+    without_destriping/
+```
+
+Wherever a variant is named (`[exports] run_subdir`, `[movies] variant`), the nested ones
+are written `without_distortion_correction/with_destriping`; in file names (export
+summaries, PDFs, movies) the `/` becomes `_`.
 
 For both variants over many sessions, run the batch once with `destripe = false` and
 once with `destripe = true`, in either order. Each launch freezes its own copy of the

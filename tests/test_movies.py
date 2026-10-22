@@ -873,3 +873,18 @@ def test_a_run_with_its_own_record_never_loads_the_config(tmp_path):
 
     plane = make_run(tmp_path)
     make_movies(path_settings(plane.parents[2], averaged_movie=False), must_not_load)
+
+
+def test_movies_of_a_run_without_distortion_correction(tmp_path):
+    nested = "without_distortion_correction/without_destriping"
+    make_run(tmp_path, variant=nested, run=run_settings(distortion={"mode": "off"}))
+    written = make_movies(
+        settings_for(tmp_path, variant=nested, stage_raw=True, stage_bidiphase=True,
+                     averaged_movie=False)
+    )  # fmt: skip
+    assert [p.name.split("_without_distortion_correction_without_destriping_")[1].split("_")[0]
+            for p in written] == ["raw", "bidiphase", "registered"]  # fmt: skip
+    assert all(p.name.startswith(f"sub-03_id-MY_71_R_{SESSION}_run-01_") for p in written)
+    assert all(p.parent == tmp_path.joinpath(
+        "cohort-01", "sub-03_id-MY_71_R", SESSION, "funcimg", "run-01", nested, "movies")
+        for p in written)  # fmt: skip
