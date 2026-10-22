@@ -3,19 +3,23 @@
 ``mini2p-preprocess --config ... --input ... --output-dir ...`` runs phase correction,
 distortion correction and registration; ``mini2p-extract --config ... --plane-dir ...
 --seg ...`` extracts fluorescence from Cellpose masks into a Suite2p plane folder;
-``mini2p-movie --config ... --cohort ... --subject ... --session ... --run ...`` writes the
-raw and averaged movies of a registered run.
+``mini2p-movie --config ...`` writes the movies of a run's preprocessing stages set in the
+config's ``[movies]`` section (any setting can be overridden, e.g. ``--session 224``);
+``mini2p-natex --config ... --plane-dir ...`` runs NATEX's calcium processing on a plane.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import types
+import typing
 from pathlib import Path
 
 from .config import load_settings, with_destriping
 from .extraction import run_cellpose_extraction
-from .movies import load_movie_settings, make_movies
+from .movies import MovieSettings, load_movie_settings, make_movies
+from .natex import load_natex_settings, run_natex
 from .pipeline import run_pipeline
 
 
@@ -59,58 +63,101 @@ def extract_main(argv: list[str] | None = None) -> None:
     run_cellpose_extraction(args.seg, args.plane_dir, load_settings(args.config), args.mask_image)
 
 
+# Every [movies] setting, with its command-line help; choices come from the settings model.
+MOVIE_HELP = {
+    "cohort": "cohort folder, e.g. cohort-01",
+    "subject": "subject folder or part of it, e.g. sub-03 or MY_71_R",
+    "session": "session number, e.g. 224",
+    "run": "run number, e.g. 1 for run-01",
+    "variant": "destriping variant folder",
+    "whole_recording": "every frame (--no-whole-recording: start to end frame)",
+    "start_frame": "first frame (0-based); implies --no-whole-recording",
+    "end_frame": "last frame, included; implies --no-whole-recording",
+    "stage_raw": "movie of the acquired TIFF",
+    "stage_bidiphase": "movie after phase correction (and destriping)",
+    "stage_undistorted": "movie after distortion correction",
+    "stage_registered": "movie after motion registration",
+    "unaveraged_movie": "every frame",
+    "averaged_movie": "average_frames frames per movie frame",
+    "derivatives_root": "folder holding cohort-XX/<subject>/ses-*/funcimg/run-XX",
+    "raw_tiff": "the acquired TIFF, if not where source_tiff.json says",
+    "output_dir": "where to write (default: run-XX/<variant>/movies)",
+    "overwrite": "replace existing movies",
+    "save_folder": "Suite2p output folder inside the variant folder",
+    "channel": "both side by side (functional left), or one alone",
+    "average_frames": "frames per averaged movie frame (2-256)",
+    "average_mode": "bin (non-overlapping) or rolling (running mean)",
+    "speed": "playback speed, x real time (a movie must play at >= 1 fps)",
+    "black_percentile": "percentile shown black",
+    "white_percentile": "percentile shown white",
+    "gamma": "display gamma",
+    "spatial_sigma_px": "Gaussian smoothing of averaged frames (px)",
+    "upscale": "pixels drawn upscale x upscale",
+    "label": "stage, time, frames, speed and channel burnt in",
+    "contrast_sample_frames": "frames sampled for the display range",
+    "quality": "H.264 quality, 0-10",
+}
+
+
+def _movie_option(name: str) -> dict:
+    """argparse keywords for one MovieSettings field, from its type."""
+    kind = MovieSettings.model_fields[name].annotation
+    if typing.get_origin(kind) in (typing.Union, types.UnionType):  # X | None
+        kind = next(a for a in typing.get_args(kind) if a is not type(None))
+    if kind is bool:
+        return {"action": argparse.BooleanOptionalAction}
+    if typing.get_origin(kind) is typing.Literal:
+        return {"choices": list(typing.get_args(kind))}
+    return {"type": kind}
+
+
 def movie_main(argv: list[str] | None = None) -> None:
+    """Movies of a run's preprocessing stages, as set in [movies]; options override it."""
     parser = argparse.ArgumentParser(
-        description="Raw and averaged movies of a registered run (settings from [movies])"
+        description="Movies of a run's preprocessing stages. Everything is set in the [movies] "
+        "section of the config; each option below overrides one of its settings."
     )
     parser.add_argument("--config", type=Path, required=True, help="pipeline TOML file")
-    parser.add_argument("--cohort", required=True, help="e.g. cohort-01")
-    parser.add_argument("--subject", required=True, help="e.g. sub-03 or MY_71_R")
-    parser.add_argument("--session", type=int, required=True, help="e.g. 224")
-    parser.add_argument("--run", type=int, required=True, help="e.g. 1 for run-01")
-    span = parser.add_mutually_exclusive_group(required=True)
-    span.add_argument("--whole-recording", action="store_true", help="every frame of the run")
-    span.add_argument("--start-frame", type=int, help="first frame (0-based); needs --end-frame")
-    parser.add_argument("--end-frame", type=int, help="last frame, included")
-    parser.add_argument("--only", choices=["raw", "averaged"], help="write just one version")
-    parser.add_argument("--overwrite", action="store_true", help="replace existing movies")
-    overrides = {
-        "variant": dict(choices=["without_destriping", "with_destriping"]),
-        "channel": dict(choices=["green", "red", "merge"]),
-        "average_frames": dict(type=int),
-        "average_mode": dict(choices=["bin", "rolling"]),
-        "speed": dict(type=float),
-        "spatial_sigma_px": dict(type=float),
-        "upscale": dict(type=int),
-        "output_dir": dict(type=Path),
-    }
-    for name, kwargs in overrides.items():
-        parser.add_argument(
-            f"--{name.replace('_', '-')}", help=f"override [movies] {name}", **kwargs
-        )
+    for name, text in MOVIE_HELP.items():
+        parser.add_argument(f"--{name.replace('_', '-')}", help=text, **_movie_option(name))
     args = parser.parse_args(argv)
-    if (args.start_frame is None) != (args.end_frame is None):
-        parser.error("--start-frame and --end-frame go together")
+    chosen = {k: getattr(args, k) for k in MOVIE_HELP if getattr(args, k) is not None}
+    if {"start_frame", "end_frame"} & set(chosen):
+        if chosen.get("whole_recording"):
+            parser.error("--whole-recording and --start-frame/--end-frame contradict each other")
+        chosen["whole_recording"] = False
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
-    chosen = {k: getattr(args, k) for k in overrides if getattr(args, k) is not None}
     try:
-        settings = load_movie_settings(args.config, **chosen)
-        written = make_movies(
-            settings,
-            args.cohort,
-            args.subject,
-            args.session,
-            args.run,
-            whole_recording=args.whole_recording,
-            start_frame=args.start_frame,
-            end_frame=args.end_frame,
-            versions=(args.only,) if args.only else ("raw", "averaged"),
-            overwrite=args.overwrite,
-        )
+        written = make_movies(load_movie_settings(args.config, **chosen))
     except (ValueError, FileNotFoundError, FileExistsError) as error:  # incl. ValidationError
         parser.error(str(error))
     for path in written:
         print(path)
+
+
+def natex_main(argv: list[str] | None = None) -> None:
+    """NATEX (MINI2P toolbox) on Suite2p plane folders: ΔF/F, transients, SNR, events."""
+    parser = argparse.ArgumentParser(
+        description="NATEX's calcium processing on a plane: ΔF/F, significant transients, SNR "
+        "and cleaned events per ROI, saved with a QC PDF in <plane>/natex (settings: [natex])"
+    )
+    parser.add_argument("--config", type=Path, required=True, help="pipeline TOML file")
+    parser.add_argument(
+        "--plane-dir", type=Path, required=True, nargs="+", help="suite2p/plane0 folder(s)"
+    )
+    parser.add_argument("--output-dir", type=Path, help="instead of <plane>/natex (one plane)")
+    parser.add_argument("--overwrite", action="store_true", help="replace earlier results")
+    args = parser.parse_args(argv)
+    if args.output_dir and len(args.plane_dir) > 1:
+        parser.error("--output-dir takes one plane folder")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
+    try:
+        settings = load_natex_settings(args.config)
+        coefficient = load_settings(args.config).fluorescence.neuropil_coefficient
+        for plane_dir in args.plane_dir:
+            print(run_natex(plane_dir, settings, coefficient, args.output_dir, args.overwrite))
+    except (ValueError, FileNotFoundError, FileExistsError) as error:  # incl. ValidationError
+        parser.error(str(error))
 
 
 if __name__ == "__main__":

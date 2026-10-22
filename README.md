@@ -85,37 +85,119 @@ After a batch, the last cells of the batch notebook (run once per variant, with
 
 ### Movies
 
-`mini2p-movie` writes MP4s (H.264, which PowerPoint, Keynote and QuickTime play) of a
-registered run, from Suite2p's registered binaries, into `run-XX/<variant>/movies/`
-(or `[movies] output_dir`):
+`mini2p-movie` writes greyscale MP4s (H.264, which PowerPoint, Keynote and QuickTime play) of
+a run at each stage of the preprocessing:
+
+| Stage (`[movies]` switch) | File |
+|---|---|
+| raw (`stage_raw`) | the acquired TIFF (from the run's `source_tiff.json`, or `raw_tiff`) |
+| bidiphase (`stage_bidiphase`) | `*_dynamic_bidiphase[_destriped].tif` (phase correction, and destriping) |
+| undistorted (`stage_undistorted`) | `*_undistorted.tif` (+ distortion correction; cropped) |
+| registered (`stage_registered`) | Suite2p's `data.bin` / `data_chan2.bin` (+ motion registration) |
+
+Everything is set in the `[movies]` section of the config (see
+`config/pipeline.example.toml`): which run (`cohort`, `subject`, `session`, `run`,
+`variant`), which frames (`whole_recording`, which must be set, or `start_frame` to
+`end_frame`, 0-based and both included; with the whole recording the two frame numbers are
+ignored, with a warning), which stages (the four switches above; only `stage_registered` is on
+unless the config says otherwise) and versions (`unaveraged_movie`, `averaged_movie`), where
+to read
+(`derivatives_root`, `raw_tiff`) and write (`output_dir`, default `run-XX/<variant>/movies/`),
+and how they look. Then:
 
 ```bash
-# the whole run
-uv run mini2p-movie --config config/pipeline.toml --cohort cohort-01 --subject sub-03 \
-    --session 224 --run 1 --whole-recording
-# frames 10 to 150 (0-based, both included), green and red merged, bins of 10 frames
-uv run mini2p-movie --config config/pipeline.toml --cohort cohort-01 --subject MY_71_R \
-    --session 224 --run 1 --start-frame 10 --end-frame 150 --channel merge --average-frames 10
+uv run mini2p-movie --config config/pipeline.toml
+# any setting can be overridden for one call (see --help), e.g. another session and run,
+# or other frames (--start-frame / --end-frame imply --no-whole-recording)
+uv run mini2p-movie --config config/pipeline.toml --session 225 --run 2 \
+    --no-stage-raw --no-stage-bidiphase --no-stage-undistorted
 ```
 
-or from Python, `movies.make_movies(load_movie_settings(CONFIG), "cohort-01", "sub-03", 224,
-1, whole_recording=False, start_frame=10, end_frame=150)`. Each call writes two movies:
+or from Python, `movies.make_movies(movies.load_movie_settings(CONFIG, session=225))`.
 
-- **raw**: every frame, unsmoothed;
+- **unaveraged**: every frame, unsmoothed;
 - **averaged**: each movie frame the mean of `average_frames` frames, in bins (`bin`:
   fewer frames, each covering more time, the usual choice for talks) or as a running mean
   (`rolling`: smooth in time at the full frame rate), optionally with spatial Gaussian
   smoothing (`spatial_sigma_px`, e.g. 1).
 
-Defaults are in `[movies]` (see `config/pipeline.example.toml`); any of them can be given
-on the command line (`--average-frames`, `--average-mode`, `--speed`, `--channel`,
-`--variant`, `--spatial-sigma-px`, `--upscale`, `--output-dir`). Contrast is fixed per
-movie (percentiles of its own frames), so slow brightness changes stay visible; the raw
-and averaged movies therefore have different display ranges. Each frame is labelled with
-the time from the start of the run, its frames and the playback speed. Existing movies are
-refused unless `--overwrite`. Single 7.5 Hz frames are mostly shot noise: for slides,
-bins of 5-10 frames with `spatial_sigma_px = 1` at 4-10x speed usually read best. A raw
-movie of a whole run is large (about 0.9 GB per channel for 7000 frames).
+The functional (green) channel is on the left and the structural (red) channel on the right,
+both in grey and labelled (`channel = "green"` or `"red"` for one alone). Contrast uses the QC
+notebook's formula and defaults (black 1 %, white 99.8 %, gamma 1.0), but the percentiles are
+taken per channel over a sample of the movie's own *frames*, not of the mean image, and fixed
+for the whole movie, so slow brightness changes stay visible. Single frames are noisier than
+the mean image, so the same percentiles give a wider range (a dimmer picture) than in the QC
+panels, most of all in the unaveraged movie; each stage and version has its own range. Each
+frame is labelled with the stage, the time from the start of the run, its frames and the
+playback speed.
+
+The TIFF stages take the channel order and file names from the run's own
+`pipeline_settings.json`, not the current config; a run processed without distortion
+correction has no undistorted stage (set `stage_undistorted = false` for it). Every stage has the run's frames (with `max_timepoints`,
+the first frames of the acquired TIFF), so a frame number is the same moment in each movie.
+Existing movies are refused unless `overwrite = true`, and every stage's file must exist
+before anything is written.
+
+Single 7.5 Hz frames are mostly shot noise: for slides, bins of 5-10 frames with
+`spatial_sigma_px = 1` at 4-10x speed usually read best. Movies must play at >= 1 frame/s.
+Each movie reads its frames once more for itself (the unaveraged and averaged versions
+separately), so whole-run movies read about 2 x 14 GB per TIFF stage over the share, and a
+TIFF is read page by page from its start, so frames late in a run take longer to reach. Prefer
+frame ranges for the TIFF stages; an unaveraged movie of a whole run is also large (1-2 GB).
+
+### NATEX: transients, SNR and cleaned events per ROI
+
+`mini2p-natex` runs the calcium-trace part of NATEX, the MINI2P toolbox's post-Suite2p app
+(Zong et al., Cell 2022; [kavli-ntnu/MINI2P_toolbox](https://github.com/kavli-ntnu/MINI2P_toolbox)),
+ported from MATLAB:
+
+```bash
+uv run mini2p-natex --config config/pipeline.toml \
+    --plane-dir /path/to/run-01/without_destriping/suite2p/plane0
+```
+
+Per ROI, from the neuropil-corrected trace (`[fluorescence] neuropil_coefficient`, unless
+`[natex] neuropil_coefficient` is set):
+
+- **ΔF/F**: F0 is the 8th percentile in a running 30 s window, lifted by the mean distance
+  between the trace and that percentile in the quietest stretches (local SD in the lowest
+  10 % of its range);
+- **significant transients**: the 2 Hz low-passed ΔF/F above twice its local SD for at least
+  0.75 s, widened by 0.4 s on either side;
+- **SNR**: median of the top 10 % of ΔF/F within transients minus the median outside them,
+  over the SD of the whole ΔF/F;
+- **cleaned events**: `spks` kept only within transients, minus their mean outside them,
+  outliers capped, scaled to the peak ΔF/F; the **event count** is the frames with an event;
+- **bad**: raw F zero throughout.
+
+Results go to `<plane>/natex/` (or `--output-dir`): `natex_dff.npy`, `natex_f0.npy`,
+`natex_dff_lowpassed.npy`, `natex_significant.npy`, `natex_events.npy` (ROIs x frames,
+rows in `natex_rois.npy`), `natex_cells.csv` (SNR, event count, fraction of time in
+transients, fraction of frames with F0 <= 0, bad) and `natex_settings.json`, with
+`natex_qc.pdf`: SNR and event-count histograms, the ROIs coloured by SNR, and example
+cells from highest to lowest SNR with
+their transients shaded. The parameters are NATEX's defaults, set in `[natex]`; all ROIs are
+used (`only_iscell = true` keeps Suite2p "cells" only, as NATEX does). Low SNR or few
+transients flag ROIs to look at, or to leave out; the ΔF/F here is an alternative to the
+maximin ΔF/F0 of the QC notebook, not a replacement.
+
+Each step follows the MATLAB code. `smooth_percentile`, the transient loops of
+`DetaF_T_baselinecorrect`, `CalculateSNR` and NATEXplorer's event clean-up are tested against
+line-by-line transcriptions; `movstd` and `lowpass` against their documented behaviour. The
+differences:
+
+- MATLAB's `lowpass` (a minimum-order equiripple FIR) is approximated by a Kaiser-window FIR
+  with the same band edges and attenuation, and the trace is reflected at its ends where
+  MATLAB pads with zeros, so the first and last ~7 s can differ;
+- ΔF/F is NaN where F0 <= 0 (MATLAB gives infinities); SNR then uses the other frames, and
+  `undefined_fraction` in `natex_cells.csv` says how many frames were left out;
+- arrays are saved as float32.
+
+`movstd` with NATEX's non-integer windows (0.75 s and 30 s x 7.52 Hz) is taken to use MATLAB's
+half-open window rule, t - k/2 <= j < t + k/2 (5 and 225 frames). One property of NATEX is kept
+on purpose: a cell with events in fewer than ~0.1 % of frames loses them all to the outlier cap,
+so its event count is 0. NATEX's tracking analysis (DeepLabCut), its combination with imaging,
+its detection of one cell in several planes, and its GUI are not ported.
 
 ## From registration to ΔF/F0
 
@@ -170,7 +252,8 @@ meaning there. ΔF itself stays finite. The same applies to the green/red ratio,
 | `fluorescence.py` | analysis | neuropil correction, F0, ΔF, ΔF/F0, G/R ratio, audit table |
 | `extraction.py`, `plane.py` | I/O | Cellpose-mask extraction; loading a plane's traces and valid frames |
 | `cellpose_batch.py` | I/O | extraction for every batch run; summary and mask-alignment review PDF |
-| `movies.py` | analysis + I/O | movie frames and names (pure `plan_movie`); MP4 writing |
+| `natex.py` | analysis + I/O | NATEX port: ΔF/F, transients, SNR, cleaned events; results and QC PDF |
+| `movies.py` | analysis + I/O | movies of each stage: frames, contrast, names (pure `plan_movie`); stage readers; MP4 writing |
 
 Distortion calibration still comes from your `distortion_correct_full_recording.py`,
 which is shared with the SLURM worker. Set `distortion.calibration_script_dir` to

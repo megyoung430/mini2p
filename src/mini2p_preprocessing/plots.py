@@ -337,3 +337,63 @@ def plot_mask_alignment(
         ax.set_title(f"{label}\n{title}".strip())
         ax.axis("off")
     return axes
+
+
+def plot_natex_overview(result, mean_image: np.ndarray, labels: np.ndarray, axes=None):
+    """NATEX per ROI: SNR and event-count histograms, and the ROIs coloured by SNR.
+
+    Args:
+        result: A ``natex.PlaneResult``.
+        mean_image (np.ndarray): The plane's mean image.
+        labels (np.ndarray): ROI label image, ROI i drawn as i + 1.
+        axes: Three axes, or None for a new figure.
+
+    Returns:
+        np.ndarray: The three axes.
+    """
+    axes = _axes_grid(axes, 1, 3, (15, 4.5)).ravel()
+    good = ~result.bad
+    axes[0].hist(result.snr[good], bins=30, color="0.3")
+    axes[0].set(xlabel="SNR", ylabel="ROIs", title=f"SNR ({good.sum()} ROIs with signal)")
+    axes[1].hist(result.event_count[good], bins=30, color="0.3")
+    axes[1].set(xlabel="frames with a cleaned event", ylabel="ROIs", title="Event count")
+    low, high = np.nanpercentile(mean_image, [1, 99.8])
+    axes[2].imshow(mean_image, cmap="gray", vmin=low, vmax=high)
+    snr_image = np.full(labels.shape, np.nan)
+    for roi, value in zip(result.rois, result.snr, strict=True):
+        snr_image[labels == roi + 1] = value
+    shown = axes[2].imshow(snr_image, cmap="viridis", alpha=0.8)
+    axes[2].figure.colorbar(shown, ax=axes[2], label="SNR", fraction=0.046)
+    axes[2].set_axis_off()
+    axes[2].set_title("ROIs coloured by SNR")
+    return axes
+
+
+def plot_natex_cells(result, rows: Sequence[int], axes=None) -> np.ndarray:
+    """ΔF/F of chosen rows of a NATEX result, significant transients shaded, cleaned events
+    beneath; time in seconds from the start of the run."""
+    axes = _axes_grid(axes, len(rows), 1, (14, 1.8 * len(rows))).ravel()
+    t = np.arange(result.dff.shape[1]) / result.fs
+    for ax, row in zip(axes, rows, strict=True):
+        ax.plot(t, result.dff[row], color="0.2", linewidth=0.5)
+        ax.fill_between(
+            t,
+            0,
+            1,
+            where=result.significant[row],
+            color="tab:orange",
+            alpha=0.25,
+            transform=ax.get_xaxis_transform(),
+            linewidth=0,
+        )
+        ax.plot(t, -result.events[row] * 0.3, color="tab:blue", linewidth=0.5)
+        ax.set_ylabel("ΔF/F")
+        ax.set_title(
+            f"ROI {result.rois[row]}: SNR {result.snr[row]:.2f}, "
+            f"{result.event_count[row]} event frames, "
+            f"{100 * result.transient_fraction[row]:.1f} % in transients",
+            fontsize=9,
+            loc="left",
+        )
+    axes[-1].set_xlabel("Time from the start of the run (s)")
+    return axes
