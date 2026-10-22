@@ -85,63 +85,65 @@ After a batch, the last cells of the batch notebook (run once per variant, with
 
 ### Movies
 
-`mini2p-movie` writes MP4s (H.264, which PowerPoint, Keynote and QuickTime play) of a run's
-registered frames, and `mini2p-stage-movies` (same options) one set per preprocessing stage:
+`mini2p-movie` writes greyscale MP4s (H.264, which PowerPoint, Keynote and QuickTime play) of
+a run at each stage of the preprocessing:
 
-| Stage | File |
+| Stage (`[movies]` switch) | File |
 |---|---|
-| `raw` | the acquired TIFF (from the run's `source_tiff.json`, or `--raw-tiff`) |
-| `bidiphase` | `*_dynamic_bidiphase[_destriped].tif` (phase correction, and destriping) |
-| `undistorted` | `*_undistorted.tif` (+ distortion correction; cropped) |
-| `registered` | Suite2p's `data.bin` / `data_chan2.bin` (+ motion registration) |
+| raw (`stage_raw`) | the acquired TIFF (from the run's `source_tiff.json`, or `raw_tiff`) |
+| bidiphase (`stage_bidiphase`) | `*_dynamic_bidiphase[_destriped].tif` (phase correction, and destriping) |
+| undistorted (`stage_undistorted`) | `*_undistorted.tif` (+ distortion correction; cropped) |
+| registered (`stage_registered`) | Suite2p's `data.bin` / `data_chan2.bin` (+ motion registration) |
 
-The TIFF stages take the channel order and file names from the run's own
-`pipeline_settings.json`, not the current config; a run processed without distortion
-correction has no `undistorted` stage. Every stage has the run's frames (with `max_timepoints`,
-the first frames of the acquired TIFF), so a frame number is the same moment in each movie.
-Movies go to `run-XX/<variant>/movies/` (or `[movies] output_dir`):
+Everything is set in the `[movies]` section of the config (see
+`config/pipeline.example.toml`): which run (`cohort`, `subject`, `session`, `run`,
+`variant`), which frames (`whole_recording`, which must be set, or `start_frame` to
+`end_frame`, 0-based and both included; with the whole recording the two frame numbers are
+ignored, with a warning), which stages (the four switches above; only `stage_registered` is on
+unless the config says otherwise) and versions (`unaveraged_movie`, `averaged_movie`), where
+to read
+(`derivatives_root`, `raw_tiff`) and write (`output_dir`, default `run-XX/<variant>/movies/`),
+and how they look. Then:
 
 ```bash
-# every stage, frames 10 to 150 (0-based, both included)
-uv run mini2p-stage-movies --config config/pipeline.toml --cohort cohort-01 --subject sub-03 \
-    --session 224 --run 1 --start-frame 10 --end-frame 150
-# the registered movie of the whole run, bins of 10 frames
-uv run mini2p-movie --config config/pipeline.toml --cohort cohort-01 --subject MY_71_R \
-    --session 224 --run 1 --whole-recording --average-frames 10
+uv run mini2p-movie --config config/pipeline.toml
+# any setting can be overridden for one call (see --help), e.g. another session and run,
+# or other frames (--start-frame / --end-frame imply --no-whole-recording)
+uv run mini2p-movie --config config/pipeline.toml --session 225 --run 2 \
+    --no-stage-raw --no-stage-bidiphase --no-stage-undistorted
 ```
 
-or from Python, `movies.make_movies(load_movie_settings(CONFIG), "cohort-01", "sub-03", 224,
-1, whole_recording=False, start_frame=10, end_frame=150, stages=None)` (`None`: every stage
-the run has). Each stage gives two movies:
+or from Python, `movies.make_movies(movies.load_movie_settings(CONFIG, session=225))`.
 
-- **raw**: every frame, unsmoothed;
+- **unaveraged**: every frame, unsmoothed;
 - **averaged**: each movie frame the mean of `average_frames` frames, in bins (`bin`:
   fewer frames, each covering more time, the usual choice for talks) or as a running mean
   (`rolling`: smooth in time at the full frame rate), optionally with spatial Gaussian
   smoothing (`spatial_sigma_px`, e.g. 1).
 
-The green (functional) channel is on the left and the red (structural) on the right, each in
-its colour (`tint = false` for grey; `channel = "green"` or `"red"` for one alone). Contrast
-uses the QC notebook's formula and defaults (black 1 %, white 99.8 %, gamma 1.0), but the
-percentiles are taken per channel over a sample of the movie's own *frames*, not of the mean
-image, and fixed for the whole movie, so slow brightness changes stay visible. Single frames
-are noisier than the mean image, so the same percentiles give a wider range (a dimmer
-picture) than in the QC panels, most of all in the raw version; each stage and version has its
-own range.
-Each frame is labelled with the stage, the time from the start of the run, its frames and the
-playback speed, and each panel with its channel. Defaults are in `[movies]` (see
-`config/pipeline.example.toml`); any can be given on the command line (`--average-frames`,
-`--average-mode`, `--speed`, `--channel`, `--variant`, `--black-percentile`,
-`--white-percentile`, `--gamma`, `--spatial-sigma-px`, `--upscale`, `--output-dir`).
-Existing movies are refused unless `--overwrite`, and every stage's file must exist before
-anything is written.
+The functional (green) channel is on the left and the structural (red) channel on the right,
+both in grey and labelled (`channel = "green"` or `"red"` for one alone). Contrast uses the QC
+notebook's formula and defaults (black 1 %, white 99.8 %, gamma 1.0), but the percentiles are
+taken per channel over a sample of the movie's own *frames*, not of the mean image, and fixed
+for the whole movie, so slow brightness changes stay visible. Single frames are noisier than
+the mean image, so the same percentiles give a wider range (a dimmer picture) than in the QC
+panels, most of all in the unaveraged movie; each stage and version has its own range. Each
+frame is labelled with the stage, the time from the start of the run, its frames and the
+playback speed.
+
+The TIFF stages take the channel order and file names from the run's own
+`pipeline_settings.json`, not the current config; a run processed without distortion
+correction has no undistorted stage (set `stage_undistorted = false` for it). Every stage has the run's frames (with `max_timepoints`,
+the first frames of the acquired TIFF), so a frame number is the same moment in each movie.
+Existing movies are refused unless `overwrite = true`, and every stage's file must exist
+before anything is written.
 
 Single 7.5 Hz frames are mostly shot noise: for slides, bins of 5-10 frames with
 `spatial_sigma_px = 1` at 4-10x speed usually read best. Movies must play at >= 1 frame/s.
-Each movie reads its frames once more for itself (the raw and averaged versions separately),
-so whole-run stage movies read about 2 x 14 GB per TIFF stage over the share, and a TIFF is
-read page by page from its start, so frames late in a run take longer to reach. Prefer frame
-ranges for the TIFF stages; a raw-version movie of a whole run is also large (1-2 GB).
+Each movie reads its frames once more for itself (the unaveraged and averaged versions
+separately), so whole-run movies read about 2 x 14 GB per TIFF stage over the share, and a
+TIFF is read page by page from its start, so frames late in a run take longer to reach. Prefer
+frame ranges for the TIFF stages; an unaveraged movie of a whole run is also large (1-2 GB).
 
 ## From registration to ΔF/F0
 

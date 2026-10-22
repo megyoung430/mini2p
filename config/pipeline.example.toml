@@ -120,18 +120,38 @@ high_resolution_dpi = 400
 overwrite = false             # per-run exports
 pdf_overwrite = false
 
-[movies]                      # mini2p-movie / mini2p-stage-movies; see README "Movies"
+[movies]                      # mini2p-movie; see README "Movies"
+# Which run
+cohort = "cohort-01"
+subject = "sub-03"            # the subject folder or part of it ("MY_71_R" works too)
+session = 224
+run = 1                       # run-01
+variant = "without_destriping"   # or "with_destriping"
+# Which frames: the whole recording, or start_frame to end_frame (0-based, both included)
+whole_recording = false       # true ignores start_frame and end_frame
+start_frame = 10
+end_frame = 150
+# Which stages of the preprocessing
+stage_raw = true              # the acquired TIFF
+stage_bidiphase = true        # + phase correction (and destriping)
+stage_undistorted = true      # + distortion correction
+stage_registered = true       # + motion registration (Suite2p's binaries)
+# Which versions of each
+unaveraged_movie = true       # every frame
+averaged_movie = true         # average_frames frames per movie frame
+# Where to read and write
 derivatives_root = "/path/to/derivatives"   # holds cohort-XX/<subject>/ses-*/funcimg/run-XX
-variant = "without_destriping"
-channel = "side_by_side"      # green (functional) left, red (structural) right; or "green", "red"
-tint = true                   # each channel in its colour; false for grey
-average_frames = 5            # frames per movie frame in the averaged movie (2-256)
+# raw_tiff = "/path/to/71rtask_00039.tif"   # only if not where source_tiff.json says
+# output_dir = "/Users/you/movies"          # default: run-XX/<variant>/movies
+overwrite = false
+# How they look (greyscale)
+channel = "side_by_side"      # functional left, structural right; or "green", "red" alone
+average_frames = 5            # 2-256
 average_mode = "bin"          # "bin" or "rolling"
 speed = 4.0                   # x real time; a movie must play at >= 1 fps
 black_percentile = 1.0        # contrast as in the QC notebook, per channel
 white_percentile = 99.8
 gamma = 1.0
-spatial_sigma_px = 0.0        # Gaussian smoothing of the averaged movie; raw is never smoothed
+spatial_sigma_px = 0.0        # Gaussian smoothing of the averaged movie; unaveraged never is
 upscale = 1                   # pixels drawn upscale x upscale
-label = true                  # stage, time, frames and speed burnt into each frame
-# output_dir = "/Users/you/movies"   # default: run-XX/<variant>/movies
+label = true                  # stage, time, frames, speed and channel burnt into each frame

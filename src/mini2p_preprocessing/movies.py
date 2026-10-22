@@ -7,20 +7,22 @@ A run can be shown at four stages, each from the file the pipeline wrote:
 - ``undistorted``: after distortion correction too;
 - ``registered``: after Suite2p motion registration (its ``data.bin`` / ``data_chan2.bin``).
 
-Each stage gives two MP4s (H.264, yuv420p, which PowerPoint, Keynote and QuickTime play):
+Each stage gives up to two MP4s (H.264, yuv420p, which PowerPoint, Keynote and QuickTime play):
 
-- **raw**: every frame, unsmoothed;
+- **unaveraged**: every frame, unsmoothed;
 - **averaged**: each movie frame is the mean of ``average_frames`` consecutive frames, either
   in non-overlapping bins (``"bin"``: fewer frames, each covering a longer time) or as a
   running mean (``"rolling"``: one movie frame per acquired frame, smoothed in time).
 
-By default the green (functional) channel is on the left and the red (structural) channel on
-the right. Each channel's contrast uses the QC notebook's formula (black and white percentiles,
-then a gamma), but with the percentiles taken over a sample of the movie's own frames rather
-than of the mean image, and fixed for the whole movie, so brightness changes over the
-recording stay visible. A label gives the stage, the time from the
-start of the run (frame index / frame rate) and the playback speed. The run is found from
-cohort, subject, session and run number under the derivatives folder set in ``[movies]``.
+Movies are greyscale. By default the functional (green) channel is on the left and the
+structural (red) channel on the right, each labelled. Each channel's contrast uses the QC
+notebook's formula (black and white percentiles, then a gamma), but with the percentiles
+taken over a sample of the movie's own frames rather than of the mean image, and fixed for
+the whole movie, so brightness changes over the recording stay visible. A label gives the
+stage, the time from the start of the run (frame index / frame rate) and the playback speed.
+The run is found from cohort, subject, session and run number under the derivatives folder;
+all of it, including which frames, stages and versions, is set in the ``[movies]`` section of
+the config.
 
 Frame numbers are 0-based, like Suite2p's, and ``end_frame`` is included. All stages have the
 same frames, so a frame number means the same moment in every stage's movie.
@@ -31,6 +33,7 @@ from __future__ import annotations
 import json
 import logging
 import tomllib
+import typing
 from collections.abc import Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -58,11 +61,11 @@ log = logging.getLogger(__name__)
 
 Channel = Literal["side_by_side", "green", "red"]
 AverageMode = Literal["bin", "rolling"]
+Version = Literal["unaveraged", "averaged"]
 Stage = Literal["raw", "bidiphase", "undistorted", "registered"]
 STAGES: tuple[Stage, ...] = ("raw", "bidiphase", "undistorted", "registered")
 BINARIES = {"green": ("reg_file", "data.bin"), "red": ("reg_file_chan2", "data_chan2.bin")}
-CHANNEL_TITLES = {"green": "green (functional)", "red": "red (structural)"}
-TINTS = {"green": (0, 1, 0), "red": (1, 0, 0)}  # which of R, G, B each channel lights
+CHANNEL_TITLES = {"green": "functional", "red": "structural"}
 PANEL_GAP_PX = 4
 MOVIE_FOLDER = "movies"
 MIN_FPS = 1.0  # imageio-ffmpeg rounds the rate to 0.01 fps
@@ -70,14 +73,39 @@ SOURCE_FRAMES_PER_BLOCK = 128  # acquired frames held in memory per channel at a
 
 
 class MovieSettings(BaseModel):
-    """The ``[movies]`` section of the pipeline config; arguments to ``make_movies`` override it."""
+    """The ``[movies]`` section of the pipeline config: which run, which frames, which stages
+    and versions, where to read and write, and how the movies look. Command-line options and
+    keyword arguments to ``load_movie_settings`` override it."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    derivatives_root: Path  # holds cohort-XX/<subject>/ses-*/funcimg/run-XX
+    # Which run (folders under derivatives_root/<cohort>/<subject>/ses-<session>_*/funcimg/)
+    cohort: str = Field(min_length=1)  # e.g. "cohort-01"
+    subject: str = Field(min_length=1)  # the subject folder or part of it: "sub-03", "MY_71_R"
+    session: int = Field(ge=0)  # e.g. 224
+    run: int = Field(ge=1)  # e.g. 1 for run-01
     variant: Literal["without_destriping", "with_destriping"] = "without_destriping"
-    channel: Channel = "side_by_side"  # green left, red right; or one channel alone
-    tint: bool = True  # green channel drawn in green, red in red; False for grey
+    # Which frames: the whole recording, or start_frame to end_frame (0-based, both included).
+    # No default: a whole TIFF stage is ~14 GB to read, so it is never chosen by omission.
+    whole_recording: bool
+    start_frame: int | None = Field(None, ge=0)
+    end_frame: int | None = Field(None, ge=0)
+    # Which stages of the preprocessing to make movies of
+    stage_raw: bool = False  # the acquired TIFF
+    stage_bidiphase: bool = False  # after phase correction (and destriping)
+    stage_undistorted: bool = False  # after distortion correction too (not if it was off)
+    stage_registered: bool = True  # after Suite2p motion registration too
+    # Which versions of each: every frame, and frames averaged average_frames at a time
+    unaveraged_movie: bool = True
+    averaged_movie: bool = True
+    # Where to read and write
+    derivatives_root: Path  # holds cohort-XX/<subject>/ses-*/funcimg/run-XX
+    raw_tiff: Path | None = None  # the acquired TIFF, if not where source_tiff.json says
+    output_dir: Path | None = None  # None: run-XX/<variant>/movies
+    overwrite: bool = False  # replace existing movies
+    save_folder: str = "suite2p"  # Suite2p output folder inside the variant folder
+    # How they look
+    channel: Channel = "side_by_side"  # functional left, structural right; or one alone
     average_frames: int = Field(5, ge=2, le=256)
     average_mode: AverageMode = "bin"
     # Playback speed, times real time. A movie must play at >= MIN_FPS (1 fps), so with
@@ -87,23 +115,55 @@ class MovieSettings(BaseModel):
     black_percentile: float = Field(1.0, ge=0, le=100)
     white_percentile: float = Field(99.8, ge=0, le=100)
     gamma: float = Field(1.0, gt=0)
-    # Gaussian smoothing within each averaged frame; 0 = none. The raw movie is never smoothed.
+    # Gaussian smoothing within each averaged frame; 0 = none. Unaveraged movies never are.
     spatial_sigma_px: float = Field(0.0, ge=0)
     upscale: int = Field(1, ge=1, le=8)  # each pixel drawn as upscale x upscale pixels
-    label: bool = True  # stage, time and speed burnt into the frame
+    label: bool = True  # stage, time, speed and channel burnt into the frame
     contrast_sample_frames: int = Field(200, ge=1)
     quality: float = Field(8.0, ge=0, le=10)  # H.264 quality, 0-10
-    output_dir: Path | None = None  # None: run-XX/<variant>/movies
-    save_folder: str = "suite2p"  # Suite2p output folder inside the variant folder
 
     @model_validator(mode="after")
-    def _black_below_white(self) -> MovieSettings:
+    def _consistent(self) -> MovieSettings:
         if self.black_percentile >= self.white_percentile:
             raise ValueError(
                 f"black_percentile ({self.black_percentile}) must be below white_percentile "
                 f"({self.white_percentile})"
             )
+        if not self.stages:
+            raise ValueError("Choose at least one stage (stage_raw, ..., stage_registered)")
+        if not self.versions:
+            raise ValueError("Choose unaveraged_movie and/or averaged_movie")
+        if not self.whole_recording:
+            if self.start_frame is None or self.end_frame is None:
+                raise ValueError("With whole_recording = false, set start_frame and end_frame")
+            if self.start_frame > self.end_frame:
+                raise ValueError(
+                    f"start_frame ({self.start_frame}) is after end_frame ({self.end_frame})"
+                )
+        elif self.start_frame is not None or self.end_frame is not None:
+            log.warning(
+                "whole_recording = true: start_frame %s and end_frame %s are ignored",
+                self.start_frame,
+                self.end_frame,
+            )
         return self
+
+    @property
+    def stages(self) -> tuple[Stage, ...]:
+        return tuple(stage for stage in STAGES if getattr(self, f"stage_{stage}"))
+
+    @property
+    def versions(self) -> tuple[Version, ...]:
+        chosen = {"unaveraged": self.unaveraged_movie, "averaged": self.averaged_movie}
+        return tuple(version for version, on in chosen.items() if on)
+
+    @property
+    def frames_requested(self) -> tuple[bool, int | None, int | None]:
+        """``(whole_recording, start_frame, end_frame)``; with the whole recording the frame
+        numbers are ignored (with a warning), so they can stay in the config."""
+        if self.whole_recording:
+            return True, None, None
+        return False, self.start_frame, self.end_frame
 
 
 def load_movie_settings(path: Path, **overrides: object) -> MovieSettings:
@@ -111,7 +171,7 @@ def load_movie_settings(path: Path, **overrides: object) -> MovieSettings:
     with Path(path).open("rb") as handle:
         raw = tomllib.load(handle).get("movies")
     if raw is None:
-        raise ValueError(f"No [movies] section in {path}; add one with derivatives_root")
+        raise ValueError(f"No [movies] section in {path}; see config/pipeline.example.toml")
     return MovieSettings.model_validate({**raw, **overrides})
 
 
@@ -247,19 +307,17 @@ def channels_shown(channel: Channel) -> tuple[str, ...]:
     return ("green", "red") if channel == "side_by_side" else (channel,)
 
 
-def compose_panels(panels: dict[str, np.ndarray], tint: bool) -> np.ndarray:
-    """``(..., H, W, 3)`` uint8: the channels left to right in the order given, each in its
-    colour (or grey), separated by ``PANEL_GAP_PX`` black columns."""
+def compose_panels(panels: dict[str, np.ndarray]) -> np.ndarray:
+    """``(..., H, W, 3)`` uint8 greyscale: the channels left to right in the order given,
+    separated by ``PANEL_GAP_PX`` black columns."""
     first = next(iter(panels.values()))
     *lead, height, width = first.shape
     total = len(panels) * width + (len(panels) - 1) * PANEL_GAP_PX
-    rgb = np.zeros((*lead, height, total, 3), np.uint8)
-    for i, (name, frames) in enumerate(panels.items()):
+    grey = np.zeros((*lead, height, total), np.uint8)
+    for i, frames in enumerate(panels.values()):
         left = i * (width + PANEL_GAP_PX)
-        colours = [c for c, on in enumerate(TINTS[name]) if on] if tint else [0, 1, 2]
-        for c in colours:
-            rgb[..., left : left + width, c] = frames
-    return rgb
+        grey[..., left : left + width] = frames
+    return np.repeat(grey[..., None], 3, axis=-1)
 
 
 def stage_title(stage: Stage, run: PipelineSettings | None) -> str:
@@ -272,11 +330,6 @@ def stage_title(stage: Stage, run: PipelineSettings | None) -> str:
     steps.append("registration")
     shown = {"raw": 0, "bidiphase": 1, "undistorted": 2, "registered": len(steps)}[stage]
     return " + ".join(steps[:shown]) if shown else "raw"
-
-
-def run_stages(run: PipelineSettings) -> tuple[Stage, ...]:
-    """The stages the run has files for: no ``undistorted`` TIFF if distortion was off."""
-    return tuple(s for s in STAGES if s != "undistorted" or run.distortion.mode != "off")
 
 
 def upscale_and_pad(rgb: np.ndarray, factor: int) -> np.ndarray:
@@ -310,23 +363,27 @@ class MoviePlan:
 
 
 def plan_movie(
-    version: str,
+    version: Version,
     stage: Stage,
     span: tuple[int, int],
     fs: float,
     settings: MovieSettings,
     names: tuple[str, str, str],
 ) -> MoviePlan:
-    """The frames, playback rate and file name of one stage's raw or averaged movie (pure).
+    """The frames, playback rate and file name of one stage's unaveraged or averaged movie
+    (pure).
 
-    *names* are the subject, session and run folder names. The raw movie is never smoothed.
+    *names* are the subject, session and run folder names. The unaveraged movie is never
+    smoothed.
     The name gives the frames actually shown, so a dropped partial bin does not appear in it.
 
     Raises:
-        ValueError: If the playback rate would be under ``MIN_FPS``.
+        ValueError: If *version* is unknown, or the playback rate would be under ``MIN_FPS``.
     """
-    raw = version == "raw"
-    n = 1 if raw else settings.average_frames
+    if version not in typing.get_args(Version):
+        raise ValueError(f"version must be 'unaveraged' or 'averaged', not {version!r}")
+    unaveraged = version == "unaveraged"
+    n = 1 if unaveraged else settings.average_frames
     starts = window_starts(*span, n, settings.average_mode)
     step = n if settings.average_mode == "bin" else 1
     fps = fs / step * settings.speed
@@ -335,7 +392,7 @@ def plan_movie(
             f"Playback at {fps:.3g} fps is too slow to encode accurately; raise speed "
             f"(now {settings.speed:g}) or average fewer frames"
         )
-    sigma = 0.0 if raw else settings.spatial_sigma_px
+    sigma = 0.0 if unaveraged else settings.spatial_sigma_px
     first, last = int(starts[0]), int(starts[-1]) + n - 1
     subject, session, run = names
     parts = [
@@ -346,7 +403,7 @@ def plan_movie(
         stage,
         settings.channel,
         f"frames-{first}-{last}",
-        "raw" if raw else f"{settings.average_mode}{n}",
+        "unaveraged" if unaveraged else f"{settings.average_mode}{n}",
     ]
     if sigma > 0:
         parts.append(f"sigma{sigma:g}")
@@ -436,12 +493,13 @@ def stage_tiff(
         )
         if recorded is None:
             raise FileNotFoundError(
-                f"{manifest} does not say which TIFF was acquired; pass raw_tiff (--raw-tiff)"
+                f"{manifest} does not say which TIFF was acquired; set raw_tiff in [movies]"
             )
         raw_tiff = Path(recorded)
     if stage == "undistorted" and run.distortion.mode == "off":
         raise ValueError(
-            "Distortion correction was off for this run, so it has no undistorted TIFF"
+            "Distortion correction was off for this run, so it has no undistorted TIFF; "
+            "set stage_undistorted = false"
         )
     path = {
         "raw": lambda: Path(raw_tiff),
@@ -449,7 +507,7 @@ def stage_tiff(
         "undistorted": lambda: undistorted_tiff_path(variant_dir, raw_tiff, run),
     }[stage]()
     if not path.is_file():
-        hint = "; pass raw_tiff (--raw-tiff) if it has moved" if stage == "raw" else ""
+        hint = "; set raw_tiff in [movies] if it has moved" if stage == "raw" else ""
         raise FileNotFoundError(f"No {stage} TIFF: {path}{hint}")
     return path
 
@@ -537,7 +595,7 @@ def rendered_frames(
             )
             for name, source in sources.items()
         }
-        rgb = compose_panels(panels, settings.tint)
+        rgb = compose_panels(panels)
         width = next(iter(panels.values())).shape[-1]
         lefts = [i * (width + PANEL_GAP_PX) * settings.upscale for i in range(len(panels))]
         for frame, f in zip(rgb, first, strict=True):
@@ -631,43 +689,23 @@ class MovieJob:
     fs: float
 
 
-def open_jobs(
-    settings: MovieSettings,
-    plane_dir: Path,
-    stages: tuple[Stage, ...] | None,
-    versions: tuple[str, ...],
-    span_request: tuple[bool, int | None, int | None],
-    raw_tiff: Path | None,
-    stack: ExitStack,
-) -> list[MovieJob]:
+def open_jobs(settings: MovieSettings, plane_dir: Path, stack: ExitStack) -> list[MovieJob]:
     """Open every stage's files and plan every movie, before anything is written."""
-    unknown = set(versions) - {"raw", "averaged"}
-    if unknown or not versions:
-        raise ValueError(f"versions must be 'raw' and/or 'averaged', not {versions}")
     variant_dir = plane_dir.parents[1]
-    if stages is None or set(stages) - {"registered"}:
+    stages = settings.stages
+    if set(stages) - {"registered"}:
         run = load_run_settings(variant_dir)  # the TIFF stages need it: fail if unreadable
     else:
         run = _settings_for_title(variant_dir)
-    if stages is None:
-        if run is None:
-            raise FileNotFoundError(
-                f"No {SETTINGS_RECORD} in {variant_dir} to say which stages ran"
-            )
-        stages = run_stages(run)
-    if not stages or set(stages) - set(STAGES):
-        raise ValueError(f"stages must be some of {STAGES}, not {stages}")
-    if raw_tiff is not None and set(stages) == {"registered"}:
-        raise ValueError("raw_tiff is only used by the raw, bidiphase and undistorted stages")
     ops = np.load(plane_dir / "ops.npy", allow_pickle=True).item()
     fs = float(ops["fs"])
     names = (variant_dir.parents[3].name, variant_dir.parents[2].name, variant_dir.parent.name)
-    span = frame_span(int(ops["nframes"]), *span_request)
+    span = frame_span(int(ops["nframes"]), *settings.frames_requested)
     jobs = []
-    for stage in dict.fromkeys(stages):
-        sources = open_stage(stage, plane_dir, ops, settings.channel, run, raw_tiff, stack)
+    for stage in stages:
+        sources = open_stage(stage, plane_dir, ops, settings.channel, run, settings.raw_tiff, stack)
         title = stage_title(stage, run)
-        for version in versions:
+        for version in settings.versions:
             plan = plan_movie(version, stage, span, fs, settings, names)
             jobs.append(MovieJob(plan, sources, span, title, fs))
     return jobs
@@ -684,76 +722,36 @@ def _settings_for_title(variant_dir: Path) -> PipelineSettings | None:
         return None
 
 
-def make_movies(
-    settings: MovieSettings,
-    cohort: str,
-    subject: str,
-    session: int,
-    run: int,
-    whole_recording: bool = True,
-    start_frame: int | None = None,
-    end_frame: int | None = None,
-    stages: tuple[Stage, ...] | None = ("registered",),
-    versions: tuple[str, ...] = ("raw", "averaged"),
-    overwrite: bool = False,
-    raw_tiff: Path | None = None,
-) -> list[Path]:
-    """Write the raw and/or averaged movie of each stage of one run, and return their paths.
+def make_movies(settings: MovieSettings) -> list[Path]:
+    """Write the movies *settings* ask for (one per stage and version), and return their paths.
 
     Every stage's files are found and every movie is planned before anything is written, so
     a missing file or an existing movie stops the call before it starts (a TIFF shorter than
-    the run is only found when its frames are read). The TIFF stages use
-    the channel order and file names in the run's ``pipeline_settings.json``. Each movie gets
-    its own display range per channel (averaging narrows the range of values, and the stages
-    are on different scales).
-
-    Args:
-        settings (MovieSettings): From ``load_movie_settings`` (with any overrides).
-        cohort (str): e.g. ``"cohort-01"``.
-        subject (str): The subject folder or part of it, e.g. ``"sub-03"`` or ``"MY_71_R"``.
-        session (int): Session number, e.g. ``224``.
-        run (int): Run number, e.g. ``1`` for ``run-01``.
-        whole_recording (bool): Every frame of the run; otherwise give the two frames below.
-        start_frame (int | None): First frame shown (0-based).
-        end_frame (int | None): Last frame shown (included).
-        stages (tuple[Stage, ...] | None): Any of ``STAGES``; None for every stage the run has.
-        versions (tuple[str, ...]): ``"raw"`` and/or ``"averaged"``.
-        overwrite (bool): Replace movies that already exist; otherwise they are refused.
-        raw_tiff (Path | None): The acquired TIFF, if not where ``source_tiff.json`` says.
-
-    Returns:
-        list[Path]: The movies written.
+    the run is only found when its frames are read). The TIFF stages use the channel order
+    and file names in the run's ``pipeline_settings.json``. Each movie gets its own display
+    range per channel (averaging narrows the range of values, and the stages are on
+    different scales).
     """
     plane_dir = find_plane_dir(
         settings.derivatives_root,
-        cohort,
-        subject,
-        session,
-        run,
+        settings.cohort,
+        settings.subject,
+        settings.session,
+        settings.run,
         settings.variant,
         settings.save_folder,
     )
     variant_dir = plane_dir.parents[1]
     out_dir = Path(settings.output_dir) if settings.output_dir else variant_dir / MOVIE_FOLDER
     with ExitStack() as stack:
-        jobs = open_jobs(
-            settings,
-            plane_dir,
-            stages,
-            versions,
-            (whole_recording, start_frame, end_frame),
-            raw_tiff,
-            stack,
-        )
+        jobs = open_jobs(settings, plane_dir, stack)
         for job in jobs:
-            if (out_dir / job.plan.name).exists() and not overwrite:
+            if (out_dir / job.plan.name).exists() and not settings.overwrite:
                 raise FileExistsError(
-                    f"{out_dir / job.plan.name} exists; pass overwrite=True to replace it"
+                    f"{out_dir / job.plan.name} exists; set overwrite = true to replace it"
                 )
         out_dir.mkdir(parents=True, exist_ok=True)
-        written = []
-        for job in jobs:
-            written.append(_write_job(job, out_dir, settings))
+        written = [_write_job(job, out_dir, settings) for job in jobs]
     return written
 
 

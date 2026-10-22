@@ -12,7 +12,7 @@ import pytest
 import tifffile
 
 from mini2p_preprocessing import movies
-from mini2p_preprocessing.cli import movie_main, stage_movies_main
+from mini2p_preprocessing.cli import movie_main
 from mini2p_preprocessing.config import PipelineSettings, load_settings
 from mini2p_preprocessing.contrast import scale_contrast
 from mini2p_preprocessing.movies import (
@@ -29,7 +29,6 @@ from mini2p_preprocessing.movies import (
     open_stage,
     plan_movie,
     rendered_frames,
-    run_stages,
     stage_title,
     to_display,
     upscale_and_pad,
@@ -126,8 +125,22 @@ def make_run(
     return plane
 
 
+ONLY_REGISTERED = {"stage_raw": False, "stage_bidiphase": False, "stage_undistorted": False}
+ALL_STAGES = {"stage_raw": True, "stage_bidiphase": True, "stage_undistorted": True}
+
+
 def settings_for(root: Path, **overrides) -> MovieSettings:
-    return MovieSettings(derivatives_root=root, label=False, **overrides)
+    """Run 1 of session 224 of sub-03; the registered stage only unless *overrides* add others."""
+    request = {
+        "cohort": "cohort-01",
+        "subject": "sub-03",
+        "session": 224,
+        "run": 1,
+        "whole_recording": True,
+    }
+    return MovieSettings(
+        derivatives_root=root, **{**request, "label": False, **ONLY_REGISTERED, **overrides}
+    )
 
 
 def decoded(path: Path) -> tuple[dict, np.ndarray]:
@@ -161,7 +174,7 @@ def test_frame_span_refuses_inconsistent_requests(whole, start, end):
         frame_span(100, whole, start, end)
 
 
-def test_window_starts_bin_rolling_and_raw():
+def test_window_starts_bin_rolling_and_every_frame():
     assert window_starts(10, 22, 5, "bin").tolist() == [10, 15]  # partial last bin dropped
     assert window_starts(10, 16, 5, "rolling").tolist() == [10, 11]
     assert window_starts(10, 13, 1, "bin").tolist() == [10, 11, 12]
@@ -198,19 +211,48 @@ def test_display_equals_scale_contrast_on_the_same_pixels(gamma):
 
 def test_black_must_be_below_white():
     with pytest.raises(ValueError, match="below white_percentile"):
-        MovieSettings(derivatives_root=Path("."), black_percentile=99.9, white_percentile=99.8)
+        settings_for(Path("."), black_percentile=99.9, white_percentile=99.8)
 
 
-def test_panels_put_green_left_and_red_right():
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"stage_registered": False}, "at least one stage"),
+        ({"unaveraged_movie": False, "averaged_movie": False}, "unaveraged_movie"),
+        ({"whole_recording": False, "start_frame": 3}, "set start_frame and end_frame"),
+        ({"whole_recording": False, "start_frame": 9, "end_frame": 3}, "is after end_frame"),
+        ({"session": -1}, "greater than or equal to 0"),
+        ({"subject": ""}, "at least 1 character"),
+    ],
+)
+def test_settings_that_ask_for_nothing_or_contradict_are_refused(changes, message):
+    """Each case would otherwise make no movie, or not the movie asked for."""
+    with pytest.raises(ValueError, match=message):
+        settings_for(Path("."), **changes)
+
+
+def test_settings_list_the_stages_versions_and_frames_asked_for(caplog):
+    settings = settings_for(
+        Path("."), stage_raw=True, averaged_movie=False, start_frame=3, end_frame=9
+    )
+    assert settings.stages == ("raw", "registered")
+    assert settings.versions == ("unaveraged",)
+    assert settings.frames_requested == (True, None, None)  # whole recording: frames ignored
+    assert "start_frame 3 and end_frame 9 are ignored" in caplog.text
+    ranged = settings.model_copy(update={"whole_recording": False})
+    assert ranged.frames_requested == (False, 3, 9)
+
+
+def test_panels_are_grey_functional_left_structural_right():
     green = np.full((2, 3, 4), 200, np.uint8)
     red = np.full((2, 3, 4), 50, np.uint8)
-    rgb = compose_panels({"green": green, "red": red}, tint=True)
+    rgb = compose_panels({"green": green, "red": red})
     assert rgb.shape == (2, 3, 4 + PANEL_GAP_PX + 4, 3)
-    assert rgb[0, 0, 0].tolist() == [0, 200, 0]
+    assert rgb[0, 0, 0].tolist() == [200, 200, 200]
     assert rgb[0, 0, 4].tolist() == [0, 0, 0]  # the gap
-    assert rgb[0, 0, -1].tolist() == [50, 0, 0]
-    grey = compose_panels({"red": red}, tint=False)
-    assert grey.shape == (2, 3, 4, 3) and grey[0, 0, 0].tolist() == [50, 50, 50]
+    assert rgb[0, 0, -1].tolist() == [50, 50, 50]
+    single = compose_panels({"red": red})
+    assert single.shape == (2, 3, 4, 3) and single[0, 0, 0].tolist() == [50, 50, 50]
 
 
 def test_upscale_then_pad_to_even():
@@ -230,15 +272,6 @@ def test_stage_titles_say_what_was_done():
     assert stage_title("registered", None) == "registered"
 
 
-def test_a_run_without_distortion_has_no_undistorted_stage():
-    assert run_stages(run_settings()) == movies.STAGES
-    assert run_stages(run_settings(distortion={"mode": "off"})) == (
-        "raw",
-        "bidiphase",
-        "registered",
-    )
-
-
 def test_plan_names_the_stage_and_the_frames_actually_shown():
     settings = settings_for(Path("."), average_frames=5, speed=4.0, variant="with_destriping")
     plan = plan_movie("averaged", "undistorted", (10, 151), FS, settings, NAMES)
@@ -250,11 +283,12 @@ def test_plan_names_the_stage_and_the_frames_actually_shown():
     assert plan.fps == pytest.approx(FS / 5 * 4)
 
 
-def test_plan_raw_is_never_smoothed_and_smoothing_is_named():
+def test_plan_unaveraged_is_never_smoothed_and_smoothing_is_named():
     settings = settings_for(Path("."), spatial_sigma_px=1.5, average_mode="rolling")
-    raw = plan_movie("raw", "raw", (0, 20), FS, settings, NAMES)
+    every = plan_movie("unaveraged", "raw", (0, 20), FS, settings, NAMES)
     rolling = plan_movie("averaged", "raw", (0, 20), FS, settings, NAMES)
-    assert raw.sigma_px == 0 and "sigma" not in raw.name and raw.fps == pytest.approx(FS * 4)
+    assert every.sigma_px == 0 and "sigma" not in every.name
+    assert every.fps == pytest.approx(FS * 4)
     assert rolling.sigma_px == 1.5 and "_rolling5_sigma1.5_4x" in rolling.name
     assert (rolling.last_frame, rolling.fps) == (19, pytest.approx(FS * 4))
 
@@ -401,40 +435,35 @@ def test_reading_in_blocks_gives_the_same_frames(tmp_path, mode):
     np.testing.assert_array_equal(small, large)
     expected_green = to_display(np.array([s * 10 + 15.0 for s in plan.starts]), 0, 600, 1.0)
     np.testing.assert_array_equal(small[:, 5, 5, 1], expected_green)  # left panel, green
-    np.testing.assert_array_equal(small[:, 5, LX + PANEL_GAP_PX + 5], [[128, 0, 0]] * len(small))
+    right = small[:, 5, LX + PANEL_GAP_PX + 5]
+    np.testing.assert_array_equal(right, [[128, 128, 128]] * len(small))  # structural, grey
     assert not np.array_equal(drawn, small[0])  # the labels are drawn
 
 
 # ---------------------------------------------------------------- end to end
 
 
-def test_raw_and_binned_side_by_side_movies_of_a_frame_range(tmp_path):
+def test_unaveraged_and_binned_movies_of_a_frame_range(tmp_path):
     make_run(tmp_path, tiffs=False)
-    written = make_movies(
-        settings_for(tmp_path, average_frames=5, speed=2.0),
-        "cohort-01",
-        "sub-03",
-        224,
-        1,
-        whole_recording=False,
-        start_frame=10,
-        end_frame=49,
+    settings = settings_for(
+        tmp_path, average_frames=5, speed=2.0, whole_recording=False, start_frame=10, end_frame=49
     )
+    written = make_movies(settings)
     out = movie_dir(tmp_path)
     assert [p.parent for p in written] == [out, out]
-    assert [p.name.split("_")[-2] for p in written] == ["raw", "bin5"]
+    assert [p.name.split("_")[-2] for p in written] == ["unaveraged", "bin5"]
     assert written[0].name.startswith(f"sub-03_id-MY_71_R_{SESSION}_run-01_")
     assert "_registered_side_by_side_" in written[0].name
     assert not list(out.glob("*.partial.mp4"))
 
-    meta, raw = decoded(written[0])
-    assert raw.shape == (40, LY, 2 * LX + PANEL_GAP_PX, 3)  # frames 10..49
+    meta, frames = decoded(written[0])
+    assert frames.shape == (40, LY, 2 * LX + PANEL_GAP_PX, 3)  # frames 10..49
     assert meta["fps"] == pytest.approx(FS * 2, rel=1e-3)
-    green = raw[:, :, :LX, 1].mean(axis=(1, 2))
-    assert np.all(np.diff(green) > -2) and green[-1] - green[0] > 150  # the ramp survives
-    assert raw[:, :, : LX - 2, [0, 2]].max() < 30  # green panel (chroma bleeds 1-2 px at edges)
-    right = raw[:, :, LX + PANEL_GAP_PX + 2 : 2 * LX + PANEL_GAP_PX]
-    assert right[..., [1, 2]].max() < 30  # the red panel is red
+    functional = frames[:, :, :LX].astype(int)
+    assert np.abs(functional[..., 0] - functional[..., 1]).max() < 8  # grey: R = G = B
+    assert np.abs(functional[..., 2] - functional[..., 1]).max() < 8
+    level = functional[..., 1].mean(axis=(1, 2))
+    assert np.all(np.diff(level) > -2) and level[-1] - level[0] > 150  # the ramp survives
 
     meta, binned = decoded(written[1])
     assert len(binned) == 8 and meta["fps"] == pytest.approx(FS / 5 * 2, rel=1e-3)
@@ -442,15 +471,17 @@ def test_raw_and_binned_side_by_side_movies_of_a_frame_range(tmp_path):
 
 def test_every_stage_gives_its_movies(tmp_path):
     make_run(tmp_path, variant="with_destriping")
-    settings = MovieSettings(
-        derivatives_root=tmp_path,
+    settings = settings_for(
+        tmp_path,
+        subject="MY_71_R",
         variant="with_destriping",
         average_mode="rolling",
         average_frames=3,
         label=True,
         upscale=2,
+        **ALL_STAGES,
     )
-    written = make_movies(settings, "cohort-01", "MY_71_R", 224, 1, stages=None)
+    written = make_movies(settings)
     assert [p.name.split("_with_destriping_")[1].split("_")[0] for p in written[::2]] == list(
         movies.STAGES
     )
@@ -460,14 +491,14 @@ def test_every_stage_gives_its_movies(tmp_path):
         height = CROP[1] - CROP[0] if "_undistorted_" in path.name else LY
         assert frames.shape[1:3] == (2 * height, 2 * (2 * width + PANEL_GAP_PX))
         version = path.name.split("_")[-2]
-        assert len(frames) == (N_FRAMES if version == "raw" else N_FRAMES - 2)
+        assert len(frames) == (N_FRAMES if version == "unaveraged" else N_FRAMES - 2)
 
 
 def test_a_missing_stage_stops_before_anything_is_written(tmp_path):
     plane = make_run(tmp_path)
     next(plane.parents[1].glob("*_undistorted.tif")).unlink()
     with pytest.raises(FileNotFoundError, match="undistorted"):
-        make_movies(settings_for(tmp_path), "cohort-01", "sub-03", 224, 1, stages=None)
+        make_movies(settings_for(tmp_path, **ALL_STAGES))
     assert not movie_dir(tmp_path).exists()
 
 
@@ -475,40 +506,33 @@ def test_tiff_stages_need_the_runs_settings_record(tmp_path):
     plane = make_run(tmp_path)
     (plane.parents[1] / "pipeline_settings.json").unlink()
     with pytest.raises(FileNotFoundError, match="pipeline_settings.json"):
-        make_movies(settings_for(tmp_path), "cohort-01", "sub-03", 224, 1, stages=("raw",))
-    make_movies(settings_for(tmp_path), "cohort-01", "sub-03", 224, 1, versions=("raw",))
+        make_movies(settings_for(tmp_path, stage_raw=True))
+    make_movies(settings_for(tmp_path, averaged_movie=False))
 
 
-def test_stages_of_a_run_without_distortion(tmp_path):
+def test_a_run_without_distortion_refuses_the_undistorted_stage(tmp_path):
     make_run(tmp_path, run=run_settings(distortion={"mode": "off"}))
-    written = make_movies(settings_for(tmp_path), "cohort-01", "sub-03", 224, 1, stages=None,
-                          versions=("raw",))  # fmt: skip
+    with pytest.raises(ValueError, match="set stage_undistorted = false"):
+        make_movies(settings_for(tmp_path, **ALL_STAGES))
+    written = make_movies(
+        settings_for(tmp_path, **{**ALL_STAGES, "stage_undistorted": False}, averaged_movie=False)
+    )
     assert [p.name.split("_without_destriping_")[1].split("_")[0] for p in written] == [
         "raw",
         "bidiphase",
         "registered",
     ]
-    with pytest.raises(ValueError, match="no undistorted TIFF"):
-        make_movies(settings_for(tmp_path), "cohort-01", "sub-03", 224, 1,
-                    stages=("undistorted",), overwrite=True)  # fmt: skip
-
-
-def test_raw_tiff_is_refused_for_registered_only(tmp_path):
-    make_run(tmp_path, tiffs=False)
-    with pytest.raises(ValueError, match="raw_tiff is only used"):
-        make_movies(settings_for(tmp_path), "cohort-01", "sub-03", 224, 1,
-                    raw_tiff=tmp_path / "x.tif")  # fmt: skip
 
 
 def test_existing_movies_are_kept_unless_overwrite(tmp_path):
     make_run(tmp_path, tiffs=False)
-    settings = settings_for(tmp_path)
-    (path,) = make_movies(settings, "cohort-01", "sub-03", 224, 1, versions=("raw",))
+    settings = settings_for(tmp_path, averaged_movie=False)
+    (path,) = make_movies(settings)
     stamp = path.stat().st_mtime_ns
-    with pytest.raises(FileExistsError):
-        make_movies(settings, "cohort-01", "sub-03", 224, 1)
+    with pytest.raises(FileExistsError, match="overwrite = true"):
+        make_movies(settings_for(tmp_path))
     assert path.stat().st_mtime_ns == stamp
-    make_movies(settings, "cohort-01", "sub-03", 224, 1, versions=("raw",), overwrite=True)
+    make_movies(settings.model_copy(update={"overwrite": True}))
 
 
 def test_failed_write_leaves_no_movie(tmp_path, monkeypatch):
@@ -520,7 +544,7 @@ def test_failed_write_leaves_no_movie(tmp_path, monkeypatch):
 
     monkeypatch.setattr(movies, "rendered_frames", broken)
     with pytest.raises(RuntimeError):
-        make_movies(settings_for(tmp_path), "cohort-01", "sub-03", 224, 1, versions=("raw",))
+        make_movies(settings_for(tmp_path, averaged_movie=False))
     assert not list(movie_dir(tmp_path).glob("*.mp4"))  # neither the movie nor its partial
 
 
@@ -528,61 +552,59 @@ def test_incomplete_encode_is_not_kept(tmp_path, monkeypatch):
     make_run(tmp_path, tiffs=False)
     monkeypatch.setattr(movies, "_encoded_frames", lambda path: 3)
     with pytest.raises(OSError, match="the encode failed"):
-        make_movies(settings_for(tmp_path), "cohort-01", "sub-03", 224, 1, versions=("raw",))
+        make_movies(settings_for(tmp_path, averaged_movie=False))
     assert not list(movie_dir(tmp_path).glob("*.mp4"))
 
 
 def write_config(tmp_path: Path, extra: str = "") -> Path:
+    """A config whose [movies] section says everything: run, frames, stages, versions."""
     config = tmp_path / "pipeline.toml"
     config.write_text(
         '[distortion]\nmode = "off"\n\n'
-        f'[movies]\nderivatives_root = "{tmp_path}"\nlabel = false\nspeed = 3.0\n{extra}'
+        "[movies]\n"
+        'cohort = "cohort-01"\nsubject = "sub-03"\nsession = 224\nrun = 1\n'
+        "whole_recording = false\nstart_frame = 0\nend_frame = 19\n"
+        "stage_raw = false\nstage_bidiphase = false\nstage_undistorted = false\n"
+        "stage_registered = true\nunaveraged_movie = true\naveraged_movie = true\n"
+        f'derivatives_root = "{tmp_path}"\nlabel = false\nspeed = 3.0\n{extra}'
     )
     return config
 
 
-def test_cli_reads_movies_section_and_pipeline_ignores_it(tmp_path):
+def test_the_config_alone_says_which_movies_to_make(tmp_path):
     make_run(tmp_path, tiffs=False)
     config = write_config(tmp_path)
     load_settings(config)  # the pipeline loader skips [movies]
-    result = movie_main(
-        ["--config", str(config), "--cohort", "cohort-01", "--subject", "sub-03",
-         "--session", "224", "--run", "1", "--start-frame", "0", "--end-frame", "19",
-         "--only", "averaged", "--average-frames", "4", "--channel", "red"]
-    )  # fmt: skip
+    result = movie_main(["--config", str(config)])
     assert result is None  # the console script passes this to sys.exit: None is exit code 0
-    (written,) = movie_dir(tmp_path).glob("*.mp4")
-    assert written.name.endswith("_registered_red_frames-0-19_bin4_3x.mp4")
-    assert len(decoded(written)[1]) == 5
-    with pytest.raises(SystemExit):
-        movie_main(["--config", str(config), "--cohort", "c", "--subject", "s",
-                    "--session", "1", "--run", "1", "--start-frame", "3"])  # fmt: skip
-    with pytest.raises(SystemExit):  # a bad setting is a usage error, not a traceback
-        movie_main(["--config", str(config), "--cohort", "c", "--subject", "s", "--session",
-                    "1", "--run", "1", "--whole-recording", "--average-frames", "1"])  # fmt: skip
+    names = sorted(p.name for p in movie_dir(tmp_path).glob("*.mp4"))
+    assert [n.split("_registered_")[1] for n in names] == [
+        "side_by_side_frames-0-19_bin5_3x.mp4",
+        "side_by_side_frames-0-19_unaveraged_3x.mp4",
+    ]
 
 
-def test_stage_movies_command_writes_every_stage(tmp_path):
+def test_command_line_options_override_the_config(tmp_path):
     make_run(tmp_path)
-    config = write_config(tmp_path, 'channel = "green"\n')
-    stage_movies_main(
-        ["--config", str(config), "--cohort", "cohort-01", "--subject", "sub-03",
-         "--session", "224", "--run", "1", "--start-frame", "0", "--end-frame", "9",
-         "--only", "raw", "--gamma", "0.8"]
+    config = write_config(tmp_path)
+    movie_main(
+        ["--config", str(config), "--no-unaveraged-movie", "--average-frames", "4",
+         "--channel", "red", "--stage-raw", "--end-frame", "11", "--gamma", "0.8"]
     )  # fmt: skip
     names = sorted(p.name for p in movie_dir(tmp_path).glob("*.mp4"))
-    assert [n.split("_without_destriping_")[1].split("_")[0] for n in names] == sorted(
-        movies.STAGES
-    )
+    assert [n.split("_without_destriping_")[1] for n in names] == [
+        "raw_red_frames-0-11_bin4_3x.mp4",
+        "registered_red_frames-0-11_bin4_3x.mp4",
+    ]
+    with pytest.raises(SystemExit):  # a bad setting is a usage error, not a traceback
+        movie_main(["--config", str(config), "--average-frames", "1"])
 
 
 def test_cli_reports_a_frame_past_the_end_as_a_usage_error(tmp_path, capsys):
     make_run(tmp_path, tiffs=False)
     config = write_config(tmp_path)
     with pytest.raises(SystemExit):
-        movie_main(["--config", str(config), "--cohort", "cohort-01", "--subject", "sub-03",
-                    "--session", "224", "--run", "1", "--start-frame", "0",
-                    "--end-frame", "999"])  # fmt: skip
+        movie_main(["--config", str(config), "--end-frame", "999"])
     assert "end_frame" in capsys.readouterr().err
 
 
@@ -593,7 +615,47 @@ def test_registered_movies_survive_an_outdated_settings_record(tmp_path):
     old = json.loads(record.read_text())
     old["phase"]["a_removed_setting"] = 1
     record.write_text(json.dumps(old))
-    (path,) = make_movies(settings_for(tmp_path), "cohort-01", "sub-03", 224, 1, versions=("raw",))
+    (path,) = make_movies(settings_for(tmp_path, averaged_movie=False))
     assert path.is_file()
     with pytest.raises(ValueError, match="a_removed_setting"):
-        make_movies(settings_for(tmp_path), "cohort-01", "sub-03", 224, 1, stages=("raw",))
+        make_movies(settings_for(tmp_path, stage_raw=True, overwrite=True))
+
+
+def test_whole_recording_is_never_chosen_by_omission():
+    with pytest.raises(ValueError, match="whole_recording"):
+        MovieSettings(derivatives_root=Path("."), cohort="c", subject="s", session=1, run=1)
+    settings = MovieSettings(
+        derivatives_root=Path("."), cohort="c", subject="s", session=1, run=1, whole_recording=True
+    )
+    assert settings.stages == ("registered",)  # the cheap stage unless others are asked for
+
+
+def test_plan_refuses_an_unknown_version():
+    with pytest.raises(ValueError, match="'unaveraged' or 'averaged'"):
+        plan_movie("raw", "raw", (0, 20), FS, settings_for(Path(".")), NAMES)
+
+
+def test_every_setting_has_a_command_line_option():
+    from mini2p_preprocessing.cli import MOVIE_HELP
+
+    assert set(MOVIE_HELP) == set(MovieSettings.model_fields)
+
+
+def test_frames_on_the_command_line_override_a_whole_recording_config(tmp_path):
+    make_run(tmp_path, tiffs=False)
+    config = write_config(tmp_path, "")
+    text = config.read_text().replace("whole_recording = false", "whole_recording = true")
+    config.write_text(text.replace("\naveraged_movie = true", "\naveraged_movie = false"))
+    movie_main(["--config", str(config), "--start-frame", "2", "--end-frame", "6"])
+    names = [p.name for p in movie_dir(tmp_path).glob("*.mp4")]
+    assert len(names) == 1 and "_frames-2-6_unaveraged_" in names[0]
+    with pytest.raises(SystemExit):
+        movie_main(["--config", str(config), "--whole-recording", "--end-frame", "6"])
+
+
+def test_a_switch_set_in_the_config_stays_on_without_its_option(tmp_path):
+    make_run(tmp_path, tiffs=False)
+    config = write_config(tmp_path, "overwrite = true\n")
+    movie_main(["--config", str(config)])
+    movie_main(["--config", str(config)])  # overwrite = true from the config: no FileExistsError
+    assert len(list(movie_dir(tmp_path).glob("*.mp4"))) == 2
