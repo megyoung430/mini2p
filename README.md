@@ -271,9 +271,12 @@ meaning there. ΔF itself stays finite. The same applies to the green/red ratio,
    removed first, so stripes and brightness do not count).
 2. **Choose.** The structural channel sets a frame's phase where its per-frame phases are
    *consistent* (at least `consistency_threshold` of the `consistency_window_frames`
-   around it lie within `consistency_tolerance_px` of their running median) **and** that
-   running median is within `agreement_px` of the functional channel's phase over
-   `fallback_window_frames`. Each frame then follows the majority of the
+   around it lie within `consistency_tolerance_px` of their running median) **and** the
+   functional channel backs that running median: it is within `agreement_px` of the
+   functional phase over `fallback_window_frames`, or the functional channel averaged
+   over `support_window_frames` correlates at least as well at it as at that phase. The
+   second lets short excursions to another phase (the minority within the long window)
+   follow the structural channel. Each frame then follows the majority of the
    `trust_window_frames` around it, so single doubtful frames do not switch channel.
    Everywhere else the functional channel's `fallback_window_frames` average is used.
    This is decided stretch by stretch, so a structural channel that is good in some
@@ -285,7 +288,9 @@ meaning there. ΔF itself stays finite. The same applies to the green/red ratio,
 Why both conditions: the structural channel's single frames carry about 15× more line
 texture than GCaMP, so where it has tissue it follows phase jumps exactly. Where it
 has none, its per-frame phases scatter, which consistency catches; but tissue-free
-noise can also sit steadily near 0 px, which only the agreement check catches.
+noise can also sit steadily near 0 px, which only the functional check catches. Picking
+between two given shifts needs far less signal than finding the best shift, so a short
+functional window is enough for that check.
 
 Outputs beside the TIFF: `.phase.json` (settings, phase range, fraction of frames set
 by the structural channel, `functional_stretches` as half-open frame ranges),

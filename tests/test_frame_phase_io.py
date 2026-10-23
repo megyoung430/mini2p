@@ -156,7 +156,13 @@ def test_per_frame_is_the_default():
 
 
 @pytest.mark.parametrize(
-    "field", ["consistency_window_frames", "trust_window_frames", "fallback_window_frames"]
+    "field",
+    [
+        "consistency_window_frames",
+        "support_window_frames",
+        "trust_window_frames",
+        "fallback_window_frames",
+    ],
 )
 def test_windows_must_be_odd(field):
     with pytest.raises(ValidationError, match="odd"):

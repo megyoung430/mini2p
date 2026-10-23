@@ -278,3 +278,18 @@ def test_a_blank_frame_beside_a_jump_keeps_each_frame_on_its_own_side(before, af
 def test_the_median_of_an_even_count_is_one_of_the_values():
     median = running_median(np.array([-5, -4, -4, -5]), 3, np.array([1, 1, 0, 1], bool))
     assert set(median) <= {-5, -4}
+
+
+def test_fast_flips_follow_the_structural_channel(rng):
+    # Short dips to another phase are the minority within the functional long window, so
+    # its phase stays on the majority side; where the functional channel locally favours
+    # the structural phase, the structural channel must still set it.
+    wide = PHASE.model_copy(update={"max_shift_px": 16, "fallback_window_frames": 61})
+    true = np.tile(np.r_[np.full(15, 0), np.full(45, 14)], 4)  # short dips, beyond agreement_px
+    structural = frames_with_phases(rng, true, noise_sd=0.2)
+    functional = frames_with_phases(rng, true, noise_sd=2.0)
+    chosen = choose_frame_phases(
+        line_correlation_curves(structural, 16), line_correlation_curves(functional, 16), wide
+    )
+    assert chosen.used_structural.mean() > 0.95
+    assert np.mean(chosen.phase_px == true) > 0.95

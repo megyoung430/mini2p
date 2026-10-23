@@ -155,18 +155,41 @@ def local_consistency(
 # ---- choosing ----------------------------------------------------------------------
 
 
+def functional_prefers(
+    functional_curves: np.ndarray,
+    candidate_px: np.ndarray,
+    fallback_px: np.ndarray,
+    window: int,
+    max_shift_px: int,
+) -> np.ndarray:
+    """True where the functional channel, averaged over ``window`` frames around a frame,
+    correlates at least as well at ``candidate_px`` as at ``fallback_px``.
+
+    Choosing between two given shifts needs far less signal than finding the best of all
+    shifts, so a short window is enough even though GCaMP frames are noisy.
+    """
+    local = uniform_filter1d(np.nan_to_num(functional_curves), window, axis=0, mode="nearest")
+    frames = np.arange(len(local))
+    candidate = np.clip(candidate_px, -max_shift_px, max_shift_px) + max_shift_px
+    return local[frames, candidate] >= local[frames, np.asarray(fallback_px) + max_shift_px]
+
+
 def trusted_structural(
     structural_px: np.ndarray,
     structural_textured: np.ndarray,
+    functional_curves: np.ndarray,
     fallback_px: np.ndarray,
-    fallback_textured: np.ndarray,
     phase: PhaseSettings,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """(trusted, smoothed structural phase, consistency) for every frame.
 
-    A frame is a candidate where the structural phase is self-consistent *and* its running
-    median agrees with the functional long-window phase; noise can sit steadily near 0 px,
-    so consistency alone is not enough. Where the functional channel has no texture at all
+    A frame is a candidate where the structural phase is self-consistent *and* the
+    functional channel backs its running median: either that median is within
+    ``agreement_px`` of the functional long-window phase, or the functional channel over
+    ``support_window_frames`` prefers it to that phase. The second lets short excursions
+    (a few dozen frames at another phase, the minority within the long window) follow the
+    structural channel; together they reject noise that sits steadily near 0 px, which
+    consistency alone would accept. Where the functional channel has no texture at all
     there is nothing to check against, and consistency decides alone. Each frame then
     follows the majority of the ``trust_window_frames`` around it.
     """
@@ -175,17 +198,25 @@ def trusted_structural(
     consistency = local_consistency(
         structural_px, window, phase.consistency_tolerance_px, structural_textured
     )
-    with np.errstate(invalid="ignore"):
-        agrees = np.abs(smoothed - fallback_px) <= phase.agreement_px
+    measured = ~np.isnan(smoothed)
+    smoothed_px = np.nan_to_num(smoothed).astype(int)
+    agrees = np.abs(smoothed_px - fallback_px) <= phase.agreement_px
+    backed = functional_prefers(
+        functional_curves,
+        smoothed_px,
+        fallback_px,
+        phase.support_window_frames,
+        phase.max_shift_px,
+    )
+    no_functional = ~windowed_texture(functional_curves, phase.fallback_window_frames)
     candidate = (
         (consistency >= phase.consistency_threshold)
         & structural_textured
-        & ~np.isnan(smoothed)
-        & (agrees | ~fallback_textured)
+        & measured
+        & (agrees | backed | no_functional)
     )
     vote = uniform_filter1d(candidate.astype(float), phase.trust_window_frames, mode="nearest")
-    trusted = (vote > 0.5) & ~np.isnan(smoothed)
-    return trusted, np.nan_to_num(smoothed).astype(int), consistency
+    return (vote > 0.5) & measured, smoothed_px, consistency
 
 
 def choose_frame_phases(
@@ -212,11 +243,7 @@ def choose_frame_phases(
         )
     structural_px = best_shifts(structural_curves, max_shift)
     trusted, smoothed, consistency = trusted_structural(
-        structural_px,
-        has_texture(structural_curves),
-        fallback,
-        windowed_texture(functional_curves, window),
-        phase,
+        structural_px, has_texture(structural_curves), functional_curves, fallback, phase
     )
     applied = np.where(trusted, smoothed, fallback)
     return FramePhases(
