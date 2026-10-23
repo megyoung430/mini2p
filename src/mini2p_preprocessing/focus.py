@@ -87,10 +87,12 @@ def running_median(values: np.ndarray, window_frames: int) -> np.ndarray:
 def relative_to_baseline(values: np.ndarray, window_frames: int) -> np.ndarray:
     """``values`` divided by their running median: 1 = typical for that part of the session."""
     baseline = running_median(values, window_frames)
-    if np.any(baseline <= 0):
+    not_positive = np.flatnonzero(baseline <= 0)
+    if not_positive.size:
         raise ValueError(
-            "The running median brightness is not positive somewhere, so a ratio to it means "
-            "nothing; is the binary offset-subtracted?"
+            f"The running median brightness is not positive at frame(s) "
+            f"{not_positive[:10].tolist()}, so a ratio to it means nothing; is the binary "
+            "offset-subtracted?"
         )
     return np.asarray(values, np.float64) / baseline
 

@@ -195,7 +195,7 @@ def test_running_median_window_and_length_rules():
 
 
 def test_brightness_and_frames_fail_loudly_when_not_meaningful():
-    with pytest.raises(ValueError, match="not positive"):
+    with pytest.raises(ValueError, match=r"not positive at frame\(s\) \[0, 1"):
         relative_to_baseline(np.r_[np.zeros(10), np.ones(5)], 5)
     rng = np.random.default_rng(7)
     frames = np.stack([scene(rng)] * 3)
