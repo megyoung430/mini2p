@@ -93,11 +93,9 @@ def plot_frame_phases(chosen: FramePhases, axes=None, run_name: str = "") -> np.
             label="Structural, Single Frames",
         )
     axes[0].plot(frames, chosen.phase_px, color="black", linewidth=0.8, label="Applied")
-    used = f"{100 * np.mean(chosen.used_structural):.0f}%"
     axes[0].set(
         ylabel="Odd-Row Shift (px)",
-        title=f"{run_name + ': ' if run_name else ''}Per-Frame Biphase, Structural "
-        f"Used For {used} Of Frames",
+        title=f"{run_name + ': ' if run_name else ''}Per-Frame Biphase",
     )
     axes[0].legend(
         loc="upper left", bbox_to_anchor=(1.01, 1), markerscale=6, frameon=False, fontsize=8

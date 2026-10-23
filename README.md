@@ -301,8 +301,10 @@ The default thresholds are provisional: they were set from two sessions, one wit
 clean structural channel and one with none. A higher
 `consistency_threshold` (0.8) or lower `agreement_px` rejects noise more reliably but
 also rejects good structural frames around phase jumps, where the functional average
-lags. Limitation: where the functional fallback is used, a jump inside its window is
-smoothed over.
+lags. Limitations: where the functional fallback is used, a jump inside its window is
+smoothed over; and when the two channels disagree steadily (e.g. a functional channel
+that is only noise), nothing in the data says which is right, so the structural channel
+is used only where they agree and the log warns when that is under half the frames.
 
 `method = "chunked"` estimates one phase per chunk of `chunk_frames` (its settings and
 the manual overrides apply only to it). A run's `pipeline_settings.json` without a

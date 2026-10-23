@@ -115,7 +115,12 @@ def windowed_best_shifts(curves: np.ndarray, window: int, max_shift_px: int) -> 
 
 def running_median(values: np.ndarray, window: int, valid: np.ndarray | None = None) -> np.ndarray:
     """Median of the valid values in the ``window`` around each frame (edges repeat the end
-    values); NaN where the window holds no valid value."""
+    values); NaN where the window holds no valid value.
+
+    With an even number of valid values the lower middle one is taken, so the result is
+    always a value from the window: averaging the two would invent a phase between the
+    two sides of a jump.
+    """
     values = np.asarray(values, dtype=float)
     if valid is not None:
         values = np.where(valid, values, np.nan)
@@ -123,7 +128,7 @@ def running_median(values: np.ndarray, window: int, valid: np.ndarray | None = N
     windows = np.lib.stride_tricks.sliding_window_view(np.pad(values, half, mode="edge"), window)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN windows are expected
-        return np.nanmedian(windows, axis=1)
+        return np.nanpercentile(windows, 50, axis=1, method="lower")
 
 
 def local_consistency(

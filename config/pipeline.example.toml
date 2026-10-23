@@ -23,14 +23,14 @@ trust_window_frames = 25         # odd; a frame follows the majority of these
 fallback_window_frames = 101     # odd; functional frames averaged where structural fails
 frames_per_read = 50             # memory only (~300 MB per channel for 512 x 512 frames)
 boundary_warning_px = 2          # flag phases this close to ±max_shift_px
-# ---- chunked only
-chunk_frames = 100           # 10-25 helps when the phase changes quickly
-estimator = "wide"           # "wide" or "suite2p" (Suite2p searches only ±10 px)
-# score_crop_px = 40         # omit to crop max_shift_px from both edges
-alignment_source = "functional"   # "best_score", "structural" or "functional"
-score_switch_margin = 0.0
-run_second_pass = true
-second_pass_mode = "chunked"      # "chunked" or "whole"
+# ---- chunked only: uncomment with method = "chunked" (per_frame warns that it ignores them)
+# chunk_frames = 100           # 10-25 helps when the phase changes quickly
+# estimator = "wide"           # "wide" or "suite2p" (Suite2p searches only ±10 px)
+# score_crop_px = 40           # omit to crop max_shift_px from both edges
+# alignment_source = "functional"   # "best_score", "structural" or "functional"
+# score_switch_margin = 0.0
+# run_second_pass = true
+# second_pass_mode = "chunked"      # "chunked" or "whole"
 # second_pass_global_max_frames = 2000
 
 [phase.manual_first_phase_by_start]   # chunked only: chunk start timepoint = phase in px

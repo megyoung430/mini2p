@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from matplotlib import rc_context
 from matplotlib.figure import Figure
 
 from .config import (
@@ -48,7 +49,10 @@ def _log_stage(stage: str, started: float) -> float:
     return now
 
 
-FRAME_PHASE_CAPTION = """Per-frame bidiphase correction of {run_name}.
+QC_FONTS = ["Arial", "Liberation Sans", "DejaVu Sans"]  # Arial where installed
+
+FRAME_PHASE_CAPTION = """Per-frame bidiphase correction of {run_name}; the structural channel
+set the phase for {structural_pct:.0f}% of {n_frames} frames.
 Top: best odd-row shift of each single frame in each channel (dots) and the shift applied
 (black). Grey stretches: the structural channel was not trusted there (its per-frame
 phases were inconsistent, or disagreed with the functional channel by more than
@@ -63,13 +67,16 @@ def save_frame_phase_plot(
 ) -> Path:
     """``<stem>.phase_frames.{png,pdf,svg}`` and a caption beside the corrected TIFF."""
     chosen = summary.frame_phases
-    figure = Figure(figsize=(13, 6), layout="constrained")  # no pyplot: safe in batch workers
-    plot_frame_phases(chosen, axes=figure.subplots(2, 1), run_name=run_name)
     stem = corrected_tiff.with_suffix(".phase_frames")
-    for extension in ("png", "pdf", "svg"):
-        figure.savefig(stem.with_name(f"{stem.name}.{extension}"), dpi=120)
+    with rc_context({"font.family": "sans-serif", "font.sans-serif": QC_FONTS}):
+        figure = Figure(figsize=(13, 6), layout="constrained")  # no pyplot: safe in workers
+        plot_frame_phases(chosen, axes=figure.subplots(2, 1), run_name=run_name)
+        for extension in ("png", "pdf", "svg"):
+            figure.savefig(stem.with_name(f"{stem.name}.{extension}"), dpi=120)
     caption = FRAME_PHASE_CAPTION.format(
         run_name=run_name,
+        structural_pct=100 * float(chosen.used_structural.mean()),
+        n_frames=len(chosen.phase_px),
         agreement_px=settings.phase.agreement_px,
         window=settings.phase.fallback_window_frames,
         lost_in="structural" if chosen.has_structural else "functional",
