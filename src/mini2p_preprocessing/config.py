@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -53,14 +54,37 @@ class ChannelSettings(_Frozen):
 
 
 class PhaseSettings(_Frozen):
-    """Odd/even-line scan-phase estimation, applied per chunk of timepoints."""
+    """Odd/even-line scan-phase estimation.
 
+    ``method = "per_frame"`` measures every frame's phase in both channels and uses the
+    structural channel wherever it is trustworthy, the functional channel over a longer
+    window elsewhere (see ``frame_phase.py``). ``method = "chunked"`` estimates one phase
+    per chunk of ``chunk_frames`` timepoints; the remaining fields apply only to it.
+    """
+
+    method: Literal["per_frame", "chunked"] = "per_frame"
+    # ---- per_frame
+    # Structural is trusted where at least consistency_threshold of the
+    # consistency_window_frames around a frame lie within consistency_tolerance_px of
+    # their running median, and that median is within agreement_px of the functional
+    # phase over fallback_window_frames; most of trust_window_frames must agree.
+    consistency_window_frames: int = Field(9, ge=3)
+    consistency_tolerance_px: int = Field(2, ge=0)
+    consistency_threshold: float = Field(0.7, gt=0, le=1)
+    agreement_px: int = Field(6, ge=0)
+    trust_window_frames: int = Field(25, ge=1)
+    fallback_window_frames: int = Field(101, ge=1)
+    # Frames read at once; memory only, the result is the same. Measuring uses about
+    # 3 x frames_per_read x frame size x 8 bytes per channel (512 x 512: ~300 MB at 50).
+    frames_per_read: int = Field(50, ge=1)
+    # Frames (per_frame) or chunks (chunked) within this many px of ±max_shift_px are flagged.
+    boundary_warning_px: int = Field(2, ge=0)
+    # ---- chunked
     chunk_frames: int = Field(100, ge=1)
     estimator: Literal["wide", "suite2p"] = "wide"
     max_shift_px: int = Field(40, ge=1)
     # None crops max_shift_px ('wide') or 10 px ('suite2p') from both image edges.
     score_crop_px: int | None = Field(None, ge=0)
-    boundary_warning_px: int = Field(2, ge=0)
     alignment_source: Literal["best_score", "structural", "functional"] = "functional"
     # In 'best_score' mode the functional channel wins only by more than this margin.
     score_switch_margin: float = 0.0
@@ -70,6 +94,21 @@ class PhaseSettings(_Frozen):
     second_pass_mode: Literal["chunked", "whole"] = "chunked"
     # None samples every frame for the 'whole' residual (can use a lot of RAM).
     second_pass_global_max_frames: int | None = Field(None, ge=1)
+
+    @model_validator(mode="after")
+    def _per_frame_settings_make_sense(self) -> PhaseSettings:
+        for name in ("consistency_window_frames", "trust_window_frames", "fallback_window_frames"):
+            if getattr(self, name) % 2 == 0:
+                raise ValueError(
+                    f"phase.{name} must be odd (centred on the frame), got {getattr(self, name)}"
+                )
+        manual = self.manual_first_phase_by_start or self.manual_second_phase_by_start
+        if self.method == "per_frame" and manual:
+            raise ValueError(
+                "phase.manual_*_phase_by_start sets a phase per chunk, which only "
+                'method = "chunked" uses; remove them or set method = "chunked"'
+            )
+        return self
 
 
 class DestripeSettings(_Frozen):
@@ -180,6 +219,17 @@ class PipelineSettings(_Frozen):
 
 
 NON_PIPELINE_SECTIONS = ("batch", "exports", "qc", "movies", "natex")
+
+
+def settings_from_record(text: str) -> PipelineSettings:
+    """Settings from a run's ``pipeline_settings.json``.
+
+    Records written before ``phase.method`` existed describe chunked runs, so a record
+    without it is read as ``method = "chunked"`` rather than today's default.
+    """
+    record = json.loads(text)
+    record.setdefault("phase", {}).setdefault("method", "chunked")
+    return PipelineSettings.model_validate(record)
 
 
 def load_settings(path: Path, **overrides: object) -> PipelineSettings:

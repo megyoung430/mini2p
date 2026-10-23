@@ -44,7 +44,10 @@ SCENARIOS = {
 
 
 def settings_for(overrides: dict) -> PipelineSettings:
-    base = {"phase": {"chunk_frames": 20, "max_shift_px": 8}, "distortion": {"mode": "off"}}
+    base = {
+        "phase": {"method": "chunked", "chunk_frames": 20, "max_shift_px": 8},
+        "distortion": {"mode": "off"},
+    }
     merged = {**base, **overrides, "phase": {**base["phase"], **overrides.get("phase", {})}}
     return PipelineSettings.model_validate(merged)
 

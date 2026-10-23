@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -9,6 +10,8 @@ import tifffile
 
 from .bidiphase import select_alignment
 from .config import PipelineSettings
+from .correction import frame_phases_from_curves, measure_line_curves
+from .frame_phase import FramePhases
 from .registration import RegisteredOutputs
 from .tiff_io import chunk_bounds, count_timepoints, read_all_channels
 
@@ -47,6 +50,18 @@ def phase_trace(tiff: Path, settings: PipelineSettings) -> list[dict]:
                 }
             )
     return records
+
+
+@dataclass(frozen=True)
+class FramePhasePreview:
+    curves: np.ndarray  # (frames, channels, shifts); pass to preprocess_tiff as line_curves
+    chosen: FramePhases
+
+
+def frame_phase_preview(tiff: Path, settings: PipelineSettings) -> FramePhasePreview:
+    """Per-frame phases as ``phase.method = "per_frame"`` would apply them, nothing written."""
+    curves = measure_line_curves(tiff, settings)
+    return FramePhasePreview(curves, frame_phases_from_curves(curves, settings))
 
 
 def lowest_score_chunk(trace: list[dict]) -> dict:

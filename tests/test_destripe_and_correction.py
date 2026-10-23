@@ -39,7 +39,10 @@ def test_detrend_without_preserving_mean_zeroes_every_column(rng):
 
 def settings(**phase):
     return PipelineSettings.model_validate(
-        {"phase": {"chunk_frames": 10, "max_shift_px": 8, **phase}, "distortion": {"mode": "off"}}
+        {
+            "phase": {"method": "chunked", "chunk_frames": 10, "max_shift_px": 8, **phase},
+            "distortion": {"mode": "off"},
+        }
     )
 
 
