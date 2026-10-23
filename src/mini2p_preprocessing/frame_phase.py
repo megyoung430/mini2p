@@ -117,18 +117,23 @@ def running_median(values: np.ndarray, window: int, valid: np.ndarray | None = N
     """Median of the valid values in the ``window`` around each frame (edges repeat the end
     values); NaN where the window holds no valid value.
 
-    With an even number of valid values the lower middle one is taken, so the result is
-    always a value from the window: averaging the two would invent a phase between the
-    two sides of a jump.
+    The result is always a value from the window. With an even number of valid values,
+    of the two middle ones a valid frame gets the one closer to its own value, so a frame
+    beside a jump stays on its own side (averaging would invent a value between the two
+    sides; always taking the lower one would move frames across the jump).
     """
     values = np.asarray(values, dtype=float)
-    if valid is not None:
-        values = np.where(valid, values, np.nan)
+    valid = np.ones(len(values), bool) if valid is None else np.asarray(valid, bool)
+    masked = np.where(valid, values, np.nan)
     half = window // 2
-    windows = np.lib.stride_tricks.sliding_window_view(np.pad(values, half, mode="edge"), window)
+    windows = np.lib.stride_tricks.sliding_window_view(np.pad(masked, half, mode="edge"), window)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN windows are expected
-        return np.nanpercentile(windows, 50, axis=1, method="lower")
+        lower = np.nanpercentile(windows, 50, axis=1, method="lower")
+        upper = np.nanpercentile(windows, 50, axis=1, method="higher")
+    with np.errstate(invalid="ignore"):
+        upper_is_closer = valid & (np.abs(values - upper) < np.abs(values - lower))
+    return np.where(upper_is_closer, upper, lower)
 
 
 def local_consistency(

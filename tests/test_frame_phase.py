@@ -263,15 +263,16 @@ def test_the_loss_is_zero_where_structural_fixed_the_frame(rng):
     assert np.allclose(chosen.structural_loss, 0, atol=1e-6)
 
 
-def test_a_blank_frame_beside_a_jump_takes_one_side_of_it():
-    # With a blank frame the window holds an even number of values; the median must still
-    # be a value from the window, never the average of the two sides of a jump.
-    phases = np.r_[np.full(50, -2), np.full(50, 6)]
-    for blank in range(46, 54):
+@pytest.mark.parametrize("before, after", [(-2, 6), (6, -2)])
+def test_a_blank_frame_beside_a_jump_keeps_each_frame_on_its_own_side(before, after):
+    # With a blank frame the window holds an even number of phases; a measured frame next
+    # to the jump must keep its own side, not take the other side or an average of both.
+    phases = np.r_[np.full(50, before), np.full(50, after)]
+    for blank in range(44, 56):
         valid = np.ones(100, bool)
         valid[blank] = False
         median = running_median(phases, 9, valid)
-        assert set(np.unique(median)) <= {-2, 6}, blank
+        assert np.array_equal(median[valid], phases[valid]), blank
 
 
 def test_the_median_of_an_even_count_is_one_of_the_values():

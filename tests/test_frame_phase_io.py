@@ -271,15 +271,16 @@ def test_new_settings_records_keep_their_method():
     assert settings_from_record(settings().model_dump_json()).phase.method == "per_frame"
 
 
-def test_a_noise_only_functional_channel_is_reported(tmp_path, rng, caplog):
+def test_a_noise_only_functional_channel_is_reported(tmp_path, caplog):
     # Nothing can say which channel is right when they disagree, so it must at least be loud.
+    rng = np.random.default_rng(3)  # a draw where the noise disagrees with structural mostly
     structural = 200 + 400 * frames_with_phases(rng, np.full(90, 7), noise_sd=0.1)
     functional = 200 + 50 * rng.standard_normal((90, 48, 96))
     stacks = [np.clip(s, -32768, 32767).astype(np.int16) for s in (structural, functional)]
     raw = write_interleaved_tiff(tmp_path / "raw_00005.tif", stacks)
     with caplog.at_level("WARNING"):
         summary = preprocess_tiff(raw, tmp_path / "c.tif", settings(), run_name="run-01")
-    if summary.frame_phases.used_structural.mean() < 0.5:
-        assert "structural channel set the phase for only" in caplog.text
-    else:
-        assert np.all(summary.frame_phases.phase_px[summary.frame_phases.used_structural] == 7)
+    chosen = summary.frame_phases
+    assert chosen.used_structural.mean() < 0.5
+    assert "structural channel set the phase for only" in caplog.text
+    assert np.all(chosen.phase_px[chosen.used_structural] == 7)
