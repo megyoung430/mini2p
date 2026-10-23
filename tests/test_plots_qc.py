@@ -95,3 +95,54 @@ def test_frame_phase_plot_makes_its_own_axes(recording):
     axes = plots.plot_frame_phases(preview.chosen)
     assert len(axes) == 2
     plt.close("all")
+
+
+# ---- registered means cropped to the part Suite2p's wrap-around never reaches ---------
+
+
+def test_unwrapped_region_follows_suite2p_ranges():
+    rows, cols = qc.unwrapped_region({"yrange": [46, 466], "xrange": [22, 490]})
+    assert (rows, cols) == (slice(46, 466), slice(22, 490))
+    assert np.zeros((512, 512))[rows, cols].shape == (420, 468)
+
+
+def test_unwrapped_region_needs_the_ranges():
+    import pytest
+
+    with pytest.raises(KeyError, match="yrange"):
+        qc.unwrapped_region({"xrange": [0, 10]})
+
+
+def test_channel_columns_share_limits_from_the_chosen_columns():
+    rng = np.random.default_rng(0)
+    full = [rng.random((40, 50)) for _ in range(2)]
+    for image in full:
+        image[-5:] = 100.0  # a bright wrapped stripe outside the region
+    rows, cols = slice(0, 35), slice(5, 45)
+    cropped = [image[rows, cols] for image in full]
+    _, axes = plt.subplots(2, 4)
+    drawn = plots.plot_channel_columns(
+        [full, full, cropped, cropped],
+        ("A", "B", "A cropped", "B cropped"),
+        {1: "red", 2: "green"},
+        axes=axes,
+        limit_columns=(2, 3),
+        box=(rows, cols),
+        box_columns=(0, 1),
+    )
+    assert drawn.shape == (2, 4)
+    for row in drawn:
+        limits = {ax.images[0].get_clim() for ax in row}
+        assert len(limits) == 1  # one display range per channel row
+        assert max(limits.pop()) < 100  # set by the cropped columns, not the stripe
+    assert len(drawn[0, 0].patches) == 1 and len(drawn[0, 2].patches) == 0
+    assert drawn[1, 3].get_title() == "green\nB cropped"
+    plt.close("all")
+
+
+def test_channel_columns_need_one_title_per_column():
+    import pytest
+
+    image = np.zeros((4, 4))
+    with pytest.raises(ValueError, match="titles"):
+        plots.plot_channel_columns([[image], [image]], ("only one",), {1: "red"})

@@ -6,6 +6,7 @@ from collections.abc import Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import Rectangle
 
 from .bidiphase import PhaseEstimate
 from .config import PipelineSettings
@@ -126,6 +127,55 @@ def plot_score_curve(estimate: PhaseEstimate, title: str, ax=None):
     return ax
 
 
+def plot_channel_columns(
+    columns: Sequence[Sequence[np.ndarray]],
+    titles: Sequence[str],
+    channel_names: dict[int, str],
+    axes=None,
+    percentiles=(1, 99.8),
+    x_slice=slice(None),
+    limit_columns: Sequence[int] | None = None,
+    box: tuple[slice, slice] | None = None,
+    box_columns: Sequence[int] = (),
+) -> np.ndarray:
+    """One row per channel, one column per entry of ``columns`` (each a per-channel list of
+    2-D images); every image in a row shares one display range.
+
+    ``limit_columns`` picks which columns set that range (default: all), e.g. cropped
+    images, so a bright edge artefact in the others cannot wash out the contrast. ``box``
+    (rows, columns) is outlined, dashed, on the ``box_columns``.
+    """
+    if len(titles) != len(columns):
+        raise ValueError(f"{len(titles)} titles for {len(columns)} columns")
+    n_channels = len(columns[0])
+    axes = _axes_grid(axes, n_channels, len(columns), (6 * len(columns), 5 * n_channels))
+    limit_columns = range(len(columns)) if limit_columns is None else limit_columns
+    for ch in range(n_channels):
+        values = np.concatenate([np.ravel(columns[c][ch]) for c in limit_columns])
+        vmin, vmax = np.percentile(values[np.isfinite(values)], percentiles)
+        for col, (images, title) in enumerate(zip(columns, titles, strict=True)):
+            ax = axes[ch, col]
+            ax.imshow(
+                images[ch][:, x_slice], cmap="gray", vmin=vmin, vmax=vmax, interpolation="nearest"
+            )
+            ax.set_title(f"{channel_names[ch + 1]}\n{title}")
+            ax.axis("off")
+            if box is not None and col in box_columns:
+                rows, cols = box
+                ax.add_patch(
+                    Rectangle(
+                        (cols.start - 0.5, rows.start - 0.5),
+                        cols.stop - cols.start,
+                        rows.stop - rows.start,
+                        fill=False,
+                        edgecolor="#E69F00",
+                        linestyle="--",
+                        linewidth=1,
+                    )
+                )
+    return axes
+
+
 def plot_channel_pairs(
     left: Sequence[np.ndarray],
     right: Sequence[np.ndarray],
@@ -136,15 +186,14 @@ def plot_channel_pairs(
     x_slice=slice(None),
 ) -> np.ndarray:
     """One row per channel: two 2-D images with shared display limits within the row."""
-    axes = _axes_grid(axes, len(left), 2, (12, 5 * len(left)))
-    for ch, (img_a, img_b) in enumerate(zip(left, right, strict=True)):
-        finite = np.concatenate([img_a[np.isfinite(img_a)], img_b[np.isfinite(img_b)]])
-        vmin, vmax = np.percentile(finite, percentiles)
-        for ax, image, title in zip(axes[ch], (img_a, img_b), titles, strict=True):
-            ax.imshow(image[:, x_slice], cmap="gray", vmin=vmin, vmax=vmax, interpolation="nearest")
-            ax.set_title(f"{channel_names[ch + 1]}\n{title}")
-            ax.axis("off")
-    return axes
+    return plot_channel_columns(
+        [left, right],
+        titles,
+        channel_names,
+        axes=axes,
+        percentiles=percentiles,
+        x_slice=x_slice,
+    )
 
 
 def plot_registration_traces(ops: dict, fs_hz: float, axes=None) -> np.ndarray:

@@ -89,6 +89,20 @@ def registered_first_n_means(
     return [by_channel[ch] for ch in range(1, settings.channels.n_channels + 1)]
 
 
+def unwrapped_region(ops: dict) -> tuple[slice, slice]:
+    """(rows, columns) of the registered frame that Suite2p's rigid shifts never wrap into.
+
+    Suite2p shifts frames with a circular roll, so pixels pushed off one edge reappear at
+    the opposite edge; ``ops['yrange']`` and ``ops['xrange']`` bound the part no frame's
+    shift reaches.
+    """
+    for key in ("yrange", "xrange"):
+        if key not in ops:
+            raise KeyError(f"ops has no '{key}'; was it written by Suite2p registration?")
+    (y0, y1), (x0, x1) = (map(int, ops["yrange"]), map(int, ops["xrange"]))
+    return slice(y0, y1), slice(x0, x1)
+
+
 def suite2p_mean_images(ops: dict) -> tuple[np.ndarray, np.ndarray]:
     """(functional, structural) recording-wide means stored by Suite2p."""
     return (
