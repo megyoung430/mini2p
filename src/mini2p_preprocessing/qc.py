@@ -89,31 +89,70 @@ def registered_first_n_means(
     return [by_channel[ch] for ch in range(1, settings.channels.n_channels + 1)]
 
 
-def unwrapped_region(ops: dict, n_frames: int | None = None) -> tuple[slice, slice]:
-    """(rows, columns) of the registered frame that no rigid shift wraps into.
+def _offsets(ops: dict, key: str, n_frames: int | None, n_dims: int) -> np.ndarray:
+    values = np.asarray(ops[key], dtype=float)
+    if values.ndim != n_dims:
+        raise ValueError(f"ops['{key}'] should be {n_dims}-D, got shape {values.shape}")
+    values = values[:n_frames]
+    if not np.all(np.isfinite(values)):
+        raise ValueError(f"ops['{key}'] has values that are not finite")
+    return values
 
-    Suite2p shifts each frame with ``roll(frame, (-yoff, -xoff))``, a circular shift: a
-    frame with ``yoff > 0`` moves up and its top ``yoff`` rows reappear at the bottom, one
-    with ``yoff < 0`` the reverse, and likewise for ``xoff`` and columns. The margins come
-    from every frame (or the first ``n_frames``). Suite2p's own ``ops['yrange']`` /
-    ``['xrange']`` leave out frames it flags as bad, which are still averaged into its
-    mean images, so they are not used here.
+
+def _edge_margins(rigid: np.ndarray, blocks: np.ndarray | None) -> tuple[int, int]:
+    """(near-edge, far-edge) margins, in pixels, that some frame wraps into along one axis.
+
+    Suite2p rolls each frame by -rigid, so rigid > 0 wraps rows (columns) from the near
+    edge into the far edge and rigid < 0 the reverse; nonrigid registration then samples
+    that rolled frame up to the block shifts away (bilinear, edge-padded), reaching
+    further into the wrapped band by its most outward block shift.
+    """
+    toward_near = np.maximum(0.0, -rigid)
+    toward_far = np.maximum(0.0, rigid)
+    if blocks is not None:
+        toward_near = toward_near - np.min(blocks, axis=1)
+        toward_far = toward_far + np.max(blocks, axis=1)
+    near = int(np.ceil(max(0.0, toward_near.max())))
+    far = int(np.ceil(max(0.0, toward_far.max())))
+    return near, far
+
+
+def unwrapped_region(ops: dict, n_frames: int | None = None) -> tuple[slice, slice]:
+    """(rows, columns) of the registered frame that no frame's shifts wrap into.
+
+    Suite2p shifts each frame with ``roll(frame, (-yoff, -xoff))``, a circular shift, then
+    (nonrigid registration) resamples the rolled frame by the block shifts ``yoff1`` /
+    ``xoff1``, which can reach further into the wrapped band. The margins come from every
+    frame (or the first ``n_frames``), per edge. Suite2p's own ``ops['yrange']`` /
+    ``['xrange']`` leave out frames it flags as bad, which are still averaged into its mean
+    images, and ignore the block shifts, so they are not used here.
     """
     for key in ("yoff", "xoff", "Ly", "Lx"):
         if key not in ops:
-            raise KeyError(f"ops has no '{key}'; it needs Suite2p's rigid registration output")
-    yoff = np.asarray(ops["yoff"], float).ravel()[:n_frames]
-    xoff = np.asarray(ops["xoff"], float).ravel()[:n_frames]
+            raise KeyError(f"ops has no '{key}'; it needs Suite2p's registration output")
+    if n_frames is not None and n_frames < 1:
+        raise ValueError(f"n_frames must be at least 1, got {n_frames}")
     region = []
-    for offsets, length, axis in ((yoff, int(ops["Ly"]), "rows"), (xoff, int(ops["Lx"]), "cols")):
-        start = int(np.ceil(max(0.0, -offsets.min())))  # wrapped in from the far edge
-        stop = length - int(np.ceil(max(0.0, offsets.max())))
-        if start >= stop:
+    for rigid_key, block_key, size_key in (("yoff", "yoff1", "Ly"), ("xoff", "xoff1", "Lx")):
+        rigid = _offsets(ops, rigid_key, n_frames, 1)
+        if len(rigid) != len(_offsets(ops, "yoff", n_frames, 1)):
+            raise ValueError(f"ops['{rigid_key}'] and ops['yoff'] cover different frames")
+        blocks = None
+        if ops.get(block_key) is not None:
+            blocks = _offsets(ops, block_key, n_frames, 2)
+            if len(blocks) != len(rigid):
+                raise ValueError(
+                    f"ops['{block_key}'] covers {len(blocks)} frames, ops['{rigid_key}'] "
+                    f"{len(rigid)}"
+                )
+        near, far = _edge_margins(rigid, blocks)
+        length = int(ops[size_key])
+        if near >= length - far:
             raise ValueError(
-                f"Shifts of {offsets.min():+.0f}..{offsets.max():+.0f} px wrap every one of "
-                f"the {length} {axis}: nothing is free of wrapped pixels"
+                f"Shifts wrap {near} + {far} of the {length} px along {size_key}: nothing "
+                "is free of wrapped pixels"
             )
-        region.append(slice(start, stop))
+        region.append(slice(near, length - far))
     return region[0], region[1]
 
 

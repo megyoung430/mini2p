@@ -101,28 +101,87 @@ def test_frame_phase_plot_makes_its_own_axes(recording):
 # ---- registered means cropped to the part Suite2p's wrap-around never reaches ---------
 
 
-def rolled_like_suite2p(base, yoff, xoff):
-    """Suite2p's rigid shift: torch.roll(frame, shifts=(-dy, -dx)), i.e. circular."""
-    return np.stack(
-        [np.roll(base, (-dy, -dx), axis=(0, 1)) for dy, dx in zip(yoff, xoff, strict=True)]
+def suite2p_shifted(base, yoff, xoff, yoff1=None, xoff1=None, block=64):
+    """Frames shifted by Suite2p's own shift_frames: rigid roll, then nonrigid resampling."""
+    import torch
+    from suite2p.registration import nonrigid
+    from suite2p.registration.register import shift_frames
+
+    ly, lx = base.shape
+    blocks = nonrigid.make_blocks(ly, lx, (block, block))
+    frames = torch.from_numpy(np.repeat(base[None], len(yoff), 0))
+    return np.asarray(
+        shift_frames(
+            frames,
+            torch.from_numpy(yoff),
+            torch.from_numpy(xoff),
+            yoff1,
+            xoff1,
+            blocks,
+            device=torch.device("cpu"),
+        ),
+        dtype=float,
     )
 
 
-def test_unwrapped_region_excludes_every_wrapped_pixel_and_no_more():
+def marked(shape, edge, band=40):
+    """1000 everywhere except a band of 30000 along one edge, which only wraps around."""
+    image = np.full(shape, 1000, np.int16)
+    image[
+        {
+            "top": np.s_[:band],
+            "bottom": np.s_[-band:],
+            "left": np.s_[:, :band],
+            "right": np.s_[:, -band:],
+        }[edge]
+    ] = 30000
+    return image
+
+
+@pytest.mark.parametrize("nonrigid", [False, True])
+def test_unwrapped_region_excludes_every_wrapped_pixel(nonrigid):
     rng = np.random.default_rng(0)
-    ly, lx = 40, 50
-    yoff = rng.integers(-3, 6, 200)
-    xoff = rng.integers(-7, 2, 200)
-    yoff[17], xoff[90] = 11, -9  # single jolts, the kind Suite2p flags as bad frames
-    rows, cols = qc.unwrapped_region({"yoff": yoff, "xoff": xoff, "Ly": ly, "Lx": lx})
-    row_of = rolled_like_suite2p(np.repeat(np.arange(ly)[:, None], lx, 1), yoff, xoff)
-    col_of = rolled_like_suite2p(np.repeat(np.arange(lx)[None], ly, 0), yoff, xoff)
-    i, j = np.arange(ly)[:, None], np.arange(lx)[None]
-    wrapped = (row_of != (i + yoff[:, None, None])) | (col_of != (j + xoff[:, None, None]))
-    assert not wrapped[:, rows, cols].any()
-    # and the region is as large as it can be: each edge just outside it is wrapped somewhere
-    assert wrapped[:, rows.start - 1].any() and wrapped[:, rows.stop].any()
-    assert wrapped[:, :, cols.start - 1].any() and wrapped[:, :, cols.stop].any()
+    shape, n = (128, 128), 30
+    yoff, xoff = rng.integers(-6, 7, n), rng.integers(-6, 7, n)
+    yoff[3], xoff[7] = 11, -10  # single jolts, the kind Suite2p flags as bad frames
+    n_blocks = 9 if nonrigid else 0  # 64-px blocks on 128 px overlap: 3 x 3
+    yoff1 = rng.uniform(-3, 3, (n, n_blocks)).astype(np.float32) if nonrigid else None
+    xoff1 = rng.uniform(-3, 3, (n, n_blocks)).astype(np.float32) if nonrigid else None
+    ops = {"yoff": yoff, "xoff": xoff, "Ly": 128, "Lx": 128}
+    if nonrigid:
+        ops |= {"yoff1": yoff1, "xoff1": xoff1}
+    rows, cols = qc.unwrapped_region(ops)
+    mid_r, mid_c = (rows.start + rows.stop) // 2, (cols.start + cols.stop) // 2
+    # a band wrapped from the opposite edge is the only way a marker reaches each half
+    checks = {
+        "bottom": np.s_[:, rows.start : mid_r, cols],
+        "top": np.s_[:, mid_r : rows.stop, cols],
+        "right": np.s_[:, rows, cols.start : mid_c],
+        "left": np.s_[:, rows, mid_c : cols.stop],
+    }
+    for edge, inside in checks.items():
+        shifted = suite2p_shifted(marked(shape, edge), yoff, xoff, yoff1, xoff1)
+        # 999/1000 is integer rounding of the resampled interior; a marker would add ~30000
+        assert np.all(np.abs(shifted[inside] - 1000) <= 1), edge
+
+
+def test_unwrapped_region_is_no_smaller_than_the_rigid_shifts_need():
+    yoff, xoff = np.array([-4, 9, 0]), np.array([3, -2, 0])
+    rows, cols = qc.unwrapped_region({"yoff": yoff, "xoff": xoff, "Ly": 50, "Lx": 60})
+    assert (rows, cols) == (slice(4, 41), slice(2, 57))
+
+
+def test_nonrigid_shifts_widen_the_margins():
+    ops = {
+        "yoff": np.array([-4, 0]),
+        "xoff": np.array([0, 0]),
+        "Ly": 50,
+        "Lx": 60,
+        "yoff1": np.array([[-2.5, 0.0], [1.0, 3.2]]),
+        "xoff1": np.zeros((2, 2)),
+    }
+    rows, _ = qc.unwrapped_region(ops)
+    assert rows == slice(7, 46)  # top: 4 + 2.5 -> 7; bottom: 0 + 3.2 -> 4
 
 
 def test_unwrapped_region_can_be_limited_to_the_first_frames():
@@ -131,11 +190,27 @@ def test_unwrapped_region_can_be_limited_to_the_first_frames():
     assert qc.unwrapped_region(ops, n_frames=10)[0] == slice(0, 40)
 
 
-def test_unwrapped_region_needs_offsets_and_room():
+@pytest.mark.parametrize(
+    "change, match",
+    [
+        ({"yoff": [0.0, np.nan]}, "finite"),
+        ({"yoff": [0.0, 1.0, 2.0]}, "frames"),
+        ({"yoff": [[0.0, 1.0]]}, "1-D"),
+        ({"yoff1": np.zeros((3, 4))}, "frames"),
+        ({"yoff": [6, -6]}, "nothing"),
+    ],
+)
+def test_unwrapped_region_checks_its_offsets(change, match):
+    ops = {"yoff": [0.0, 0.0], "xoff": [0.0, 0.0], "Ly": 10, "Lx": 10} | change
+    with pytest.raises(ValueError, match=match):
+        qc.unwrapped_region(ops)
+
+
+def test_unwrapped_region_needs_offsets_and_at_least_one_frame():
     with pytest.raises(KeyError, match="yoff"):
         qc.unwrapped_region({"xoff": [0], "Ly": 10, "Lx": 10})
-    with pytest.raises(ValueError, match="nothing"):
-        qc.unwrapped_region({"yoff": [6, -6], "xoff": [0, 0], "Ly": 10, "Lx": 10})
+    with pytest.raises(ValueError, match="n_frames"):
+        qc.unwrapped_region({"yoff": [0], "xoff": [0], "Ly": 10, "Lx": 10}, n_frames=0)
 
 
 def full_and_cropped(rng):
@@ -195,6 +270,10 @@ def test_channel_columns_refuse_inconsistent_input():
             x_slice=slice(1, None),
             box=(slice(0, 2), slice(0, 2)),
             box_columns=(0,),
+        )
+    with pytest.raises(ValueError, match="non-negative"):
+        plots.plot_channel_columns(
+            [[image]], ("a",), names, box=(slice(1, -1), slice(0, 2)), box_columns=(0,)
         )
     with pytest.raises(ValueError, match="limit_columns"):
         plots.plot_channel_columns([[image]], ("a",), names, limit_columns=())

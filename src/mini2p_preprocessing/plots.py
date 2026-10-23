@@ -152,9 +152,9 @@ def _check_columns(columns, titles, limit_columns, box, x_slice) -> None:
     if limit_columns is not None and len(limit_columns) == 0:
         raise ValueError("limit_columns is empty: no images to set the display range from")
     if box is not None:
-        if any(s.start is None or s.stop is None for s in box):
-            raise ValueError("box needs explicit (start, stop) rows and columns")
-        if x_slice != slice(None):
+        if any(s.start is None or s.stop is None or s.start < 0 or s.stop <= s.start for s in box):
+            raise ValueError("box needs explicit, non-negative (start, stop) rows and columns")
+        if x_slice not in (slice(None), slice(0, None)):
             raise ValueError("box is in full-frame columns, so it cannot be used with x_slice")
 
 
