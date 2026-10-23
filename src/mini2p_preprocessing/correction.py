@@ -266,6 +266,7 @@ PER_FRAME_SETTINGS = (
     "support_window_frames",
     "support_t_threshold",
     "contradict_t_threshold",
+    "contradict_min_px",
     "trust_window_frames",
     "fallback_window_frames",
 )

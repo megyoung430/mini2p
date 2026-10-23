@@ -22,6 +22,7 @@ agreement_px = 6                 # structural is backed if this close to the fun
 support_window_frames = 15       # odd; or if functional over these frames prefers it:
 support_t_threshold = 1.5        #   local vote (t-like) needed to back the structural phase
 contradict_t_threshold = 2.0     #   vote against that overrules agreement_px
+contradict_min_px = 2            #   ...only when the phases differ by more than this
 trust_window_frames = 25         # odd; a frame follows the majority of these
 fallback_window_frames = 101     # odd; functional frames averaged where structural fails
 frames_per_read = 50             # memory only (~300 MB per channel for 512 x 512 frames)

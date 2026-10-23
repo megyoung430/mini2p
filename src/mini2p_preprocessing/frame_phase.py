@@ -210,7 +210,7 @@ def trusted_structural(
     (``functional_preference`` >= ``support_t_threshold``), or it is within
     ``agreement_px`` of that phase and the functional channel does not clearly prefer the
     long-window phase instead (``functional_preference`` <= -``contradict_t_threshold``,
-    counted only when the two differ by more than ``consistency_tolerance_px``). The
+    counted only when the two differ by more than ``contradict_min_px``). The
     first lets short excursions (a few dozen frames at another phase, the minority within
     the long window) follow the structural channel; both reject noise that sits steadily
     near 0 px, which consistency alone would accept.
@@ -234,9 +234,8 @@ def trusted_structural(
     )
     separation = np.abs(smoothed_px - fallback_px)
     backed = preference >= phase.support_t_threshold
-    # Within the consistency tolerance the two phases are the same phase, drift included.
     contradicted = (preference <= -phase.contradict_t_threshold) & (
-        separation > phase.consistency_tolerance_px
+        separation > phase.contradict_min_px
     )
     agrees = separation <= phase.agreement_px
     no_functional = ~windowed_texture(functional_curves, phase.fallback_window_frames)

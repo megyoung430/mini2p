@@ -69,7 +69,8 @@ class PhaseSettings(_Frozen):
     # their running median, and the functional channel backs that median: over
     # support_window_frames it prefers that phase to its own phase over
     # fallback_window_frames with t >= support_t_threshold, or the two are within
-    # agreement_px and it does not prefer its own phase with t >= contradict_t_threshold.
+    # agreement_px and it does not prefer its own phase with t >= contradict_t_threshold
+    # (when they differ by more than contradict_min_px).
     # Most of trust_window_frames must agree.
     consistency_window_frames: int = Field(9, ge=3)
     consistency_tolerance_px: int = Field(2, ge=0)
@@ -78,6 +79,9 @@ class PhaseSettings(_Frozen):
     support_window_frames: int = Field(15, ge=3)
     support_t_threshold: float = Field(1.5, gt=0)
     contradict_t_threshold: float = Field(2.0, gt=0)
+    # A contradiction counts only when the two phases differ by more than this: oriented
+    # structure can bias the functional channel's own peak by a pixel or two.
+    contradict_min_px: int = Field(2, ge=0)
     trust_window_frames: int = Field(25, ge=1)
     fallback_window_frames: int = Field(101, ge=1)
     # Frames read at once; memory only, the result is the same. Measuring uses about

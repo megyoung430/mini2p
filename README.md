@@ -276,11 +276,11 @@ meaning there. ΔF itself stays finite. The same applies to the green/red ratio,
    `support_window_frames` around a frame, each functional frame's correlation at the
    structural phase minus at the functional long-window phase, as a t-like statistic
    (mean over its standard error). The structural phase is backed where that is at least
-   `support_t_threshold`, or where it is within `agreement_px` of the long-window phase
-   and the vote does not contradict it (at most -`contradict_t_threshold`, counted only
-   when the two differ by more than `consistency_tolerance_px`). The vote lets short
-   excursions to another phase (the minority within the long window) follow the
-   structural channel; a functional stretch with no signal gives no vote either way. Each frame then follows the majority of the
+   `support_t_threshold`, or where it is within `agreement_px` of the long-window phase,
+   unless the vote is at most -`contradict_t_threshold` and the two differ by more than
+   `contradict_min_px`. The vote lets short excursions to another phase (the minority
+   within the long window) follow the structural channel; a functional stretch with no
+   signal gives no vote either way. Each frame then follows the majority of the
    `trust_window_frames` around it, so single doubtful frames do not switch channel.
    Everywhere else the functional channel's `fallback_window_frames` average is used.
    This is decided stretch by stretch, so a structural channel that is good in some

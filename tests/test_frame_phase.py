@@ -358,3 +358,36 @@ def test_steady_noise_close_to_the_real_phase_is_rejected(rng):
     )
     assert chosen.used_structural.mean() < 0.05
     assert np.all(np.abs(chosen.phase_px - 5) <= 1)
+
+
+def slanted_image(rng, slope_px, shape=(48, 96)):
+    """Streaks along x = slope * y: each odd row looks shifted by ``slope_px`` from the row
+    above, so this image's own even/odd peak is ``slope_px`` away from the scan phase."""
+    base = gaussian_filter(rng.standard_normal(shape[1] + 200), 1.5)
+    rows = [
+        np.interp(np.arange(shape[1]) + 100 - slope_px * y, np.arange(len(base)), base)
+        for y in range(shape[0])
+    ]
+    image = np.stack(rows)
+    return (image - image.mean()) / image.std()
+
+
+@pytest.mark.parametrize("slope_px, contradict_min_px", [(1, 2), (2, 3)])
+def test_a_slightly_biased_functional_channel_does_not_overrule_clean_structure(
+    rng, slope_px, contradict_min_px
+):
+    # Oriented structure biases the functional channel's own peak (here by up to
+    # contradict_min_px); that must not count as contradicting a clean structural channel.
+    wide = PHASE.model_copy(update={"max_shift_px": 16, "contradict_min_px": contradict_min_px})
+    n, true = 200, 8
+    structural = frames_with_phases(rng, np.full(n, true), 0.2)
+    functional = frames_with_phases(
+        rng, np.full(n, true), 2.0, anatomy=slanted_image(rng, slope_px)
+    )
+    chosen = choose_frame_phases(
+        line_correlation_curves(structural, 16), line_correlation_curves(functional, 16), wide
+    )
+    assert np.all(np.abs(chosen.fallback_px - true) <= contradict_min_px)  # it is biased
+    assert np.any(chosen.fallback_px != true)
+    assert chosen.used_structural.all()
+    assert np.all(chosen.phase_px == true)
