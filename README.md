@@ -168,14 +168,15 @@ the first frames of the acquired TIFF), so a frame number is the same moment in 
 Existing movies are refused unless `overwrite = true`, and every stage's file must exist
 before anything is written.
 
-With `suite2p_crop = true` each movie also gets a copy (`_cropped_` in its name) cropped to
-the part of the registered frame that no frame's rigid or nonrigid shifts wrap into: Suite2p
-shifts frames with a circular roll, so with large motion the edges of the registered movie
-show pixels from the opposite edge. The region is computed from the run's `ops.npy`
-(`qc.unwrapped_region`, as in the QC notebook), and the cropped copy takes its contrast from
-the cropped frames. It is in registered-frame pixels, so stages of another frame size (raw
-and bidiphase when distortion correction cropped the frame) get no cropped copy, with a
-warning.
+With `suite2p_crop = true` each registered movie also gets a copy (`_cropped_` in its name,
+"cropped" in its label) cropped to the part of the frame that no frame's rigid or nonrigid
+shifts wrap into: Suite2p shifts frames with a circular roll, so with large motion the edges
+of the registered movie show pixels from the opposite edge. The region is computed from the
+run's `ops.npy` (`qc.unwrapped_region`, as in the QC notebook) over the whole recording, so
+every cropped movie of a run has the same size, and the copy takes its contrast from the
+cropped frames. Only the registered stage is cropped: the earlier stages are not
+motion-corrected, so they have no wrapped edges, and a fixed crop would not follow the
+tissue. The cropped copy reads the registered binaries once more.
 
 Single 7.5 Hz frames are mostly shot noise: for slides, bins of 5-10 frames with
 `spatial_sigma_px = 1` at 4-10x speed usually read best. Movies must play at >= 1 frame/s.

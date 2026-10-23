@@ -142,9 +142,9 @@ class MovieSettings(BaseModel):
     spatial_sigma_px: float = Field(0.0, ge=0)
     upscale: int = Field(1, ge=1, le=8)  # each pixel drawn as upscale x upscale pixels
     label: bool = True  # stage, time, speed and channel burnt into the frame
-    # Also a copy of each movie cropped to the part of the registered frame no frame's
-    # rigid or nonrigid shifts wrap into (qc.unwrapped_region); stages of another frame
-    # size (e.g. raw before distortion correction crops it) get no cropped copy.
+    # Also a copy of each registered movie cropped to the part of the frame no frame's
+    # rigid or nonrigid shifts wrap into (qc.unwrapped_region). Only registered frames
+    # have wrapped edges, so the other stages are not cropped.
     suite2p_crop: bool = False
     contrast_sample_frames: int = Field(200, ge=1)
     quality: float = Field(8.0, ge=0, le=10)  # H.264 quality, 0-10
@@ -180,6 +180,10 @@ class MovieSettings(BaseModel):
             raise ValueError("Choose at least one stage (stage_raw, ..., stage_registered)")
         if not self.versions:
             raise ValueError("Choose unaveraged_movie and/or averaged_movie")
+        if self.suite2p_crop and not self.stage_registered:
+            raise ValueError(
+                "suite2p_crop crops the registered movies, so it needs stage_registered = true"
+            )
         if not self.whole_recording:
             if self.start_frame is None or self.end_frame is None:
                 raise ValueError("With whole_recording = false, set start_frame and end_frame")
@@ -407,7 +411,6 @@ class MoviePlan:
     sigma_px: float
     first_frame: int  # first and last source frames actually shown
     last_frame: int
-    cropped: bool = False  # to the unwrapped region of the registered frame
 
 
 def plan_movie(
@@ -457,7 +460,7 @@ def plan_movie(
         parts.append(f"sigma{sigma:g}")
     parts.append(f"{settings.speed:g}x")
     name = "_".join(parts) + ".mp4"
-    return MoviePlan(stage, name, n, starts, fps, sigma, first, last, cropped)
+    return MoviePlan(stage, name, n, starts, fps, sigma, first, last)
 
 
 def block_size(n: int, mode: AverageMode, source_frames: int = SOURCE_FRAMES_PER_BLOCK) -> int:
@@ -854,40 +857,33 @@ def open_jobs(
     ops = np.load(plane_dir / "ops.npy", allow_pickle=True).item()
     fs = float(ops["fs"])
     span = frame_span(int(ops["nframes"]), *settings.frames_requested)
-    region = unwrapped_region(ops) if settings.suite2p_crop else None
+    region = crop_region(ops) if settings.suite2p_crop else None
+    if region is not None and set(stages) - {"registered"}:
+        log.info(
+            "suite2p_crop: only the registered stage has wrapped edges, so only the "
+            "registered stage is cropped"
+        )
     jobs = []
     for stage in stages:
         sources = open_stage(stage, plane_dir, ops, settings.channel, run, settings.raw_tiff, stack)
         title = stage_title(stage, run)
-        cropped = cropped_sources(stage, sources, ops, region)
         for version in settings.versions:
             plan = plan_movie(version, stage, span, fs, settings, names)
             jobs.append(MovieJob(plan, sources, span, title, fs))
-            if cropped is not None:
+            if region is not None and stage == "registered":
+                cropped = {name: CroppedFrames(src, *region) for name, src in sources.items()}
                 plan = plan_movie(version, stage, span, fs, settings, names, cropped=True)
-                jobs.append(MovieJob(plan, cropped, span, title, fs))
+                jobs.append(MovieJob(plan, cropped, span, f"{title}, cropped", fs))
     return jobs
 
 
-def cropped_sources(
-    stage: Stage, sources: dict[str, Frames], ops: dict, region: tuple[slice, slice] | None
-) -> dict[str, Frames] | None:
-    """*sources* cropped to *region*, or None when there is no region or the stage's frames
-    are not the registered frame size, so the region would mark the wrong pixels."""
-    if region is None:
-        return None
-    registered = (int(ops["Ly"]), int(ops["Lx"]))
-    shapes = {source.frame_shape for source in sources.values()}
-    if shapes != {registered}:
-        log.warning(
-            "%s frames are %s, not the registered %s: not cropped (the unwrapped region is "
-            "in registered-frame pixels)",
-            stage,
-            " / ".join(str(shape) for shape in sorted(shapes)),
-            registered,
-        )
-        return None
-    return {name: CroppedFrames(source, *region) for name, source in sources.items()}
+def crop_region(ops: dict) -> tuple[slice, slice]:
+    """The registered frame's unwrapped region, from the whole recording's shifts, so every
+    cropped movie of a run has the same size whatever frames it shows."""
+    try:
+        return unwrapped_region(ops)
+    except KeyError as error:
+        raise ValueError(f"suite2p_crop needs the run's registration shifts: {error}") from error
 
 
 def _settings_for_title(variant_dir: Path) -> PipelineSettings | None:
