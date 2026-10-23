@@ -89,6 +89,69 @@ def registered_first_n_means(
     return [by_channel[ch] for ch in range(1, settings.channels.n_channels + 1)]
 
 
+def _offsets(ops: dict, key: str, n_dims: int, n_frames_total: int) -> np.ndarray:
+    values = np.asarray(ops[key], dtype=float)
+    if values.ndim != n_dims:
+        raise ValueError(f"ops['{key}'] should be {n_dims}-D, got shape {values.shape}")
+    if len(values) != n_frames_total:
+        raise ValueError(f"ops['{key}'] covers {len(values)} frames, ops['yoff'] {n_frames_total}")
+    if not np.all(np.isfinite(values)):
+        raise ValueError(f"ops['{key}'] has values that are not finite")
+    return values
+
+
+def _edge_margins(rigid: np.ndarray, blocks: np.ndarray | None) -> tuple[int, int]:
+    """(near-edge, far-edge) margins, in pixels, that some frame wraps into along one axis.
+
+    Suite2p rolls each frame by -rigid, so rigid > 0 wraps rows (columns) from the near
+    edge into the far edge and rigid < 0 the reverse; nonrigid registration then samples
+    that rolled frame up to the block shifts away (bilinear, edge-padded), reaching
+    further into the wrapped band by its most outward block shift.
+    """
+    toward_near = np.maximum(0.0, -rigid)
+    toward_far = np.maximum(0.0, rigid)
+    if blocks is not None:
+        toward_near = toward_near - np.min(blocks, axis=1)
+        toward_far = toward_far + np.max(blocks, axis=1)
+    near = int(np.ceil(max(0.0, toward_near.max())))
+    far = int(np.ceil(max(0.0, toward_far.max())))
+    return near, far
+
+
+def unwrapped_region(ops: dict, n_frames: int | None = None) -> tuple[slice, slice]:
+    """(rows, columns) of the registered frame that no frame's shifts wrap into.
+
+    Suite2p shifts each frame with ``roll(frame, (-yoff, -xoff))``, a circular shift, then
+    (nonrigid registration) resamples the rolled frame by the block shifts ``yoff1`` /
+    ``xoff1``, which can reach further into the wrapped band. The margins come from every
+    frame (or the first ``n_frames``), per edge. Suite2p's own ``ops['yrange']`` /
+    ``['xrange']`` leave out frames it flags as bad, which are still averaged into its mean
+    images, and ignore the block shifts, so they are not used here.
+    """
+    for key in ("yoff", "xoff", "Ly", "Lx"):
+        if key not in ops:
+            raise KeyError(f"ops has no '{key}'; it needs Suite2p's registration output")
+    if n_frames is not None and n_frames < 1:
+        raise ValueError(f"n_frames must be at least 1, got {n_frames}")
+    has_blocks = [ops.get(key) is not None for key in ("yoff1", "xoff1")]
+    if any(has_blocks) and not all(has_blocks):
+        raise ValueError("ops has only one of 'yoff1' / 'xoff1'; nonrigid output needs both")
+    n_total = len(np.atleast_1d(ops["yoff"]))
+    region = []
+    for rigid_key, block_key, size_key in (("yoff", "yoff1", "Ly"), ("xoff", "xoff1", "Lx")):
+        rigid = _offsets(ops, rigid_key, 1, n_total)[:n_frames]
+        blocks = _offsets(ops, block_key, 2, n_total)[:n_frames] if all(has_blocks) else None
+        near, far = _edge_margins(rigid, blocks)
+        length = int(ops[size_key])
+        if near >= length - far:
+            raise ValueError(
+                f"Shifts wrap {near} + {far} of the {length} px along {size_key}: nothing "
+                "is free of wrapped pixels"
+            )
+        region.append(slice(near, length - far))
+    return region[0], region[1]
+
+
 def suite2p_mean_images(ops: dict) -> tuple[np.ndarray, np.ndarray]:
     """(functional, structural) recording-wide means stored by Suite2p."""
     return (
