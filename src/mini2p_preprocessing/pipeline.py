@@ -7,8 +7,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
-import tifffile
 from matplotlib import rc_context
 from matplotlib.figure import Figure
 
@@ -90,21 +88,6 @@ def save_frame_phase_plot(
     return stem.with_name(f"{stem.name}.png")
 
 
-def warn_unless_int16(suite2p_input: Path) -> None:
-    """Suite2p registers int16 and converts anything else with a plain astype, which
-    truncates and wraps; say so when its input is not int16 (an older float32 run, or a
-    cluster distortion script writing floats)."""
-    with tifffile.TiffFile(suite2p_input) as tif:
-        dtype = tif.pages[0].dtype
-    if dtype != np.int16:
-        log.warning(
-            "Suite2p input %s is %s, not int16: Suite2p will convert it with astype(int16), "
-            "truncating towards zero and wrapping values beyond the int16 range",
-            suite2p_input,
-            dtype,
-        )
-
-
 def run_pipeline(input_tiff: Path, output_dir: Path, settings: PipelineSettings) -> PipelineResult:
     # Absolute paths go into the sidecars, which the batch planner compares later.
     input_tiff, output_dir = Path(input_tiff).resolve(), Path(output_dir).resolve()
@@ -130,7 +113,6 @@ def run_pipeline(input_tiff: Path, output_dir: Path, settings: PipelineSettings)
     elif settings.distortion.mode == "cluster_full" and not suite2p_input.is_file():
         raise FileNotFoundError(f"Cluster distortion output not found: {suite2p_input}")
     log.info("Suite2p input (%s distortion): %s", settings.distortion.mode, suite2p_input)
-    warn_unless_int16(suite2p_input)
 
     plane_dir = run_registration(suite2p_input, output_dir, settings)
     _log_stage("Suite2p registration", started)

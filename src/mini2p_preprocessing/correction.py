@@ -35,6 +35,7 @@ from .tiff_io import (
     n_written_values,
     output_record,
     read_all_channels,
+    replaced_when_complete,
     write_interleaved,
 )
 
@@ -404,8 +405,7 @@ def _write_per_frame(
     Returns how many values were clipped to fit ``settings.output_dtype``.
     """
     n_channels = settings.channels.n_channels
-    partial = output_tiff.with_name(output_tiff.name + ".partial")
-    try:
+    with replaced_when_complete(output_tiff) as partial:
         with (
             tifffile.TiffFile(input_tiff) as tif,
             tifffile.TiffWriter(partial, bigtiff=True) as writer,
@@ -427,9 +427,6 @@ def _write_per_frame(
             n_values = n_written_values(n_timepoints, n_channels, tif.pages[0].shape)
         # before replacing: a run with too much clipped keeps the previous output
         check_clipped(clipped, n_values, output_tiff, settings.dtype, settings.max_clipped_fraction)
-        partial.replace(output_tiff)
-    finally:
-        partial.unlink(missing_ok=True)
     return clipped
 
 
@@ -547,8 +544,6 @@ def preprocess_tiff(
         return preprocess_per_frame(input_tiff, output_tiff, settings, run_name, line_curves)
     if line_curves is not None:
         raise ValueError('line_curves are only used by phase.method = "per_frame"')
-    for suffix in PER_FRAME_SIDECAR_SUFFIXES:
-        output_tiff.with_suffix(suffix).unlink(missing_ok=True)
     phase = settings.phase
     n_channels = settings.channels.n_channels
     records: list[dict] = []
@@ -559,35 +554,41 @@ def preprocess_tiff(
             if phase.run_second_pass and phase.second_pass_mode == "whole"
             else None
         )
-        with tifffile.TiffWriter(output_tiff, bigtiff=True) as writer:
-            bounds = chunk_bounds(n_timepoints, phase.chunk_frames)
-            progress = ProgressLog("Phase correction", len(bounds), log.info, PROGRESS_EVERY_S)
-            clipped = 0
-            for start, end in bounds:
-                chunks = read_all_channels(tif, start, end, n_channels)
-                corrected, record = correct_chunk(chunks, start, settings, global_residual)
-                clipped += write_interleaved(writer, corrected, settings.dtype)
-                records.append(record)
-                log.info(
-                    "%7d/%d; first=%+d px; second=%+d px; source=%s; score=%.3f; "
-                    "boundary=%s; destriping=%s",
-                    end,
-                    n_timepoints,
-                    record["first_phase_px"],
-                    record["second_phase_px"],
-                    record["first_selected_source"],
-                    record["first_peak_score"],
-                    record["first_at_search_boundary"],
-                    settings.destripe.enabled,
-                )
-                del chunks, corrected
-                gc.collect()
-                progress.step_done()
-        n_values = n_written_values(n_timepoints, n_channels, tif.pages[0].shape)
-    check_clipped(clipped, n_values, output_tiff, settings.dtype, settings.max_clipped_fraction)
+        with replaced_when_complete(output_tiff) as partial:
+            with tifffile.TiffWriter(partial, bigtiff=True) as writer:
+                bounds = chunk_bounds(n_timepoints, phase.chunk_frames)
+                progress = ProgressLog("Phase correction", len(bounds), log.info, PROGRESS_EVERY_S)
+                clipped = 0
+                for start, end in bounds:
+                    chunks = read_all_channels(tif, start, end, n_channels)
+                    corrected, record = correct_chunk(chunks, start, settings, global_residual)
+                    clipped += write_interleaved(writer, corrected, settings.dtype)
+                    records.append(record)
+                    log.info(
+                        "%7d/%d; first=%+d px; second=%+d px; source=%s; score=%.3f; "
+                        "boundary=%s; destriping=%s",
+                        end,
+                        n_timepoints,
+                        record["first_phase_px"],
+                        record["second_phase_px"],
+                        record["first_selected_source"],
+                        record["first_peak_score"],
+                        record["first_at_search_boundary"],
+                        settings.destripe.enabled,
+                    )
+                    del chunks, corrected
+                    gc.collect()
+                    progress.step_done()
+            n_values = n_written_values(n_timepoints, n_channels, tif.pages[0].shape)
+            # before replacing: a run with too much clipped keeps the previous output
+            check_clipped(
+                clipped, n_values, output_tiff, settings.dtype, settings.max_clipped_fraction
+            )
     summary = CorrectionSummary(
         chunks=records, global_residual=global_residual, clipped_values=clipped
     )
+    for suffix in PER_FRAME_SIDECAR_SUFFIXES:  # a per-frame run's records no longer apply
+        output_tiff.with_suffix(suffix).unlink(missing_ok=True)
     sidecar = output_tiff.with_suffix(".phase.json")
     metadata = phase_metadata(settings, run_name, input_tiff, output_tiff, summary) | output_record(
         settings.output_dtype, clipped

@@ -6,12 +6,12 @@ import numpy as np
 import pytest
 import tifffile
 
-from mini2p_preprocessing import pipeline as pipeline_module
 from mini2p_preprocessing.config import PipelineSettings
 from mini2p_preprocessing.correction import preprocess_tiff
 from mini2p_preprocessing.destripe import detrend_chunk
 from mini2p_preprocessing.distortion import write_distortion_corrected
 from mini2p_preprocessing.frame_phase import apply_frame_phases
+from mini2p_preprocessing.registration import check_suite2p_input, run_registration
 from mini2p_preprocessing.tiff_io import (
     TooMuchClipped,
     check_clipped,
@@ -201,14 +201,80 @@ def test_distortion_correction_clips_exactly_what_overflows(tmp_path, recording,
     assert f"{n_clipped} of {reference.size}" in caplog.text
 
 
+# ---- a stopped run leaves the previous output and its record together ---------------------
+
+
+def chunked_settings() -> PipelineSettings:
+    return PipelineSettings.model_validate(
+        {
+            "phase": {"method": "chunked", "chunk_frames": 20, "max_shift_px": 8},
+            "distortion": {"mode": "off"},
+        }
+    )
+
+
+def test_a_stopped_chunked_run_keeps_the_previous_tiff_and_record(tmp_path, rng, recording):
+    clean, _ = recording
+    out = tmp_path / "corrected.tif"
+    preprocess_tiff(clean, out, chunked_settings(), run_name="run-01")
+    before_tiff, before_meta = out.read_bytes(), out.with_suffix(".phase.json").read_text()
+    flooded = float_recording(
+        tmp_path, rng, bright=[(f, slice(None), slice(None)) for f in range(4)]
+    )
+    with pytest.raises(TooMuchClipped):
+        preprocess_tiff(flooded, out, chunked_settings(), run_name="run-01")
+    assert out.read_bytes() == before_tiff
+    assert out.with_suffix(".phase.json").read_text() == before_meta
+    assert not list(tmp_path.glob("*.partial"))
+
+
+def test_a_stopped_distortion_run_keeps_the_previous_tiff_and_record(tmp_path, recording):
+    raw, stacks = recording
+    distortion = {"mode": "local_batched", "transform_mat": "calib.mat"}
+    settings = PipelineSettings.model_validate({"distortion": distortion})
+    out = tmp_path / "undistorted.tif"
+    write_distortion_corrected(raw, out, settings, calibration=fake_calibration())
+    before_tiff = out.read_bytes()
+    before_meta = out.with_suffix(".distortion.json").read_text()
+    flooded = [np.full(s.shape, 50000.0, np.float32) for s in stacks]
+    source = write_interleaved_tiff(tmp_path / "flooded.tif", flooded)
+    with pytest.raises(TooMuchClipped):
+        write_distortion_corrected(source, out, settings, calibration=fake_calibration())
+    assert out.read_bytes() == before_tiff
+    assert out.with_suffix(".distortion.json").read_text() == before_meta
+    assert not list(tmp_path.glob("*.partial"))
+
+
 # ---- what Suite2p is given --------------------------------------------------------------
 
 
-def test_a_suite2p_input_that_is_not_int16_is_reported(tmp_path, recording, caplog, monkeypatch):
-    raw, _ = recording
-    monkeypatch.setattr(pipeline_module, "run_registration", lambda tiff, out, s: out)
-    settings = per_frame_settings(output_dtype="float32")
-    out = tmp_path / "run-01" / "without_distortion_correction" / "without_destriping"
+def suite2p_input(tmp_path, dtype):
+    frames = np.full((4, 2, 8, 8), 100, dtype).reshape(8, 8, 8)
+    return write_interleaved_tiff(tmp_path / f"in_{np.dtype(dtype).name}.tif", [frames])
+
+
+def test_suite2p_input_must_be_int16_when_int16_is_asked_for(tmp_path):
+    settings = per_frame_settings()
+    check_suite2p_input(suite2p_input(tmp_path, np.int16), settings)
+    with pytest.raises(ValueError, match="float32"):
+        check_suite2p_input(suite2p_input(tmp_path, np.float32), settings)
+
+
+def test_a_float32_suite2p_input_only_warns_when_float32_is_asked_for(tmp_path, caplog):
     with caplog.at_level("WARNING"):
-        pipeline_module.run_pipeline(raw, out, settings)
-    assert "float32" in caplog.text and "truncat" in caplog.text
+        check_suite2p_input(
+            suite2p_input(tmp_path, np.float32), per_frame_settings(output_dtype="float32")
+        )
+    assert "truncat" in caplog.text
+
+
+def test_registration_checks_its_input_before_running_suite2p(tmp_path, monkeypatch):
+    import importlib
+
+    module = importlib.import_module("suite2p.run_s2p")
+    calls = []
+    monkeypatch.setattr(module, "run_s2p", lambda settings, db: calls.append(db))
+    tiff = suite2p_input(tmp_path, np.float32)
+    with pytest.raises(ValueError, match="int16"):
+        run_registration(tiff, tmp_path, per_frame_settings())
+    assert calls == []

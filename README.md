@@ -280,11 +280,14 @@ becomes 0) and wraps values beyond -32768..32767 around silently (40000 becomes 
 So the pipeline writes the corrected and undistorted TIFFs as int16 itself
 (`output_dtype = "int16"`, the default): each value is rounded to the nearest count and
 clipped to the int16 range, one frame at a time. If anything is clipped the log warns
-with the count, and above `max_clipped_fraction` (default 1e-4) the run stops instead,
-keeping the previous corrected TIFF; the `.phase.json` / `.distortion.json` sidecars
-record `output_dtype` and `clipped_values`. Before registering, the pipeline warns if the
-TIFF Suite2p will read is not int16 (with `distortion.mode = "cluster_full"` that TIFF
-comes from the cluster script, which this repository does not control). The files are
+with the count, and above `max_clipped_fraction` (default 1e-4) the run stops instead.
+Every writer writes to a `.partial` file that replaces the TIFF only once the run has
+passed, so a stopped run keeps the previous TIFF and its sidecar together. The
+`.phase.json` / `.distortion.json` sidecars record `output_dtype` and `clipped_values`.
+Registration (the pipeline and the QC notebook alike) refuses a Suite2p input that is not
+int16 when `output_dtype = "int16"`: it can only be a stale file or one written elsewhere
+(with `distortion.mode = "cluster_full"` the cluster script, which this repository does
+not control); with `"float32"` it only warns. The files are
 half the size of float32 ones. `output_dtype = "float32"` writes the floats unchanged and
 leaves the conversion to Suite2p (the equivalence tests use it, as the original notebook
 did).

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from pathlib import Path
 
 import numpy as np
 import tifffile
@@ -70,8 +72,11 @@ def to_output_dtype(frames: np.ndarray, dtype: np.dtype) -> tuple[np.ndarray, in
         return frames, 0
     limits = np.iinfo(dtype)
     if frames.dtype.kind == "f":
-        # float64 holds every int16/int32 limit exactly (float16 cannot even hold 32767)
-        frames = np.rint(frames.astype(np.float64))
+        if frames.dtype.itemsize < 2 * dtype.itemsize:
+            # a float at least twice as wide holds every limit of the integer type exactly
+            # (float16 cannot even hold 32767); float32 suffices for int16
+            frames = frames.astype(np.float64)
+        frames = np.rint(frames)
     clipped = int(np.count_nonzero((frames < limits.min) | (frames > limits.max)))
     return np.clip(frames, limits.min, limits.max).astype(dtype), clipped
 
@@ -112,7 +117,7 @@ def check_clipped(
     if fraction > max_fraction:
         raise TooMuchClipped(
             f"{message}, more than max_clipped_fraction = {max_fraction:g}; the data do not "
-            'fit int16 (check the input, or set output_dtype = "float32")'
+            f'fit {np.dtype(dtype)} (check the input, or set output_dtype = "float32")'
         )
     log.warning(message)
 
@@ -120,3 +125,19 @@ def check_clipped(
 def output_record(dtype_name: str, clipped: int) -> dict:
     """What a sidecar records about how its TIFF was written."""
     return {"output_dtype": dtype_name, "clipped_values": int(clipped)}
+
+
+@contextmanager
+def replaced_when_complete(output: Path) -> Iterator[Path]:
+    """Yield a ``.partial`` path to write; it replaces *output* only if the block finishes.
+
+    A run that fails or is refused part-way leaves the previous *output* (and the sidecars
+    written after it) as they were, so a file and its record always belong together.
+    """
+    output = Path(output)
+    partial = output.with_name(output.name + ".partial")
+    try:
+        yield partial
+        partial.replace(output)
+    finally:
+        partial.unlink(missing_ok=True)
