@@ -149,7 +149,7 @@ def clear_earlier_registration(suite2p_dir: Path, settings: PipelineSettings) ->
     Suite2p reuses an existing binary and skips registration, which would keep the old
     result. Only a folder inside ``<variant>/aligned_<source>/`` (the variant a
     with_/without_destriping folder) is removed, never ``run-XX/suite2p``; refuses without
-    ``overwrite``, or if Cellpose masks are inside.
+    ``overwrite``, or if Cellpose masks are anywhere in that ``aligned_<source>/`` folder.
     """
     suite2p_dir = Path(suite2p_dir)
     if suite2p_dir.exists():
@@ -158,7 +158,9 @@ def clear_earlier_registration(suite2p_dir: Path, settings: PipelineSettings) ->
         shutil.rmtree(suite2p_dir)
 
 
-def check_removable(alignment_folder: Path, settings: PipelineSettings, refusal: str) -> None:
+def check_removable(
+    alignment_folder: Path, settings: PipelineSettings, refusal: str, action: str = "register again"
+) -> None:
     """Raise unless ``alignment_folder`` is a ``<variant>/aligned_<source>/`` folder whose
     contents may be removed: never ``run-XX/suite2p`` (the registration Cellpose masks are
     drawn on), never without ``overwrite``, never with Cellpose masks inside."""
@@ -174,7 +176,7 @@ def check_removable(alignment_folder: Path, settings: PipelineSettings, refusal:
             "Cellpose masks were drawn on"
         )
     if not settings.overwrite:
-        raise FileExistsError(f"{refusal}: it exists; set overwrite=true to register again")
+        raise FileExistsError(f"{refusal}: it exists; set overwrite=true to {action}")
     masks = sorted(alignment_folder.rglob("*_seg.npy"))
     if masks:
         raise RuntimeError(
@@ -235,7 +237,10 @@ def run_registration(
         check_removable(registration_dir, settings, f"Not replacing {registration_dir}")
     if stale:
         check_removable(
-            other_dir, settings, f"Not removing {other_dir}, a registration of another TIFF"
+            other_dir,
+            settings,
+            f"Not removing {other_dir}, a registration of another TIFF",
+            action="remove it",
         )
         log.warning("Removing %s and everything in it: it registered another TIFF", other_dir)
         shutil.rmtree(other_dir)

@@ -67,7 +67,9 @@ names (export summaries, PDFs, movies) the `/` becomes `_`. `[exports] alignment
 run has and refuses a run that has both. Registering on one channel removes the other
 channel's `aligned_*/` folder if it registered a different or since-rewritten TIFF (it is
 stale; same guards as re-registering), and keeps it if it registered the same TIFF, so
-the two can be compared. A variant folder in the old layout (`suite2p/` directly inside)
+the two can be compared. "Same TIFF" means the same file name, size and modification
+time, so copy session folders with a tool that keeps file times (`rsync -a`, `cp -p`,
+Finder); a plain `cp` makes the other channel's registration look stale. A variant folder in the old layout (`suite2p/` directly inside)
 is flagged by the batch plan rather than skipped: move or delete it to register again.
 
 For both variants over many sessions, run the batch once with `destripe = false` and
