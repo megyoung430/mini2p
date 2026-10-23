@@ -155,23 +155,44 @@ def local_consistency(
 # ---- choosing ----------------------------------------------------------------------
 
 
-def functional_prefers(
+def functional_preference(
     functional_curves: np.ndarray,
     candidate_px: np.ndarray,
     fallback_px: np.ndarray,
     window: int,
     max_shift_px: int,
 ) -> np.ndarray:
-    """True where the functional channel, averaged over ``window`` frames around a frame,
-    correlates at least as well at ``candidate_px`` as at ``fallback_px``.
+    """How strongly the functional channel prefers ``candidate_px`` to ``fallback_px`` around
+    each frame, as a t-like statistic: the mean, over the ``window`` frames centred on it, of
+    each frame's correlation at the candidate minus at the fallback, divided by its standard
+    error. Positive favours the candidate. 0 where there is no evidence: the two shifts are
+    the same, or fewer than 3 frames in the window have texture.
 
-    Choosing between two given shifts needs far less signal than finding the best of all
-    shifts, so a short window is enough even though GCaMP frames are noisy.
+    Choosing between two given shifts needs far less signal than finding the best one, so a
+    short window of noisy GCaMP frames is enough when there is signal; scaling by the
+    frame-to-frame scatter keeps a flat or noise-only stretch from counting as a vote.
     """
-    local = uniform_filter1d(np.nan_to_num(functional_curves), window, axis=0, mode="nearest")
-    frames = np.arange(len(local))
-    candidate = np.clip(candidate_px, -max_shift_px, max_shift_px) + max_shift_px
-    return local[frames, candidate] >= local[frames, np.asarray(fallback_px) + max_shift_px]
+    candidate_px, fallback_px = np.asarray(candidate_px), np.asarray(fallback_px)
+    for name, shifts in (("candidate", candidate_px), ("fallback", fallback_px)):
+        if np.any(np.abs(shifts) > max_shift_px):
+            raise ValueError(f"{name} shifts outside the searched ±{max_shift_px} px")
+    half = window // 2
+    padded = np.pad(
+        np.asarray(functional_curves, float), ((half, half), (0, 0)), constant_values=np.nan
+    )
+    windows = np.lib.stride_tricks.sliding_window_view(padded, window, axis=0)  # (T, S, W)
+    frames = np.arange(len(candidate_px))
+    differences = (
+        windows[frames, candidate_px + max_shift_px] - windows[frames, fallback_px + max_shift_px]
+    )
+    n = np.sum(~np.isnan(differences), axis=1)
+    with warnings.catch_warnings(), np.errstate(invalid="ignore", divide="ignore"):
+        warnings.simplefilter("ignore", RuntimeWarning)  # windows with < 2 textured frames
+        mean = np.nanmean(differences, axis=1)
+        standard_error = np.nanstd(differences, axis=1, ddof=1) / np.sqrt(n)
+        t = mean / standard_error
+    no_evidence = (n < 3) | (candidate_px == fallback_px) | np.isnan(t)
+    return np.where(no_evidence, 0.0, t)
 
 
 def trusted_structural(
@@ -184,14 +205,18 @@ def trusted_structural(
     """(trusted, smoothed structural phase, consistency) for every frame.
 
     A frame is a candidate where the structural phase is self-consistent *and* the
-    functional channel backs its running median: either that median is within
-    ``agreement_px`` of the functional long-window phase, or the functional channel over
-    ``support_window_frames`` prefers it to that phase. The second lets short excursions
-    (a few dozen frames at another phase, the minority within the long window) follow the
-    structural channel; together they reject noise that sits steadily near 0 px, which
-    consistency alone would accept. Where the functional channel has no texture at all
-    there is nothing to check against, and consistency decides alone. Each frame then
-    follows the majority of the ``trust_window_frames`` around it.
+    functional channel backs its running median: either the functional channel over
+    ``support_window_frames`` prefers it to the functional long-window phase
+    (``functional_preference`` >= ``support_t_threshold``), or it is within
+    ``agreement_px`` of that phase and the functional channel does not clearly prefer the
+    long-window phase instead (``functional_preference`` <= -``contradict_t_threshold``,
+    counted only when the two differ by more than ``consistency_tolerance_px``). The
+    first lets short excursions (a few dozen frames at another phase, the minority within
+    the long window) follow the structural channel; both reject noise that sits steadily
+    near 0 px, which consistency alone would accept.
+    Where the functional channel has no texture at all over the long window there is
+    nothing to check against, and consistency decides alone. Each frame then follows the
+    majority of the ``trust_window_frames`` around it.
     """
     window = phase.consistency_window_frames
     smoothed = running_median(structural_px, window, structural_textured)
@@ -200,20 +225,26 @@ def trusted_structural(
     )
     measured = ~np.isnan(smoothed)
     smoothed_px = np.nan_to_num(smoothed).astype(int)
-    agrees = np.abs(smoothed_px - fallback_px) <= phase.agreement_px
-    backed = functional_prefers(
+    preference = functional_preference(
         functional_curves,
         smoothed_px,
         fallback_px,
         phase.support_window_frames,
         phase.max_shift_px,
     )
+    separation = np.abs(smoothed_px - fallback_px)
+    backed = preference >= phase.support_t_threshold
+    # Within the consistency tolerance the two phases are the same phase, drift included.
+    contradicted = (preference <= -phase.contradict_t_threshold) & (
+        separation > phase.consistency_tolerance_px
+    )
+    agrees = separation <= phase.agreement_px
     no_functional = ~windowed_texture(functional_curves, phase.fallback_window_frames)
     candidate = (
         (consistency >= phase.consistency_threshold)
         & structural_textured
         & measured
-        & (agrees | backed | no_functional)
+        & ((agrees & ~contradicted) | backed | no_functional)
     )
     vote = uniform_filter1d(candidate.astype(float), phase.trust_window_frames, mode="nearest")
     return (vote > 0.5) & measured, smoothed_px, consistency

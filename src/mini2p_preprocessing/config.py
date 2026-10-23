@@ -66,15 +66,18 @@ class PhaseSettings(_Frozen):
     # ---- per_frame
     # Structural is trusted where at least consistency_threshold of the
     # consistency_window_frames around a frame lie within consistency_tolerance_px of
-    # their running median, and the functional channel backs that median: it is within
-    # agreement_px of the functional phase over fallback_window_frames, or the functional
-    # channel over support_window_frames prefers it to that phase. Most of
-    # trust_window_frames must agree.
+    # their running median, and the functional channel backs that median: over
+    # support_window_frames it prefers that phase to its own phase over
+    # fallback_window_frames with t >= support_t_threshold, or the two are within
+    # agreement_px and it does not prefer its own phase with t >= contradict_t_threshold.
+    # Most of trust_window_frames must agree.
     consistency_window_frames: int = Field(9, ge=3)
     consistency_tolerance_px: int = Field(2, ge=0)
     consistency_threshold: float = Field(0.7, gt=0, le=1)
     agreement_px: int = Field(6, ge=0)
-    support_window_frames: int = Field(15, ge=1)
+    support_window_frames: int = Field(15, ge=3)
+    support_t_threshold: float = Field(1.5, gt=0)
+    contradict_t_threshold: float = Field(2.0, gt=0)
     trust_window_frames: int = Field(25, ge=1)
     fallback_window_frames: int = Field(101, ge=1)
     # Frames read at once; memory only, the result is the same. Measuring uses about
