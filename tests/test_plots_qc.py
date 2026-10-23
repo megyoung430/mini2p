@@ -196,7 +196,8 @@ def test_unwrapped_region_can_be_limited_to_the_first_frames():
         ({"yoff": [0.0, np.nan]}, "finite"),
         ({"yoff": [0.0, 1.0, 2.0]}, "frames"),
         ({"yoff": [[0.0, 1.0]]}, "1-D"),
-        ({"yoff1": np.zeros((3, 4))}, "frames"),
+        ({"yoff1": np.zeros((3, 4)), "xoff1": np.zeros((3, 4))}, "frames"),
+        ({"yoff1": np.zeros((2, 4))}, "both"),
         ({"yoff": [6, -6]}, "nothing"),
     ],
 )
@@ -204,6 +205,19 @@ def test_unwrapped_region_checks_its_offsets(change, match):
     ops = {"yoff": [0.0, 0.0], "xoff": [0.0, 0.0], "Ly": 10, "Lx": 10} | change
     with pytest.raises(ValueError, match=match):
         qc.unwrapped_region(ops)
+
+
+def test_block_shifts_must_cover_the_same_frames_before_trimming():
+    ops = {
+        "yoff": [0.0] * 3,
+        "xoff": [0.0] * 3,
+        "Ly": 10,
+        "Lx": 10,
+        "yoff1": np.zeros((5, 2)),
+        "xoff1": np.zeros((5, 2)),
+    }
+    with pytest.raises(ValueError, match="frames"):
+        qc.unwrapped_region(ops, n_frames=2)
 
 
 def test_unwrapped_region_needs_offsets_and_at_least_one_frame():

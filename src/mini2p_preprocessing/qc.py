@@ -89,11 +89,12 @@ def registered_first_n_means(
     return [by_channel[ch] for ch in range(1, settings.channels.n_channels + 1)]
 
 
-def _offsets(ops: dict, key: str, n_frames: int | None, n_dims: int) -> np.ndarray:
+def _offsets(ops: dict, key: str, n_dims: int, n_frames_total: int) -> np.ndarray:
     values = np.asarray(ops[key], dtype=float)
     if values.ndim != n_dims:
         raise ValueError(f"ops['{key}'] should be {n_dims}-D, got shape {values.shape}")
-    values = values[:n_frames]
+    if len(values) != n_frames_total:
+        raise ValueError(f"ops['{key}'] covers {len(values)} frames, ops['yoff'] {n_frames_total}")
     if not np.all(np.isfinite(values)):
         raise ValueError(f"ops['{key}'] has values that are not finite")
     return values
@@ -132,19 +133,14 @@ def unwrapped_region(ops: dict, n_frames: int | None = None) -> tuple[slice, sli
             raise KeyError(f"ops has no '{key}'; it needs Suite2p's registration output")
     if n_frames is not None and n_frames < 1:
         raise ValueError(f"n_frames must be at least 1, got {n_frames}")
+    has_blocks = [ops.get(key) is not None for key in ("yoff1", "xoff1")]
+    if any(has_blocks) and not all(has_blocks):
+        raise ValueError("ops has only one of 'yoff1' / 'xoff1'; nonrigid output needs both")
+    n_total = len(np.atleast_1d(ops["yoff"]))
     region = []
     for rigid_key, block_key, size_key in (("yoff", "yoff1", "Ly"), ("xoff", "xoff1", "Lx")):
-        rigid = _offsets(ops, rigid_key, n_frames, 1)
-        if len(rigid) != len(_offsets(ops, "yoff", n_frames, 1)):
-            raise ValueError(f"ops['{rigid_key}'] and ops['yoff'] cover different frames")
-        blocks = None
-        if ops.get(block_key) is not None:
-            blocks = _offsets(ops, block_key, n_frames, 2)
-            if len(blocks) != len(rigid):
-                raise ValueError(
-                    f"ops['{block_key}'] covers {len(blocks)} frames, ops['{rigid_key}'] "
-                    f"{len(rigid)}"
-                )
+        rigid = _offsets(ops, rigid_key, 1, n_total)[:n_frames]
+        blocks = _offsets(ops, block_key, 2, n_total)[:n_frames] if all(has_blocks) else None
         near, far = _edge_margins(rigid, blocks)
         length = int(ops[size_key])
         if near >= length - far:
