@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -15,6 +14,7 @@ from mini2p_preprocessing.config import PipelineSettings
 from mini2p_preprocessing.correction import preprocess_tiff
 from mini2p_preprocessing.distortion import write_distortion_corrected
 from mini2p_preprocessing.registration import build_suite2p_db, build_suite2p_settings
+from tests.conftest import fake_calibration
 from tests.reference import original_notebook as original
 
 SCENARIOS = {
@@ -43,10 +43,17 @@ SCENARIOS = {
 }
 
 
+def without_output_record(meta: dict) -> dict:
+    """The sidecar without the output type and clip count, which the original did not record."""
+    assert meta.pop("output_dtype") == "float32" and meta.pop("clipped_values") == 0
+    return meta
+
+
 def settings_for(overrides: dict) -> PipelineSettings:
     base = {
         "phase": {"method": "chunked", "chunk_frames": 20, "max_shift_px": 8},
         "distortion": {"mode": "off"},
+        "output_dtype": "float32",  # the original notebook wrote float32
     }
     merged = {**base, **overrides, "phase": {**base["phase"], **overrides.get("phase", {})}}
     return PipelineSettings.model_validate(merged)
@@ -100,7 +107,7 @@ def test_preprocess_matches_original(tmp_path, recording, name):
     assert np.array_equal(read_pages(old_out), read_pages(new_out))
     assert old_summary["global_second_phase_px"] == new_summary.global_second_phase_px
     old_meta = json.loads(old_out.with_suffix(".phase.json").read_text())
-    new_meta = json.loads(new_out.with_suffix(".phase.json").read_text())
+    new_meta = without_output_record(json.loads(new_out.with_suffix(".phase.json").read_text()))
     assert old_meta.pop("output_tiff") != new_meta.pop("output_tiff")
     assert old_meta == new_meta
 
@@ -121,41 +128,22 @@ def test_best_score_switching_matches_original(tmp_path, mixed_recording, second
     assert [c["first_phase_px"] for c in new_summary.chunks] == [3, 1, 5]
     assert np.array_equal(read_pages(old_out), read_pages(new_out))
     old_meta = json.loads(old_out.with_suffix(".phase.json").read_text())
-    new_meta = json.loads(new_out.with_suffix(".phase.json").read_text())
+    new_meta = without_output_record(json.loads(new_out.with_suffix(".phase.json").read_text()))
     old_meta.pop("output_tiff"), new_meta.pop("output_tiff")
     assert old_meta == new_meta
-
-
-def fake_calibration(shape=(48, 96)):
-    """Stand-in for distortion_correct_full_recording: a gentle barrel-like warp."""
-
-    def load_transform(path, z_um):
-        return {"k": 0.05}, 0.0, "fake-schema", 12
-
-    def make_maps(transform, image_shape):
-        yy, xx = np.mgrid[0 : image_shape[0], 0 : image_shape[1]].astype(np.float64)
-        cy, cx = (image_shape[0] - 1) / 2, (image_shape[1] - 1) / 2
-        r2 = ((yy - cy) / cy) ** 2 + ((xx - cx) / cx) ** 2
-        scale = 1 + transform["k"] * r2
-        return cy + (yy - cy) * scale, cx + (xx - cx) * scale
-
-    def crop_bounds(map_y, map_x, image_shape, padding):
-        return (
-            2 + padding,
-            image_shape[0] - 2 - padding,
-            3 + padding,
-            image_shape[1] - 3 - padding,
-        )
-
-    return SimpleNamespace(
-        load_transform=load_transform, make_maps=make_maps, crop_bounds=crop_bounds
-    )
 
 
 def test_distortion_matches_original(tmp_path, recording):
     raw_tiff, _ = recording
     settings = PipelineSettings.model_validate(
-        {"distortion": {"mode": "local_batched", "transform_mat": "calib.mat", "batch_frames": 16}}
+        {
+            "distortion": {
+                "mode": "local_batched",
+                "transform_mat": "calib.mat",
+                "batch_frames": 16,
+            },
+            "output_dtype": "float32",
+        }
     )
     calibration = fake_calibration()
     configure_original(settings)
@@ -176,7 +164,9 @@ def test_distortion_matches_original(tmp_path, recording):
 
     assert np.array_equal(read_pages(old_out), read_pages(new_out))
     old_meta = json.loads(old_out.with_suffix(".distortion.json").read_text())
-    new_meta = json.loads(new_out.with_suffix(".distortion.json").read_text())
+    new_meta = without_output_record(
+        json.loads(new_out.with_suffix(".distortion.json").read_text())
+    )
     old_meta.pop("output_tiff"), new_meta.pop("output_tiff")
     assert old_meta == new_meta
 

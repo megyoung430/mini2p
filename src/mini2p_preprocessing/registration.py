@@ -138,6 +138,30 @@ def clear_earlier_registration(suite2p_dir: Path, settings: PipelineSettings) ->
     shutil.rmtree(suite2p_dir)
 
 
+def check_suite2p_input(suite2p_input_tiff: Path, settings: PipelineSettings) -> None:
+    """Suite2p registers int16 and converts anything else with a plain astype(int16), which
+    truncates towards zero and wraps values beyond the int16 range.
+
+    With ``output_dtype = "int16"`` a different input can only be a stale file or one
+    written elsewhere (a cluster distortion script), so it is refused; with ``"float32"``,
+    asked for deliberately, it is only reported.
+    """
+    with tifffile.TiffFile(suite2p_input_tiff) as tif:
+        dtype = tif.pages[0].dtype
+    if dtype == np.int16:
+        return
+    message = (
+        f"Suite2p input {suite2p_input_tiff} is {dtype}, not int16: Suite2p would convert it "
+        "with astype(int16), truncating towards zero and wrapping values beyond the int16 range"
+    )
+    if settings.output_dtype == "int16":
+        raise ValueError(
+            f'{message}. Rewrite it with the pipeline, or set output_dtype = "float32" to '
+            "accept that"
+        )
+    log.warning(message)
+
+
 def run_registration(
     suite2p_input_tiff: Path, output_dir: Path, settings: PipelineSettings
 ) -> Path:
@@ -145,6 +169,7 @@ def run_registration(
     suite2p_input_tiff = Path(suite2p_input_tiff)
     if not suite2p_input_tiff.is_file():
         raise FileNotFoundError(f"Suite2p input does not exist: {suite2p_input_tiff}")
+    check_suite2p_input(suite2p_input_tiff, settings)
     check_existing_suite2p_folder(output_dir, suite2p_input_tiff, settings.registration.save_folder)
     clear_earlier_registration(Path(output_dir) / settings.registration.save_folder, settings)
     db = build_suite2p_db(output_dir, suite2p_input_tiff, settings)
