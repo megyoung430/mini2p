@@ -11,9 +11,12 @@ from matplotlib.patches import Rectangle
 from .bidiphase import PhaseEstimate
 from .config import PipelineSettings
 from .contrast import red_green_overlay
+from .focus import FocusQC, flagged_stretches
 from .frame_phase import FramePhases, fallback_stretches
 
 ROLE_COLORS = {"structural": "tab:red", "functional": "tab:green"}
+# Okabe-Ito, readable with colour-vision deficiencies.
+OKABE_ITO = {"blue": "#0072B2", "orange": "#E69F00", "vermillion": "#D55E00", "grey": "#999999"}
 
 
 def _axes_grid(axes, nrows: int, ncols: int, figsize) -> np.ndarray:
@@ -513,4 +516,50 @@ def plot_natex_cells(result, rows: Sequence[int], axes=None) -> np.ndarray:
             loc="left",
         )
     axes[-1].set_xlabel("Time from the start of the run (s)")
+    return axes
+
+
+def plot_focus_qc(
+    result: FocusQC, fs_hz: float, ops: dict, merge_gap_frames: int, axes=None
+) -> np.ndarray:
+    """Frame match to the mean image, relative brightness and rigid shift over time, with
+    flagged stretches shaded in every panel.
+
+    The shift panel shows whether a flagged stretch came with a large, fast excursion
+    (often movement during the scan as well as out of focus) or without one (more likely
+    out of focus alone).
+    """
+    n = len(result.match)
+    yoff = np.asarray(ops["yoff"], float).ravel()
+    xoff = np.asarray(ops["xoff"], float).ravel()
+    if len(yoff) != n or len(xoff) != n:
+        raise ValueError(f"ops has shifts for {len(yoff)} frames, the focus QC {n}")
+    minutes = np.arange(n) / fs_hz / 60
+    axes = _axes_grid(axes, 3, 1, (13, 7)).ravel()
+    axes[0].plot(minutes, result.match, color=OKABE_ITO["blue"], linewidth=0.6, label="Frame")
+    axes[0].plot(minutes, result.baseline, color="black", linewidth=1, label="Running Median")
+    axes[0].set_ylabel("Match To Mean Image")
+    axes[1].plot(minutes, result.brightness, color=OKABE_ITO["orange"], linewidth=0.6)
+    axes[1].axhline(1, color=OKABE_ITO["grey"], linewidth=0.8)
+    axes[1].set_ylabel("Relative Brightness")
+    axes[2].plot(minutes, yoff, color=OKABE_ITO["blue"], linewidth=0.6, label="y")
+    axes[2].plot(minutes, xoff, color=OKABE_ITO["orange"], linewidth=0.6, label="x")
+    axes[2].set(ylabel="Rigid Shift (px)", xlabel="Time (minutes)")
+    for start, end in flagged_stretches(result.flagged, merge_gap_frames):
+        for ax in axes:
+            ax.axvspan(
+                minutes[start],
+                minutes[end - 1] + 1 / fs_hz / 60,
+                color=OKABE_ITO["vermillion"],
+                alpha=0.25,
+                linewidth=0,
+            )
+    for ax in (axes[0], axes[2]):
+        ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), frameon=False)
+    for ax in axes:
+        ax.spines[["top", "right"]].set_visible(False)
+    flagged_pct = 100 * float(np.mean(result.flagged))
+    axes[0].set_title(
+        f"Frames Not Matching The Mean After Registration: {flagged_pct:.1f}% Flagged (Shaded)"
+    )
     return axes

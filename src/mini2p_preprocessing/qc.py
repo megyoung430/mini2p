@@ -11,6 +11,7 @@ import tifffile
 from .bidiphase import select_alignment
 from .config import PipelineSettings
 from .correction import frame_phases_from_curves, measure_line_curves
+from .focus import FocusQC, assess_focus, frame_match, smooth_frames
 from .frame_phase import FramePhases
 from .registration import RegisteredOutputs
 from .tiff_io import chunk_bounds, count_timepoints, read_all_channels
@@ -157,4 +158,34 @@ def suite2p_mean_images(ops: dict) -> tuple[np.ndarray, np.ndarray]:
     return (
         np.squeeze(np.asarray(ops["meanImg"], dtype=np.float32)),
         np.squeeze(np.asarray(ops["meanImg_chan2"], dtype=np.float32)),
+    )
+
+
+def focus_qc(outputs: RegisteredOutputs, settings: PipelineSettings) -> FocusQC:
+    """Per-frame focus QC of the registered binary, inside the region no shift wraps into.
+
+    Each frame of ``settings.focus.channel`` is matched against Suite2p's mean image of that
+    channel; both are smoothed first. Reads the binary in chunks, so memory stays at one
+    chunk of frames.
+    """
+    focus = settings.focus
+    rows, cols = unwrapped_region(outputs.ops)
+    functional_mean, structural_mean = suite2p_mean_images(outputs.ops)
+    stack, mean = {
+        "structural": (outputs.structural, structural_mean),
+        "functional": (outputs.functional, functional_mean),
+    }[focus.channel]
+    if mean.shape != stack.shape[1:]:
+        raise ValueError(f"Suite2p mean image {mean.shape} vs frames {stack.shape[1:]}")
+    reference = smooth_frames(mean[None, rows, cols], focus.smooth_px)[0]
+
+    def chunk_stats(bounds: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
+        frames = np.asarray(stack[bounds[0] : bounds[1], rows, cols], np.float32)
+        return frame_match(smooth_frames(frames, focus.smooth_px), reference), frames.mean(
+            axis=(1, 2)
+        )
+
+    stats = [chunk_stats(b) for b in chunk_bounds(len(stack), focus.chunk_frames)]
+    return assess_focus(
+        np.concatenate([m for m, _ in stats]), np.concatenate([b for _, b in stats]), focus
     )
