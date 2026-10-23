@@ -888,3 +888,113 @@ def test_movies_of_a_run_without_distortion_correction(tmp_path):
     assert all(p.parent == tmp_path.joinpath(
         "cohort-01", "sub-03_id-MY_71_R", SESSION, "funcimg", "run-01", nested, "movies")
         for p in written)  # fmt: skip
+
+
+# ---------------------------------------------------------------- cropped to the unwrapped region
+
+
+def with_shifts(plane: Path, yoff, xoff) -> None:
+    """Give the run's ops the rigid shifts Suite2p records (one per frame)."""
+    ops = np.load(plane / "ops.npy", allow_pickle=True).item()
+    ops |= {"yoff": np.resize(yoff, N_FRAMES), "xoff": np.resize(xoff, N_FRAMES)}
+    np.save(plane / "ops.npy", ops, allow_pickle=True)
+
+
+def even(n: int) -> int:
+    return n + n % 2
+
+
+def test_cropped_frames_are_the_region_of_the_full_frames(tmp_path):
+    plane = make_run(tmp_path)
+    ops = np.load(plane / "ops.npy", allow_pickle=True).item()
+    with ExitStack() as stack:
+        full = open_stage("registered", plane, ops, "green", None, None, stack)["green"]
+        cropped = movies.CroppedFrames(full, slice(2, 25), slice(4, 37))
+        assert cropped.frame_shape == (23, 33)
+        assert cropped.path == full.path
+        np.testing.assert_array_equal(cropped.read(5, 9), full.read(5, 9)[:, 2:25, 4:37])
+
+
+def test_suite2p_crop_adds_a_cropped_movie_beside_each_full_one(tmp_path):
+    plane = make_run(tmp_path)
+    with_shifts(plane, [-3, 0, 5], [2, -4, 0])  # rows 3..24, columns 4..38 stay unwrapped
+    written = make_movies(settings_for(tmp_path, suite2p_crop=True))
+    names = sorted(p.name for p in written)
+    assert len(names) == 4 and sum("_cropped_" in n for n in names) == 2
+    for path in written:
+        frames = decoded(path)[1]
+        height, width = (25 - 3, 39 - 4) if "_cropped_" in path.name else (LY, LX)
+        assert frames.shape[1:3] == (even(height), even(2 * width + PANEL_GAP_PX))
+    full = [n for n in names if "_cropped_" not in n]
+    assert all(n.replace("_cropped", "") in full for n in names if "_cropped_" in n)
+
+
+def test_cropped_movies_take_their_contrast_from_the_cropped_frames(tmp_path):
+    plane = make_run(tmp_path)
+    with_shifts(plane, [0, 4], [0, 0])  # the bottom 4 rows are wrapped
+    red = (100 + 100 * np.random.default_rng(0).random((N_FRAMES, LY, LX))).astype(np.int16)
+    red[:, -4:] = 30000  # a bright wrapped band along the bottom of the red channel
+    red.tofile(plane / "data_chan2.bin")
+    settings = settings_for(tmp_path, suite2p_crop=True, averaged_movie=False, channel="red")
+    written = make_movies(settings)
+    cropped = decoded(next(p for p in written if "_cropped_" in p.name))[1]
+    full = decoded(next(p for p in written if "_cropped_" not in p.name))[1]
+    # cropped: white point from the 100-200 pixels; full: the band takes the white point
+    assert cropped.mean() > 60
+    assert full[:, : LY - 4].mean() < 5
+
+
+def test_only_the_registered_stage_is_cropped(tmp_path, caplog):
+    # Only registered frames have wrapped edges; earlier stages are not motion-corrected,
+    # so a fixed crop of them would not remove anything and would not follow the tissue.
+    plane = make_run(tmp_path, run=run_settings(distortion={"mode": "off"}))
+    with_shifts(plane, [-2, 2], [-2, 2])
+    settings = settings_for(tmp_path, suite2p_crop=True, stage_raw=True, stage_bidiphase=True)
+    with caplog.at_level("INFO"):
+        names = [p.name for p in make_movies(settings)]
+    cropped = [n for n in names if "_cropped_" in n]
+    assert cropped and all("_registered_" in n for n in cropped)
+    assert "only the registered stage" in caplog.text
+
+
+def test_suite2p_crop_needs_the_registered_stage():
+    with pytest.raises(ValueError, match="stage_registered"):
+        MovieSettings(
+            run_dir="/tmp/x",
+            whole_recording=True,
+            suite2p_crop=True,
+            stage_registered=False,
+            stage_raw=True,
+        )
+
+
+def test_suite2p_crop_needs_the_registration_shifts_before_writing(tmp_path):
+    make_run(tmp_path)  # ops without yoff / xoff
+    with pytest.raises(ValueError, match="yoff"):
+        make_movies(settings_for(tmp_path, suite2p_crop=True))
+    assert not movie_dir(tmp_path).exists()
+
+
+def test_cli_reports_missing_shifts_as_a_usage_error(tmp_path, capsys):
+    make_run(tmp_path)
+    config = write_config(tmp_path, "suite2p_crop = true\n")
+    with pytest.raises(SystemExit):
+        movie_main(["--config", str(config)])
+    assert "yoff" in capsys.readouterr().err
+
+
+def test_cropped_movies_are_labelled_as_cropped(tmp_path):
+    plane = make_run(tmp_path)
+    with_shifts(plane, [-2, 2], [0, 0])
+    settings = settings_for(tmp_path, suite2p_crop=True)
+    with ExitStack() as stack:
+        jobs = movies.open_jobs(settings, plane, NAMES, stack)
+    titles = {job.plan.name: job.title for job in jobs}
+    assert all(t.endswith("cropped") for n, t in titles.items() if "_cropped_" in n)
+    assert not any(t.endswith("cropped") for n, t in titles.items() if "_cropped_" not in n)
+
+
+def test_without_suite2p_crop_nothing_changes(tmp_path):
+    plane = make_run(tmp_path)
+    with_shifts(plane, [-3, 5], [0, 0])
+    assert not any("_cropped_" in p.name for p in make_movies(settings_for(tmp_path)))
