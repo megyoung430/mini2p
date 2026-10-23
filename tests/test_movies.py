@@ -497,9 +497,9 @@ def test_every_stage_gives_its_movies(tmp_path):
         **ALL_STAGES,
     )
     written = make_movies(settings)
-    assert [p.name.split("_with_destriping_")[1].split("_")[0] for p in written[::2]] == list(
-        movies.STAGES
-    )
+    assert [
+        p.name.split("_with_destriping_aligned_structural_")[1].split("_")[0] for p in written[::2]
+    ] == list(movies.STAGES)
     for path in written:
         frames = decoded(path)[1]
         width = CROP[3] - CROP[2] if "_undistorted_" in path.name else LX
@@ -532,7 +532,9 @@ def test_a_run_without_distortion_refuses_the_undistorted_stage(tmp_path):
     written = make_movies(
         settings_for(tmp_path, **{**ALL_STAGES, "stage_undistorted": False}, averaged_movie=False)
     )
-    assert [p.name.split("_without_destriping_")[1].split("_")[0] for p in written] == [
+    assert [
+        p.name.split("_without_destriping_aligned_structural_")[1].split("_")[0] for p in written
+    ] == [
         "raw",
         "bidiphase",
         "registered",
@@ -607,7 +609,7 @@ def test_command_line_options_override_the_config(tmp_path):
          "--channel", "red", "--stage-raw", "--end-frame", "11", "--gamma", "0.8"]
     )  # fmt: skip
     names = sorted(p.name for p in movie_dir(tmp_path).glob("*.mp4"))
-    assert [n.split("_without_destriping_")[1] for n in names] == [
+    assert [n.split("_without_destriping_aligned_structural_")[1] for n in names] == [
         "raw_red_frames-0-11_bin4_3x.mp4",
         "registered_red_frames-0-11_bin4_3x.mp4",
     ]
@@ -705,9 +707,9 @@ def config_settings() -> PipelineSettings:
 def test_movies_of_a_run_folder_given_by_path(tmp_path, caplog):
     run_dir = run_folder_outside_the_batch(tmp_path)
     written = make_movies(path_settings(run_dir, averaged_movie=False), config_settings)
-    assert [p.name.split("_without_destriping_")[1].split("_")[0] for p in written] == list(
-        movies.STAGES
-    )
+    assert [
+        p.name.split("_without_destriping_aligned_structural_")[1].split("_")[0] for p in written
+    ] == list(movies.STAGES)
     assert all(
         p.name.startswith("example_ses_img_with_distortion_correction_without_destriping_")
         for p in written
@@ -888,8 +890,10 @@ def test_movies_of_a_run_without_distortion_correction(tmp_path):
         settings_for(tmp_path, variant=nested, stage_raw=True, stage_bidiphase=True,
                      averaged_movie=False)
     )  # fmt: skip
-    assert [p.name.split("_without_distortion_correction_without_destriping_")[1].split("_")[0]
-            for p in written] == ["raw", "bidiphase", "registered"]  # fmt: skip
+    label = "_without_distortion_correction_without_destriping_aligned_structural_"
+    assert [p.name.split(label)[1].split("_")[0] for p in written] == [
+        "raw", "bidiphase", "registered"
+    ]  # fmt: skip
     assert all(p.name.startswith(f"sub-03_id-MY_71_R_{SESSION}_run-01_") for p in written)
     assert all(p.parent == tmp_path.joinpath(
         "cohort-01", "sub-03_id-MY_71_R", SESSION, "funcimg", "run-01", nested, ALIGNED,

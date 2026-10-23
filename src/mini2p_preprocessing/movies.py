@@ -441,6 +441,7 @@ def plan_movie(
     settings: MovieSettings,
     names: tuple[str, ...],
     cropped: bool = False,
+    alignment: str | None = None,
 ) -> MoviePlan:
     """The frames, playback rate and file name of one stage's unaveraged or averaged movie
     (pure).
@@ -470,6 +471,7 @@ def plan_movie(
     parts = [
         *names,
         variant_label(settings.variant),
+        *([alignment] if alignment else []),  # e.g. aligned_structural
         stage,
         settings.channel,
         *(["cropped"] if cropped else []),
@@ -863,6 +865,7 @@ def open_jobs(
     with the config's settings, which *config* loads only then.
     """
     variant_dir = variant_dir_of(plane_dir)
+    alignment = plane_dir.parents[1].name  # in every file name: the folder can be left
     stages = settings.stages
     if set(stages) - {"registered"}:
         run = load_run_settings(variant_dir)  # the TIFF stages need it: fail if unreadable
@@ -888,11 +891,13 @@ def open_jobs(
         sources = open_stage(stage, plane_dir, ops, settings.channel, run, settings.raw_tiff, stack)
         title = stage_title(stage, run)
         for version in settings.versions:
-            plan = plan_movie(version, stage, span, fs, settings, names)
+            plan = plan_movie(version, stage, span, fs, settings, names, alignment=alignment)
             jobs.append(MovieJob(plan, sources, span, title, fs))
             if region is not None and stage == "registered":
                 cropped = {name: CroppedFrames(src, *region) for name, src in sources.items()}
-                plan = plan_movie(version, stage, span, fs, settings, names, cropped=True)
+                plan = plan_movie(
+                    version, stage, span, fs, settings, names, cropped=True, alignment=alignment
+                )
                 jobs.append(MovieJob(plan, cropped, span, f"{title}, cropped", fs))
     return jobs
 

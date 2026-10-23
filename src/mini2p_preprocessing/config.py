@@ -358,7 +358,7 @@ def plane_dir_of(variant_dir: Path, source: ChannelRole, save_folder: str = "sui
 def variant_dir_of(plane_dir: Path) -> Path:
     """The variant folder of ``<variant>/aligned_<source>/<save_folder>/plane0``."""
     plane_dir = Path(plane_dir)
-    if plane_dir.parents[1].name not in ALIGNMENT_SUBDIRS.values():
+    if len(plane_dir.parents) < 3 or plane_dir.parents[1].name not in ALIGNMENT_SUBDIRS.values():
         raise ValueError(
             f"{plane_dir} is not inside an {' or '.join(ALIGNMENT_SUBDIRS.values())} folder"
         )

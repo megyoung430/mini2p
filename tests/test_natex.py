@@ -437,3 +437,20 @@ def test_natex_command(tmp_path):
     with pytest.raises(SystemExit):  # results exist: a usage error, not a traceback
         natex_main(["--config", str(config), "--plane-dir", str(plane)])
     natex_main(["--config", str(config), "--plane-dir", str(plane), "--overwrite"])
+
+
+def test_natex_runs_on_a_plane_outside_a_variant(tmp_path):
+    # run-XX/suite2p/plane0, the registration Cellpose masks are drawn on, is a valid target.
+    from mini2p_preprocessing.natex import report_title, run_natex
+
+    plane, _, _ = make_plane(tmp_path)
+    run_dir = plane.parents[4]  # run-01
+    plain = run_dir / "suite2p" / "plane0"
+    plain.parent.mkdir()
+    plane.rename(plain)
+    assert report_title(plain) == "ses-224_x funcimg run-01 suite2p"
+    assert (run_natex(plain, NatexSettings(), 0.8) / "natex_qc.pdf").is_file()
+    variant_plane = run_dir / "with_distortion_correction" / "v" / "aligned_structural"
+    assert report_title(variant_plane / "suite2p" / "plane0") == (
+        "ses-224_x funcimg run-01 with_distortion_correction v aligned_structural"
+    )

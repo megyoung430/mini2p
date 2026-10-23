@@ -15,7 +15,7 @@ from mini2p_preprocessing.registration import (
     MOTION_ALIGNMENT_RECORD,
     build_suite2p_settings,
     choose_motion_source,
-    motion_source_for,
+    motion_choice,
     run_registration,
 )
 
@@ -79,17 +79,19 @@ def test_auto_registers_into_the_folder_of_the_channel_it_chose(
     assert db["save_path0"] == str(out / f"aligned_{chosen}")
     record = json.loads((out / f"aligned_{chosen}" / MOTION_ALIGNMENT_RECORD).read_text())
     assert record["motion_alignment_source"] == chosen
-    assert f"{fraction:.0%}" in record["reason"]
+    assert record["fraction_structural"] == fraction
+    assert record["auto_structural_min_fraction"] == 0.5
+    assert record["suite2p_input"] == str(tiff) and record["size_bytes"] == tiff.stat().st_size
     assert not (
         out / f"aligned_{'functional' if chosen == 'structural' else 'structural'}"
     ).exists()
 
 
 def test_the_threshold_comes_from_the_settings(tmp_path):
-    out, _ = variant_with_phase_record(tmp_path, 0.3)
-    assert motion_source_for(out, settings())[0] == "functional"
+    _, tiff = variant_with_phase_record(tmp_path, 0.3)
+    assert motion_choice(tiff, settings()).source == "functional"
     lenient = settings(auto_structural_min_fraction=0.25)
-    assert motion_source_for(out, lenient)[0] == "structural"
+    assert motion_choice(tiff, lenient).source == "structural"
 
 
 def test_a_fixed_channel_ignores_the_phase_record(tmp_path, suite2p_calls):
@@ -106,18 +108,83 @@ def test_auto_without_a_per_frame_record_fails_before_suite2p(tmp_path, suite2p_
     next(out.glob("*.phase.json")).unlink()
     with pytest.raises(FileNotFoundError, match="phase.json"):
         run_registration(tiff, out, settings())
-    (out / "x_dynamic_bidiphase_destriped.phase.json").write_text(json.dumps({"chunks": []}))
+    chunked = {"chunks": []}
+    (out / "71rtask_00036_dynamic_bidiphase_destriped.phase.json").write_text(json.dumps(chunked))
     with pytest.raises(ValueError, match="per-frame"):
         run_registration(tiff, out, settings())
     assert suite2p_calls == []
 
 
-def test_two_phase_records_are_ambiguous(tmp_path):
-    out, _ = variant_with_phase_record(tmp_path, 0.9)
+def test_the_record_is_the_one_of_the_tiff_being_registered(tmp_path):
+    out, tiff = variant_with_phase_record(tmp_path, 0.9)
     record = {"phase_method": "per_frame", "fraction_structural": 0.1}
     (out / "other_dynamic_bidiphase_destriped.phase.json").write_text(json.dumps(record))
-    with pytest.raises(FileNotFoundError, match="needs one"):
-        motion_source_for(out, settings())
+    assert motion_choice(tiff, settings()).source == "structural"  # not other's 10%
+    corrected = out / "71rtask_00036_dynamic_bidiphase_destriped.tif"  # distortion off
+    assert motion_choice(corrected, settings()).phase_record == (
+        "71rtask_00036_dynamic_bidiphase_destriped.phase.json"
+    )
+    without_destriping = settings().model_copy(
+        update={"destripe": settings().destripe.model_copy(update={"enabled": False})}
+    )
+    with pytest.raises(ValueError, match="not a corrected TIFF"):
+        motion_choice(tiff, without_destriping)
+
+
+def set_fraction(out, fraction):
+    record = {"phase_method": "per_frame", "fraction_structural": fraction}
+    (out / "71rtask_00036_dynamic_bidiphase_destriped.phase.json").write_text(json.dumps(record))
+
+
+def test_switching_channel_on_a_rewritten_tiff_removes_the_stale_registration(
+    tmp_path, suite2p_calls
+):
+    out, tiff = variant_with_phase_record(tmp_path, 0.8)
+    run_registration(tiff, out, settings())
+    (out / "aligned_structural" / "suite2p" / "plane0").mkdir(parents=True)
+    tifffile.imwrite(tiff, np.ones((3, 4, 6), np.int16))  # the phase step ran again
+    set_fraction(out, 0.2)
+    run_registration(tiff, out, settings())
+    assert not (out / "aligned_structural").exists()
+    assert (out / "aligned_functional" / MOTION_ALIGNMENT_RECORD).is_file()
+
+
+def test_both_alignments_of_the_same_tiff_are_kept(tmp_path, suite2p_calls):
+    out, tiff = variant_with_phase_record(tmp_path, 0.8)
+    run_registration(tiff, out, settings(motion_alignment_source="structural"))
+    run_registration(tiff, out, settings(motion_alignment_source="functional"))
+    assert (out / "aligned_structural" / MOTION_ALIGNMENT_RECORD).is_file()
+    assert (out / "aligned_functional" / MOTION_ALIGNMENT_RECORD).is_file()
+
+
+def test_a_stale_registration_is_only_removed_with_overwrite_and_without_masks(
+    tmp_path, suite2p_calls
+):
+    out, tiff = variant_with_phase_record(tmp_path, 0.2)
+    stale = out / "aligned_structural" / "suite2p" / "plane0"
+    stale.mkdir(parents=True)  # no record: it cannot be shown to match this TIFF
+    keep = settings().model_copy(update={"overwrite": False})
+    with pytest.raises(FileExistsError, match="stale"):
+        run_registration(tiff, out, keep)
+    (stale / "meanImg_seg.npy").write_bytes(b"masks")
+    with pytest.raises(RuntimeError, match="Cellpose masks"):
+        run_registration(tiff, out, settings())
+    assert suite2p_calls == [] and stale.is_dir()
+
+
+def test_a_failed_registration_leaves_no_record(tmp_path, monkeypatch):
+    out, tiff = variant_with_phase_record(tmp_path, 0.8)
+    module = importlib.import_module("suite2p.run_s2p")
+    monkeypatch.setattr(module, "run_s2p", lambda settings, db: None)
+    run_registration(tiff, out, settings())
+
+    def fail(settings, db):
+        raise RuntimeError("Suite2p crashed")
+
+    monkeypatch.setattr(module, "run_s2p", fail)
+    with pytest.raises(RuntimeError, match="crashed"):
+        run_registration(tiff, out, settings())
+    assert not (out / "aligned_structural" / MOTION_ALIGNMENT_RECORD).exists()
 
 
 def test_auto_needs_the_per_frame_phase_method():

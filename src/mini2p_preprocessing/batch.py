@@ -102,6 +102,17 @@ def run_folder_conflict(here: ExistingRun | None, source: Path) -> str | None:
     )
 
 
+def old_layout(variant_dir: Path) -> str | None:
+    """Why a variant folder from before the aligned_<channel>/ layout cannot be reused: its
+    registration is in <variant>/suite2p, which nothing reads any more."""
+    if (Path(variant_dir) / "suite2p").is_dir():
+        return (
+            f"{variant_dir.name}/ has the old layout (suite2p/ directly inside); move or "
+            "delete it to register again into aligned_<channel>/"
+        )
+    return None
+
+
 def decide_action(
     source: Path,
     identity: dict,
@@ -294,7 +305,7 @@ def plan_batch(batch: BatchSettings, *, corrected: bool) -> list[PlannedRun]:
             identity = source_identity(source)
             resolved = source.resolve()
             here = read_existing_run(run_folder) if run_folder.is_dir() else None
-            blocked = run_folder_conflict(here, resolved)
+            blocked = run_folder_conflict(here, resolved) or old_layout(run_dir)
             if blocked:
                 action, reason = "conflict", blocked
             else:

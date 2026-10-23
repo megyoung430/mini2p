@@ -179,3 +179,8 @@ def test_the_registration_is_found_by_alignment(tmp_path):
     assert variant_dir_of(functional) == variant
     with pytest.raises(ValueError, match="aligned_"):
         variant_dir_of(variant / "suite2p" / "plane0")
+
+
+def test_a_path_too_short_to_hold_a_variant_is_refused():
+    with pytest.raises(ValueError, match="aligned_"):
+        variant_dir_of(Path("plane0"))

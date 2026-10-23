@@ -64,7 +64,11 @@ the folder is the one it chose. Wherever a variant is named (`[exports] run_subd
 `[movies] variant`) it is written `with_distortion_correction/with_destriping`; in file
 names (export summaries, PDFs, movies) the `/` becomes `_`. `[exports] alignment` and
 `[movies] alignment` pick the registration: `"auto"` takes the one `aligned_*` folder a
-run has and refuses a run that has both.
+run has and refuses a run that has both. Registering on one channel removes the other
+channel's `aligned_*/` folder if it registered a different or since-rewritten TIFF (it is
+stale; same guards as re-registering), and keeps it if it registered the same TIFF, so
+the two can be compared. A variant folder in the old layout (`suite2p/` directly inside)
+is flagged by the batch plan rather than skipped: move or delete it to register again.
 
 For both variants over many sessions, run the batch once with `destripe = false` and
 once with `destripe = true`, in either order. Each launch freezes its own copy of the

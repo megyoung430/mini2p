@@ -202,52 +202,77 @@ def run_registration(
 ) -> Path:
     """Run Suite2p on one TIFF in ``output_dir``; returns the plane0 folder, in
     ``output_dir/aligned_<source>/``, *source* being the channel it aligned on ("auto"
-    decides it from this variant's per-frame bidiphase record)."""
+    decides it from the TIFF's per-frame bidiphase record).
+
+    A registration aligned on the other channel is kept only if it registered this same
+    TIFF (same size and modification time); otherwise it is stale and is removed, under the
+    same guards as re-registering.
+    """
     suite2p_input_tiff = Path(suite2p_input_tiff)
     if not suite2p_input_tiff.is_file():
         raise FileNotFoundError(f"Suite2p input does not exist: {suite2p_input_tiff}")
     check_suite2p_input(suite2p_input_tiff, settings)
-    source, why = motion_source_for(output_dir, settings)
-    settings = with_motion_source(settings, source)
-    registration_dir = alignment_dir(output_dir, source)
+    choice = motion_choice(suite2p_input_tiff, settings)
+    settings = with_motion_source(settings, choice.source)
+    identity = input_identity(suite2p_input_tiff)
+    registration_dir = alignment_dir(output_dir, choice.source)
     save_folder = settings.registration.save_folder
     check_existing_suite2p_folder(registration_dir, suite2p_input_tiff, save_folder)
+    other = "functional" if choice.source == "structural" else "structural"
+    clear_stale_alignment(alignment_dir(output_dir, other), identity, settings)
+    # A run that fails must not leave the previous run's record describing it.
+    (registration_dir / MOTION_ALIGNMENT_RECORD).unlink(missing_ok=True)
     clear_earlier_registration(registration_dir / save_folder, settings)
     registration_dir.mkdir(parents=True, exist_ok=True)
     db = build_suite2p_db(output_dir, suite2p_input_tiff, settings)
-    log.info("Suite2p aligns on the %s channel (%s); file_list: %s", source, why, db["file_list"])
+    log.info(
+        "Suite2p aligns on the %s channel (%s); file_list: %s",
+        choice.source,
+        choice.reason,
+        db["file_list"],
+    )
     from suite2p.run_s2p import run_s2p
 
     run_s2p(settings=build_suite2p_settings(settings), db=db)
-    record = {
-        "motion_alignment_source": source,
-        "reason": why,
-        "suite2p_input": str(suite2p_input_tiff),
-    }
-    (registration_dir / MOTION_ALIGNMENT_RECORD).write_text(json.dumps(record, indent=2))
+    write_alignment_record(registration_dir, alignment_record(choice, identity))
     return registration_dir / save_folder / "plane0"
 
 
-def phase_record(output_dir: Path, settings: PipelineSettings) -> tuple[Path, dict]:
-    """The per-frame bidiphase sidecar (``<stem>_<correction suffix>.phase.json``) in
-    *output_dir*; there must be exactly one."""
-    found = sorted(Path(output_dir).glob(f"*_{settings.correction_suffix}.phase.json"))
-    if len(found) != 1:
-        raise FileNotFoundError(
-            f'motion_alignment_source = "auto" needs one *_{settings.correction_suffix}'
-            f".phase.json in {output_dir}, found {[p.name for p in found]}; run the phase "
-            'correction first, or set "structural" or "functional"'
+@dataclass(frozen=True)
+class MotionChoice:
+    source: ChannelRole
+    reason: str
+    fraction_structural: float | None = None  # "auto" only
+    threshold: float | None = None
+    phase_record: str | None = None
+
+
+def phase_record_path(suite2p_input_tiff: Path, settings: PipelineSettings) -> Path:
+    """The ``.phase.json`` written beside the corrected TIFF that *suite2p_input_tiff* is
+    (or, ``*_undistorted.tif``, was made from)."""
+    tiff = Path(suite2p_input_tiff)
+    stem = tiff.stem.removesuffix("_undistorted")
+    if not stem.endswith(f"_{settings.correction_suffix}"):
+        raise ValueError(
+            f"{tiff.name} is not a corrected TIFF of these settings (*_"
+            f"{settings.correction_suffix}[_undistorted].tif), so its phase record is unknown"
         )
-    return found[0], json.loads(found[0].read_text())
+    return tiff.with_name(f"{stem}.phase.json")
 
 
-def motion_source_for(output_dir: Path, settings: PipelineSettings) -> tuple[ChannelRole, str]:
+def motion_choice(suite2p_input_tiff: Path, settings: PipelineSettings) -> MotionChoice:
     """The channel to align on and why: the configured one, or for "auto" the choice from
-    how often the per-frame bidiphase step trusted the structural channel."""
+    how often the per-frame bidiphase step trusted the structural channel in this TIFF."""
     source = settings.registration.motion_alignment_source
     if source != "auto":
-        return source, "set in the config"
-    path, record = phase_record(output_dir, settings)
+        return MotionChoice(source, "set in the config")
+    path = phase_record_path(suite2p_input_tiff, settings)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f'motion_alignment_source = "auto" needs {path.name} beside the TIFF; run the '
+            'phase correction first, or set "structural" or "functional"'
+        )
+    record = json.loads(path.read_text())
     if record.get("phase_method") != "per_frame" or "fraction_structural" not in record:
         raise ValueError(
             f"{path} is not a per-frame bidiphase record with fraction_structural; rerun the "
@@ -255,11 +280,73 @@ def motion_source_for(output_dir: Path, settings: PipelineSettings) -> tuple[Cha
         )
     fraction = float(record["fraction_structural"])
     threshold = settings.registration.auto_structural_min_fraction
-    chosen = choose_motion_source(fraction, threshold)
-    return chosen, (
-        f"auto: the bidiphase step trusted the structural channel for {fraction:.0%} of frames, "
-        f"threshold {threshold:.0%} ({path.name})"
+    reason = (
+        f"auto: the bidiphase step trusted the structural channel for {fraction:.0%} of "
+        f"frames, threshold {threshold:.0%}"
     )
+    return MotionChoice(
+        choose_motion_source(fraction, threshold), reason, fraction, threshold, path.name
+    )
+
+
+def input_identity(tiff: Path) -> dict:
+    stat = Path(tiff).stat()
+    return {"suite2p_input": str(tiff), "size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def alignment_record(choice: MotionChoice, identity: dict) -> dict:
+    return {
+        "motion_alignment_source": choice.source,
+        "reason": choice.reason,
+        "fraction_structural": choice.fraction_structural,
+        "auto_structural_min_fraction": choice.threshold,
+        "phase_record": choice.phase_record,
+        **identity,
+    }
+
+
+def write_alignment_record(registration_dir: Path, record: dict) -> None:
+    path = Path(registration_dir) / MOTION_ALIGNMENT_RECORD
+    partial = path.with_name(path.name + ".partial")
+    partial.write_text(json.dumps(record, indent=2))
+    partial.replace(path)
+
+
+def read_alignment_record(registration_dir: Path) -> dict | None:
+    path = Path(registration_dir) / MOTION_ALIGNMENT_RECORD
+    return json.loads(path.read_text()) if path.is_file() else None
+
+
+def same_input(record: dict | None, identity: dict) -> bool:
+    keys = ("suite2p_input", "size_bytes", "mtime_ns")
+    return record is not None and all(record.get(k) == identity[k] for k in keys)
+
+
+def clear_stale_alignment(other_dir: Path, identity: dict, settings: PipelineSettings) -> None:
+    """Remove ``aligned_<other channel>/`` unless it registered the same TIFF.
+
+    Refuses without ``overwrite`` or if Cellpose masks are inside, like
+    ``clear_earlier_registration``.
+    """
+    other_dir = Path(other_dir)
+    if not other_dir.exists():
+        return
+    if same_input(read_alignment_record(other_dir), identity):
+        log.info("Keeping %s: it registered the same TIFF", other_dir)
+        return
+    if not settings.overwrite:
+        raise FileExistsError(
+            f"{other_dir} registered a different or rewritten TIFF and is stale; set "
+            "overwrite=true to remove it, or move it"
+        )
+    masks = sorted(other_dir.rglob("*_seg.npy"))
+    if masks:
+        raise RuntimeError(
+            f"Not removing stale {other_dir}: it holds Cellpose masks "
+            f"{[m.name for m in masks]}; move them out first"
+        )
+    log.warning("Removing %s: it registered a different or rewritten TIFF", other_dir)
+    shutil.rmtree(other_dir)
 
 
 @dataclass(frozen=True)

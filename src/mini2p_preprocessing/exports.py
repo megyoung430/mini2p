@@ -17,7 +17,7 @@ import tifffile
 from matplotlib.backends.backend_pdf import PdfPages
 from pydantic import BaseModel, ConfigDict
 
-from .config import ALIGNMENT_SUBDIRS, MotionSource, find_registered_plane, variant_label
+from .config import MotionSource, find_registered_plane, variant_label
 from .contrast import red_green_overlay, scale_contrast
 from .progress import PROGRESS_EVERY_S, ProgressLog
 from .qc import suite2p_mean_images
@@ -77,9 +77,7 @@ class ExportSettings(BaseModel):
     @property
     def session_label(self) -> str:
         """Names the summary and PDFs, so each variant gets its own files."""
-        label = variant_label(self.run_subdir)
-        if self.alignment != "auto":
-            label += f"_{ALIGNMENT_SUBDIRS[self.alignment]}"
+        label = f"{variant_label(self.run_subdir)}_aligned_{self.alignment}"
         return f"sessions-{self.session_first}-{self.session_last}_{label}"
 
 

@@ -200,8 +200,8 @@ def test_each_variant_gets_its_own_summary_and_pdf_names(tmp_path):
     )
     labels = {sub: ExportSettings(**common, run_subdir=sub).session_label for sub in subdirs}
     assert labels == {
-        subdirs[0]: "sessions-1-4_with_distortion_correction_without_destriping",
-        subdirs[1]: "sessions-1-4_with_distortion_correction_with_destriping",
+        subdirs[0]: "sessions-1-4_with_distortion_correction_without_destriping_aligned_auto",
+        subdirs[1]: "sessions-1-4_with_distortion_correction_with_destriping_aligned_auto",
     }
     chosen = ExportSettings(**common, run_subdir=subdirs[0], alignment="structural")
     assert chosen.session_label.endswith("_without_destriping_aligned_structural")

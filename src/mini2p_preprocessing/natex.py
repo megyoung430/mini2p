@@ -470,6 +470,18 @@ def write_report(result: PlaneResult, traces: PlaneTraces, path: Path, title: st
     return path
 
 
+def report_title(plane_dir: Path) -> str:
+    """Session, run, variant and alignment of a variant's plane folder; for any other plane
+    folder (e.g. run-XX/suite2p/plane0), the run and the folders below it."""
+    plane_dir = Path(plane_dir).resolve()
+    holder = plane_dir.parents[1]  # aligned_<channel>/, or e.g. run-XX/
+    try:
+        run_dir = run_dir_of(variant_dir_of(plane_dir))
+    except ValueError:
+        return " ".join(holder.parts[-3:] + (plane_dir.parent.name,))
+    return " ".join(run_dir.parts[-3:] + holder.relative_to(run_dir).parts)
+
+
 def run_natex(
     plane_dir: Path,
     settings: NatexSettings,
@@ -481,11 +493,9 @@ def run_natex(
     *output_dir*). Returns the output folder."""
     if settings.neuropil_coefficient is not None:
         neuropil_coefficient = settings.neuropil_coefficient
+    title = report_title(plane_dir)  # before writing, so a bad path writes nothing
     result, traces = process_plane(plane_dir, settings, neuropil_coefficient)
     out = write_natex(result, plane_dir, settings, output_dir, overwrite)
-    alignment_folder = Path(plane_dir).resolve().parents[1]
-    run_dir = run_dir_of(variant_dir_of(Path(plane_dir).resolve()))
-    title = " ".join(run_dir.parts[-3:] + alignment_folder.relative_to(run_dir).parts)
     write_report(result, traces, out / REPORT, title)
     log.info("NATEX results in %s", out)
     return out
