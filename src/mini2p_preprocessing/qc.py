@@ -89,18 +89,32 @@ def registered_first_n_means(
     return [by_channel[ch] for ch in range(1, settings.channels.n_channels + 1)]
 
 
-def unwrapped_region(ops: dict) -> tuple[slice, slice]:
-    """(rows, columns) of the registered frame that Suite2p's rigid shifts never wrap into.
+def unwrapped_region(ops: dict, n_frames: int | None = None) -> tuple[slice, slice]:
+    """(rows, columns) of the registered frame that no rigid shift wraps into.
 
-    Suite2p shifts frames with a circular roll, so pixels pushed off one edge reappear at
-    the opposite edge; ``ops['yrange']`` and ``ops['xrange']`` bound the part no frame's
-    shift reaches.
+    Suite2p shifts each frame with ``roll(frame, (-yoff, -xoff))``, a circular shift: a
+    frame with ``yoff > 0`` moves up and its top ``yoff`` rows reappear at the bottom, one
+    with ``yoff < 0`` the reverse, and likewise for ``xoff`` and columns. The margins come
+    from every frame (or the first ``n_frames``). Suite2p's own ``ops['yrange']`` /
+    ``['xrange']`` leave out frames it flags as bad, which are still averaged into its
+    mean images, so they are not used here.
     """
-    for key in ("yrange", "xrange"):
+    for key in ("yoff", "xoff", "Ly", "Lx"):
         if key not in ops:
-            raise KeyError(f"ops has no '{key}'; was it written by Suite2p registration?")
-    (y0, y1), (x0, x1) = (map(int, ops["yrange"]), map(int, ops["xrange"]))
-    return slice(y0, y1), slice(x0, x1)
+            raise KeyError(f"ops has no '{key}'; it needs Suite2p's rigid registration output")
+    yoff = np.asarray(ops["yoff"], float).ravel()[:n_frames]
+    xoff = np.asarray(ops["xoff"], float).ravel()[:n_frames]
+    region = []
+    for offsets, length, axis in ((yoff, int(ops["Ly"]), "rows"), (xoff, int(ops["Lx"]), "cols")):
+        start = int(np.ceil(max(0.0, -offsets.min())))  # wrapped in from the far edge
+        stop = length - int(np.ceil(max(0.0, offsets.max())))
+        if start >= stop:
+            raise ValueError(
+                f"Shifts of {offsets.min():+.0f}..{offsets.max():+.0f} px wrap every one of "
+                f"the {length} {axis}: nothing is free of wrapped pixels"
+            )
+        region.append(slice(start, stop))
+    return region[0], region[1]
 
 
 def suite2p_mean_images(ops: dict) -> tuple[np.ndarray, np.ndarray]:

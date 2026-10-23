@@ -127,6 +127,37 @@ def plot_score_curve(estimate: PhaseEstimate, title: str, ax=None):
     return ax
 
 
+def _outline(ax, box: tuple[slice, slice]) -> None:
+    """Dashed outline around the pixels in ``box`` (rows, columns) of an imshow image."""
+    rows, cols = box
+    ax.add_patch(
+        Rectangle(
+            (cols.start - 0.5, rows.start - 0.5),  # imshow pixel centres are at integers
+            cols.stop - cols.start,
+            rows.stop - rows.start,
+            fill=False,
+            edgecolor="#E69F00",
+            linestyle="--",
+            linewidth=1,
+        )
+    )
+
+
+def _check_columns(columns, titles, limit_columns, box, x_slice) -> None:
+    if len(titles) != len(columns):
+        raise ValueError(f"{len(titles)} titles for {len(columns)} columns")
+    counts = {len(images) for images in columns}
+    if len(counts) != 1:
+        raise ValueError(f"Every column needs the same number of channels, got {sorted(counts)}")
+    if limit_columns is not None and len(limit_columns) == 0:
+        raise ValueError("limit_columns is empty: no images to set the display range from")
+    if box is not None:
+        if any(s.start is None or s.stop is None for s in box):
+            raise ValueError("box needs explicit (start, stop) rows and columns")
+        if x_slice != slice(None):
+            raise ValueError("box is in full-frame columns, so it cannot be used with x_slice")
+
+
 def plot_channel_columns(
     columns: Sequence[Sequence[np.ndarray]],
     titles: Sequence[str],
@@ -145,14 +176,16 @@ def plot_channel_columns(
     images, so a bright edge artefact in the others cannot wash out the contrast. ``box``
     (rows, columns) is outlined, dashed, on the ``box_columns``.
     """
-    if len(titles) != len(columns):
-        raise ValueError(f"{len(titles)} titles for {len(columns)} columns")
+    _check_columns(columns, titles, limit_columns, box, x_slice)
     n_channels = len(columns[0])
     axes = _axes_grid(axes, n_channels, len(columns), (6 * len(columns), 5 * n_channels))
     limit_columns = range(len(columns)) if limit_columns is None else limit_columns
     for ch in range(n_channels):
         values = np.concatenate([np.ravel(columns[c][ch]) for c in limit_columns])
-        vmin, vmax = np.percentile(values[np.isfinite(values)], percentiles)
+        values = values[np.isfinite(values)]
+        if not len(values):
+            raise ValueError(f"Channel row {ch + 1} has no finite pixels to set its display range")
+        vmin, vmax = np.percentile(values, percentiles)
         for col, (images, title) in enumerate(zip(columns, titles, strict=True)):
             ax = axes[ch, col]
             ax.imshow(
@@ -161,18 +194,7 @@ def plot_channel_columns(
             ax.set_title(f"{channel_names[ch + 1]}\n{title}")
             ax.axis("off")
             if box is not None and col in box_columns:
-                rows, cols = box
-                ax.add_patch(
-                    Rectangle(
-                        (cols.start - 0.5, rows.start - 0.5),
-                        cols.stop - cols.start,
-                        rows.stop - rows.start,
-                        fill=False,
-                        edgecolor="#E69F00",
-                        linestyle="--",
-                        linewidth=1,
-                    )
-                )
+                _outline(ax, box)
     return axes
 
 
