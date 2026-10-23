@@ -164,7 +164,7 @@ def test_a_stale_registration_is_only_removed_with_overwrite_and_without_masks(
     stale = out / "aligned_structural" / "suite2p" / "plane0"
     stale.mkdir(parents=True)  # no record: it cannot be shown to match this TIFF
     keep = settings().model_copy(update={"overwrite": False})
-    with pytest.raises(FileExistsError, match="stale"):
+    with pytest.raises(FileExistsError, match="another TIFF.*overwrite"):
         run_registration(tiff, out, keep)
     (stale / "meanImg_seg.npy").write_bytes(b"masks")
     with pytest.raises(RuntimeError, match="Cellpose masks"):
@@ -205,3 +205,37 @@ def test_suite2p_settings_need_a_resolved_channel():
     with pytest.raises(ValueError, match="resolved"):
         build_suite2p_settings(settings())
     assert settings().registration_channel is None
+
+
+def registered_on_both(tmp_path):
+    out, tiff = variant_with_phase_record(tmp_path, 0.8)
+    for source in ("structural", "functional"):
+        run_registration(tiff, out, settings(motion_alignment_source=source))
+        (out / f"aligned_{source}" / "suite2p" / "plane0").mkdir(parents=True)
+    return out, tiff
+
+
+def test_a_refused_run_keeps_the_record_and_both_registrations(tmp_path, suite2p_calls):
+    out, tiff = registered_on_both(tmp_path)
+    tifffile.imwrite(tiff, np.ones((3, 4, 6), np.int16))  # functional's record is now stale
+    keep = settings(motion_alignment_source="structural").model_copy(update={"overwrite": False})
+    with pytest.raises(FileExistsError, match="overwrite"):
+        run_registration(tiff, out, keep)
+    (out / "aligned_structural" / "suite2p" / "meanImg_seg.npy").write_bytes(b"masks")
+    with pytest.raises(RuntimeError, match="Cellpose masks"):
+        run_registration(tiff, out, settings(motion_alignment_source="structural"))
+    for source in ("structural", "functional"):
+        assert (out / f"aligned_{source}" / MOTION_ALIGNMENT_RECORD).is_file()
+        assert (out / f"aligned_{source}" / "suite2p" / "plane0").is_dir()
+
+
+def test_registrations_stay_valid_when_the_session_folder_moves(tmp_path, suite2p_calls):
+    import shutil
+
+    out, _ = registered_on_both(tmp_path / "share")
+    moved = tmp_path / "laptop"
+    shutil.move(str(tmp_path / "share"), moved)  # keeps size and mtime
+    out = moved.joinpath(*VARIANT)
+    tiff = out / "71rtask_00036_dynamic_bidiphase_destriped_undistorted.tif"
+    run_registration(tiff, out, settings(motion_alignment_source="structural"))
+    assert (out / "aligned_functional" / "suite2p" / "plane0").is_dir()

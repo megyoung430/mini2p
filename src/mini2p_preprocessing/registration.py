@@ -152,25 +152,34 @@ def clear_earlier_registration(suite2p_dir: Path, settings: PipelineSettings) ->
     ``overwrite``, or if Cellpose masks are inside.
     """
     suite2p_dir = Path(suite2p_dir)
-    if not suite2p_dir.exists():
-        return
-    in_alignment = suite2p_dir.parent.name in ALIGNMENT_SUBDIRS.values()
-    if not (in_alignment and suite2p_dir.parents[1].name in VARIANT_SUBDIRS):
+    if suite2p_dir.exists():
+        check_removable(suite2p_dir.parent, settings, f"Not replacing {suite2p_dir}")
+        log.info("Removing earlier registration %s", suite2p_dir)
+        shutil.rmtree(suite2p_dir)
+
+
+def check_removable(alignment_folder: Path, settings: PipelineSettings, refusal: str) -> None:
+    """Raise unless ``alignment_folder`` is a ``<variant>/aligned_<source>/`` folder whose
+    contents may be removed: never ``run-XX/suite2p`` (the registration Cellpose masks are
+    drawn on), never without ``overwrite``, never with Cellpose masks inside."""
+    alignment_folder = Path(alignment_folder)
+    in_variant = (
+        alignment_folder.name in ALIGNMENT_SUBDIRS.values()
+        and alignment_folder.parent.name in VARIANT_SUBDIRS
+    )
+    if not in_variant:
         raise RuntimeError(
-            f"Not replacing {suite2p_dir}: only registrations inside <variant>/"
+            f"{refusal}: only registrations inside <variant>/"
             f"{' or '.join(ALIGNMENT_SUBDIRS.values())}/ are replaced; this may be the one "
             "Cellpose masks were drawn on"
         )
     if not settings.overwrite:
-        raise FileExistsError(f"{suite2p_dir} exists; set overwrite=true to register again")
-    masks = sorted(suite2p_dir.rglob("*_seg.npy"))
+        raise FileExistsError(f"{refusal}: it exists; set overwrite=true to register again")
+    masks = sorted(alignment_folder.rglob("*_seg.npy"))
     if masks:
         raise RuntimeError(
-            f"Not replacing {suite2p_dir}: it holds Cellpose masks {[m.name for m in masks]}; "
-            "move them out first"
+            f"{refusal}: it holds Cellpose masks {[m.name for m in masks]}; move them out first"
         )
-    log.info("Removing earlier registration %s", suite2p_dir)
-    shutil.rmtree(suite2p_dir)
 
 
 def check_suite2p_input(suite2p_input_tiff: Path, settings: PipelineSettings) -> None:
@@ -219,10 +228,22 @@ def run_registration(
     save_folder = settings.registration.save_folder
     check_existing_suite2p_folder(registration_dir, suite2p_input_tiff, save_folder)
     other = "functional" if choice.source == "structural" else "structural"
-    clear_stale_alignment(alignment_dir(output_dir, other), identity, settings)
+    other_dir = alignment_dir(output_dir, other)
+    stale = other_dir.exists() and not same_input(read_alignment_record(other_dir), identity)
+    # Every refusal comes before anything is removed, so a refused run changes nothing.
+    if (registration_dir / save_folder).exists():
+        check_removable(registration_dir, settings, f"Not replacing {registration_dir}")
+    if stale:
+        check_removable(
+            other_dir, settings, f"Not removing {other_dir}, a registration of another TIFF"
+        )
+        log.warning("Removing %s and everything in it: it registered another TIFF", other_dir)
+        shutil.rmtree(other_dir)
+    elif other_dir.exists():
+        log.info("Keeping %s: it registered the same TIFF", other_dir)
+    clear_earlier_registration(registration_dir / save_folder, settings)
     # A run that fails must not leave the previous run's record describing it.
     (registration_dir / MOTION_ALIGNMENT_RECORD).unlink(missing_ok=True)
-    clear_earlier_registration(registration_dir / save_folder, settings)
     registration_dir.mkdir(parents=True, exist_ok=True)
     db = build_suite2p_db(output_dir, suite2p_input_tiff, settings)
     log.info(
@@ -294,6 +315,11 @@ def input_identity(tiff: Path) -> dict:
     return {"suite2p_input": str(tiff), "size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns}
 
 
+# The file name, not its full path: a session folder moved or copied (share <-> laptop)
+# keeps its registrations valid.
+SAME_INPUT_KEYS = ("size_bytes", "mtime_ns")
+
+
 def alignment_record(choice: MotionChoice, identity: dict) -> dict:
     return {
         "motion_alignment_source": choice.source,
@@ -318,35 +344,12 @@ def read_alignment_record(registration_dir: Path) -> dict | None:
 
 
 def same_input(record: dict | None, identity: dict) -> bool:
-    keys = ("suite2p_input", "size_bytes", "mtime_ns")
-    return record is not None and all(record.get(k) == identity[k] for k in keys)
-
-
-def clear_stale_alignment(other_dir: Path, identity: dict, settings: PipelineSettings) -> None:
-    """Remove ``aligned_<other channel>/`` unless it registered the same TIFF.
-
-    Refuses without ``overwrite`` or if Cellpose masks are inside, like
-    ``clear_earlier_registration``.
-    """
-    other_dir = Path(other_dir)
-    if not other_dir.exists():
-        return
-    if same_input(read_alignment_record(other_dir), identity):
-        log.info("Keeping %s: it registered the same TIFF", other_dir)
-        return
-    if not settings.overwrite:
-        raise FileExistsError(
-            f"{other_dir} registered a different or rewritten TIFF and is stale; set "
-            "overwrite=true to remove it, or move it"
-        )
-    masks = sorted(other_dir.rglob("*_seg.npy"))
-    if masks:
-        raise RuntimeError(
-            f"Not removing stale {other_dir}: it holds Cellpose masks "
-            f"{[m.name for m in masks]}; move them out first"
-        )
-    log.warning("Removing %s: it registered a different or rewritten TIFF", other_dir)
-    shutil.rmtree(other_dir)
+    """Whether a registration's record shows it registered the TIFF *identity* describes:
+    same file name, size and modification time."""
+    if record is None or "suite2p_input" not in record:
+        return False
+    same_name = Path(record["suite2p_input"]).name == Path(identity["suite2p_input"]).name
+    return same_name and all(record.get(k) == identity[k] for k in SAME_INPUT_KEYS)
 
 
 @dataclass(frozen=True)
