@@ -18,7 +18,11 @@ max_shift_px = 40            # raise only if the phase reaches this boundary
 consistency_window_frames = 9    # odd; frames whose per-frame phases are compared
 consistency_tolerance_px = 2     # "agree" = within this many px of their running median
 consistency_threshold = 0.7      # fraction that must agree (tissue ~0.9, noise ~0.4)
-agreement_px = 6                 # structural must be this close to the functional phase
+agreement_px = 6                 # structural is backed if this close to the functional phase,
+support_window_frames = 15       # odd; or if functional over these frames prefers it:
+support_t_threshold = 1.5        #   local vote (t-like) needed to back the structural phase
+contradict_t_threshold = 2.0     #   vote against that overrules agreement_px
+contradict_min_px = 2            #   ...only when the phases differ by more than this
 trust_window_frames = 25         # odd; a frame follows the majority of these
 fallback_window_frames = 101     # odd; functional frames averaged where structural fails
 frames_per_read = 50             # memory only (~300 MB per channel for 512 x 512 frames)

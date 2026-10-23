@@ -156,7 +156,13 @@ def test_per_frame_is_the_default():
 
 
 @pytest.mark.parametrize(
-    "field", ["consistency_window_frames", "trust_window_frames", "fallback_window_frames"]
+    "field",
+    [
+        "consistency_window_frames",
+        "support_window_frames",
+        "trust_window_frames",
+        "fallback_window_frames",
+    ],
 )
 def test_windows_must_be_odd(field):
     with pytest.raises(ValidationError, match="odd"):
@@ -284,3 +290,21 @@ def test_a_noise_only_functional_channel_is_reported(tmp_path, caplog):
     assert chosen.used_structural.mean() < 0.5
     assert "structural channel set the phase for only" in caplog.text
     assert np.all(chosen.phase_px[chosen.used_structural] == 7)
+
+
+def test_the_sidecar_records_every_setting_that_chose_the_phases(tmp_path, jump_recording):
+    from mini2p_preprocessing.correction import PER_FRAME_SETTINGS
+
+    raw, _ = jump_recording
+    out = tmp_path / "corrected.tif"
+    preprocess_tiff(raw, out, settings(), run_name="run-01")
+    recorded = json.loads(out.with_suffix(".phase.json").read_text())["phase_settings"]
+    assert set(recorded) == set(PER_FRAME_SETTINGS)
+    per_frame_fields = {
+        name
+        for name in PhaseSettings.model_fields
+        if name not in ("method", "frames_per_read", "boundary_warning_px")
+        and name not in correction_module.CHUNKED_ONLY_SETTINGS
+        and not name.startswith("manual_")
+    }
+    assert per_frame_fields == set(PER_FRAME_SETTINGS)

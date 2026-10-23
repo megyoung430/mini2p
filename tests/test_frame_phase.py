@@ -11,6 +11,7 @@ from mini2p_preprocessing.frame_phase import (
     best_shifts,
     choose_frame_phases,
     fallback_stretches,
+    functional_preference,
     line_correlation_curves,
     local_consistency,
     phase_loss,
@@ -278,3 +279,115 @@ def test_a_blank_frame_beside_a_jump_keeps_each_frame_on_its_own_side(before, af
 def test_the_median_of_an_even_count_is_one_of_the_values():
     median = running_median(np.array([-5, -4, -4, -5]), 3, np.array([1, 1, 0, 1], bool))
     assert set(median) <= {-5, -4}
+
+
+def test_fast_flips_follow_the_structural_channel(rng):
+    # Short dips to another phase are the minority within the functional long window, so
+    # its phase stays on the majority side; where the functional channel locally favours
+    # the structural phase, the structural channel must still set it.
+    wide = PHASE.model_copy(update={"max_shift_px": 16, "fallback_window_frames": 61})
+    true = np.tile(np.r_[np.full(15, 0), np.full(45, 14)], 4)  # short dips, beyond agreement_px
+    structural = frames_with_phases(rng, true, noise_sd=0.2)
+    functional = frames_with_phases(rng, true, noise_sd=2.0)
+    chosen = choose_frame_phases(
+        line_correlation_curves(structural, 16), line_correlation_curves(functional, 16), wide
+    )
+    assert chosen.used_structural.mean() > 0.95
+    assert np.mean(chosen.phase_px == true) > 0.95
+
+
+# ---- the functional channel's local vote ----------------------------------------------
+
+
+def steady_zero_noise(rng, n):
+    """Tissue-free structural frames whose odd rows copy the even rows: a steady 0 px."""
+    frames = noise_frames(rng, n)
+    frames[:, 1::2] = frames[:, ::2]
+    return frames
+
+
+def test_functional_preference_is_positive_for_the_phase_it_shows(rng):
+    curves = line_correlation_curves(frames_with_phases(rng, np.full(40, 5), 2.0), MAX_SHIFT)
+    t = functional_preference(curves, np.full(40, 5), np.full(40, -3), 15, MAX_SHIFT)
+    assert np.all(t > 3)
+    t = functional_preference(curves, np.full(40, -3), np.full(40, 5), 15, MAX_SHIFT)
+    assert np.all(t < -3)
+
+
+def test_no_functional_signal_is_no_evidence_either_way(rng):
+    blank = np.full((40, 2 * MAX_SHIFT + 1), np.nan)
+    assert np.all(functional_preference(blank, np.full(40, 5), np.full(40, -3), 15, MAX_SHIFT) == 0)
+    noise = line_correlation_curves(noise_frames(rng, 400), MAX_SHIFT)
+    t = functional_preference(noise, np.full(400, 5), np.full(400, -3), 15, MAX_SHIFT)
+    assert np.mean(np.abs(t) >= 2) < 0.15
+
+
+def test_the_same_phase_twice_is_no_evidence(rng):
+    curves = line_correlation_curves(frames_with_phases(rng, np.full(20, 5), 2.0), MAX_SHIFT)
+    assert np.all(functional_preference(curves, np.full(20, 2), np.full(20, 2), 15, MAX_SHIFT) == 0)
+
+
+def test_functional_preference_refuses_shifts_outside_the_search(rng):
+    curves = line_correlation_curves(frames_with_phases(rng, np.full(5, 1), 2.0), MAX_SHIFT)
+    with pytest.raises(ValueError, match="outside"):
+        functional_preference(curves, np.full(5, MAX_SHIFT + 1), np.zeros(5, int), 3, MAX_SHIFT)
+
+
+@pytest.mark.parametrize("stretch", ["blank", "noise"])
+def test_steady_noise_is_not_backed_where_green_has_no_signal(rng, stretch):
+    wide = PHASE.model_copy(update={"max_shift_px": 16, "fallback_window_frames": 101})
+    n = 400
+    green = frames_with_phases(rng, np.full(n, 12), 2.0)
+    green[150:230] = 0.0 if stretch == "blank" else noise_frames(rng, 80)
+    chosen = choose_frame_phases(
+        line_correlation_curves(steady_zero_noise(rng, n), 16),
+        line_correlation_curves(green, 16),
+        wide,
+    )
+    assert np.sum(np.abs(chosen.phase_px - 12) > 1) == 0
+
+
+def test_steady_noise_close_to_the_real_phase_is_rejected(rng):
+    # Within agreement_px of the functional phase, but the functional channel clearly
+    # prefers its own phase, so the steady 0 px is not the phase.
+    n = 300
+    chosen = choose_frame_phases(
+        line_correlation_curves(steady_zero_noise(rng, n), MAX_SHIFT),
+        line_correlation_curves(frames_with_phases(rng, np.full(n, 5), 2.0), MAX_SHIFT),
+        PHASE,
+    )
+    assert chosen.used_structural.mean() < 0.05
+    assert np.all(np.abs(chosen.phase_px - 5) <= 1)
+
+
+def slanted_image(rng, slope_px, shape=(48, 96)):
+    """Streaks along x = slope * y: each odd row looks shifted by ``slope_px`` from the row
+    above, so this image's own even/odd peak is ``slope_px`` away from the scan phase."""
+    base = gaussian_filter(rng.standard_normal(shape[1] + 200), 1.5)
+    rows = [
+        np.interp(np.arange(shape[1]) + 100 - slope_px * y, np.arange(len(base)), base)
+        for y in range(shape[0])
+    ]
+    image = np.stack(rows)
+    return (image - image.mean()) / image.std()
+
+
+@pytest.mark.parametrize("slope_px, contradict_min_px", [(1, 2), (2, 3)])
+def test_a_slightly_biased_functional_channel_does_not_overrule_clean_structure(
+    rng, slope_px, contradict_min_px
+):
+    # Oriented structure biases the functional channel's own peak (here by up to
+    # contradict_min_px); that must not count as contradicting a clean structural channel.
+    wide = PHASE.model_copy(update={"max_shift_px": 16, "contradict_min_px": contradict_min_px})
+    n, true = 200, 8
+    structural = frames_with_phases(rng, np.full(n, true), 0.2)
+    functional = frames_with_phases(
+        rng, np.full(n, true), 2.0, anatomy=slanted_image(rng, slope_px)
+    )
+    chosen = choose_frame_phases(
+        line_correlation_curves(structural, 16), line_correlation_curves(functional, 16), wide
+    )
+    assert np.all(np.abs(chosen.fallback_px - true) <= contradict_min_px)  # it is biased
+    assert np.any(chosen.fallback_px != true)
+    assert chosen.used_structural.all()
+    assert np.all(chosen.phase_px == true)

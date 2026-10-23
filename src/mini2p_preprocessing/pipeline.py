@@ -55,8 +55,10 @@ FRAME_PHASE_CAPTION = """Per-frame bidiphase correction of {run_name}; the struc
 set the phase for {structural_pct:.0f}% of {n_frames} frames.
 Top: best odd-row shift of each single frame in each channel (dots) and the shift applied
 (black). Grey stretches: the structural channel was not trusted there (its per-frame
-phases were inconsistent, or disagreed with the functional channel by more than
-{agreement_px} px), so the functional channel averaged over {window} frames set the phase.
+phases were inconsistent, or the functional channel did not back them: it neither
+preferred the structural phase over {support} frames nor agreed within {agreement_px} px
+without contradicting it), so the functional channel averaged over {window} frames set
+the phase.
 Bottom: even/odd line correlation lost at the applied shift in the {lost_in} channel,
 relative to that frame's best shift; 0 = fixed, spikes = frames not fully fixed.
 """
@@ -78,6 +80,7 @@ def save_frame_phase_plot(
         structural_pct=100 * float(chosen.used_structural.mean()),
         n_frames=len(chosen.phase_px),
         agreement_px=settings.phase.agreement_px,
+        support=settings.phase.support_window_frames,
         window=settings.phase.fallback_window_frames,
         lost_in="structural" if chosen.has_structural else "functional",
     )

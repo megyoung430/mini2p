@@ -271,9 +271,16 @@ meaning there. ΔF itself stays finite. The same applies to the green/red ratio,
    removed first, so stripes and brightness do not count).
 2. **Choose.** The structural channel sets a frame's phase where its per-frame phases are
    *consistent* (at least `consistency_threshold` of the `consistency_window_frames`
-   around it lie within `consistency_tolerance_px` of their running median) **and** that
-   running median is within `agreement_px` of the functional channel's phase over
-   `fallback_window_frames`. Each frame then follows the majority of the
+   around it lie within `consistency_tolerance_px` of their running median) **and** the
+   functional channel backs that running median. Backing is a local vote: over the
+   `support_window_frames` around a frame, each functional frame's correlation at the
+   structural phase minus at the functional long-window phase, as a t-like statistic
+   (mean over its standard error). The structural phase is backed where that is at least
+   `support_t_threshold`, or where it is within `agreement_px` of the long-window phase,
+   unless the vote is at most -`contradict_t_threshold` and the two differ by more than
+   `contradict_min_px`. The vote lets short excursions to another phase (the minority
+   within the long window) follow the structural channel; a functional stretch with no
+   signal gives no vote either way. Each frame then follows the majority of the
    `trust_window_frames` around it, so single doubtful frames do not switch channel.
    Everywhere else the functional channel's `fallback_window_frames` average is used.
    This is decided stretch by stretch, so a structural channel that is good in some
@@ -285,7 +292,9 @@ meaning there. ΔF itself stays finite. The same applies to the green/red ratio,
 Why both conditions: the structural channel's single frames carry about 15× more line
 texture than GCaMP, so where it has tissue it follows phase jumps exactly. Where it
 has none, its per-frame phases scatter, which consistency catches; but tissue-free
-noise can also sit steadily near 0 px, which only the agreement check catches.
+noise can also sit steadily near 0 px, which only the functional check catches. Picking
+between two given shifts needs far less signal than finding the best shift, so a short
+functional window is enough for that check.
 
 Outputs beside the TIFF: `.phase.json` (settings, phase range, fraction of frames set
 by the structural channel, `functional_stretches` as half-open frame ranges),
@@ -302,9 +311,10 @@ clean structural channel and one with none. A higher
 `consistency_threshold` (0.8) or lower `agreement_px` rejects noise more reliably but
 also rejects good structural frames around phase jumps, where the functional average
 lags. Limitations: where the functional fallback is used, a jump inside its window is
-smoothed over; and when the two channels disagree steadily (e.g. a functional channel
-that is only noise), nothing in the data says which is right, so the structural channel
-is used only where they agree and the log warns when that is under half the frames.
+smoothed over; and where the functional channel has too little signal to vote (e.g. it
+is only noise), it can neither back nor contradict the structural channel, so the
+structural phase is used only where it is also within `agreement_px` of the functional
+long-window phase; the log warns when the structural channel set under half the frames.
 
 `method = "chunked"` estimates one phase per chunk of `chunk_frames` (its settings and
 the manual overrides apply only to it). A run's `pipeline_settings.json` without a

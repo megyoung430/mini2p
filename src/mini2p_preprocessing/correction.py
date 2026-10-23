@@ -256,6 +256,21 @@ def frames_at_search_boundary(phases_px: np.ndarray, phase: PhaseSettings) -> np
     return np.flatnonzero(np.abs(phases_px) >= phase.max_shift_px - phase.boundary_warning_px)
 
 
+# Every setting that decides the per-frame phases, recorded in the .phase.json.
+PER_FRAME_SETTINGS = (
+    "max_shift_px",
+    "consistency_window_frames",
+    "consistency_tolerance_px",
+    "consistency_threshold",
+    "agreement_px",
+    "support_window_frames",
+    "support_t_threshold",
+    "contradict_t_threshold",
+    "contradict_min_px",
+    "trust_window_frames",
+    "fallback_window_frames",
+)
+
 # Settings that only method = "chunked" reads; set under "per_frame" they do nothing.
 CHUNKED_ONLY_SETTINGS = (
     "chunk_frames",
@@ -303,17 +318,7 @@ def frame_phase_metadata(
     return {
         **_source_metadata(settings, run_name, input_tiff, output_tiff),
         "phase_method": "per_frame",
-        "phase_settings": phase.model_dump(
-            include={
-                "max_shift_px",
-                "consistency_window_frames",
-                "consistency_tolerance_px",
-                "consistency_threshold",
-                "agreement_px",
-                "trust_window_frames",
-                "fallback_window_frames",
-            }
-        ),
+        "phase_settings": phase.model_dump(include=set(PER_FRAME_SETTINGS)),
         "motion_alignment_source": settings.registration.motion_alignment_source,
         "registration_channel_one_based": settings.registration_channel,
         "destriping_enabled": settings.destripe.enabled,

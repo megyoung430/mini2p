@@ -155,37 +155,98 @@ def local_consistency(
 # ---- choosing ----------------------------------------------------------------------
 
 
+def functional_preference(
+    functional_curves: np.ndarray,
+    candidate_px: np.ndarray,
+    fallback_px: np.ndarray,
+    window: int,
+    max_shift_px: int,
+) -> np.ndarray:
+    """How strongly the functional channel prefers ``candidate_px`` to ``fallback_px`` around
+    each frame, as a t-like statistic: the mean, over the ``window`` frames centred on it, of
+    each frame's correlation at the candidate minus at the fallback, divided by its standard
+    error. Positive favours the candidate. 0 where there is no evidence: the two shifts are
+    the same, or fewer than 3 frames in the window have texture.
+
+    Choosing between two given shifts needs far less signal than finding the best one, so a
+    short window of noisy GCaMP frames is enough when there is signal; scaling by the
+    frame-to-frame scatter keeps a flat or noise-only stretch from counting as a vote.
+    """
+    candidate_px, fallback_px = np.asarray(candidate_px), np.asarray(fallback_px)
+    for name, shifts in (("candidate", candidate_px), ("fallback", fallback_px)):
+        if np.any(np.abs(shifts) > max_shift_px):
+            raise ValueError(f"{name} shifts outside the searched ±{max_shift_px} px")
+    half = window // 2
+    padded = np.pad(
+        np.asarray(functional_curves, float), ((half, half), (0, 0)), constant_values=np.nan
+    )
+    windows = np.lib.stride_tricks.sliding_window_view(padded, window, axis=0)  # (T, S, W)
+    frames = np.arange(len(candidate_px))
+    differences = (
+        windows[frames, candidate_px + max_shift_px] - windows[frames, fallback_px + max_shift_px]
+    )
+    n = np.sum(~np.isnan(differences), axis=1)
+    with warnings.catch_warnings(), np.errstate(invalid="ignore", divide="ignore"):
+        warnings.simplefilter("ignore", RuntimeWarning)  # windows with < 2 textured frames
+        mean = np.nanmean(differences, axis=1)
+        standard_error = np.nanstd(differences, axis=1, ddof=1) / np.sqrt(n)
+        t = mean / standard_error
+    no_evidence = (n < 3) | (candidate_px == fallback_px) | np.isnan(t)
+    return np.where(no_evidence, 0.0, t)
+
+
 def trusted_structural(
     structural_px: np.ndarray,
     structural_textured: np.ndarray,
+    functional_curves: np.ndarray,
     fallback_px: np.ndarray,
-    fallback_textured: np.ndarray,
     phase: PhaseSettings,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """(trusted, smoothed structural phase, consistency) for every frame.
 
-    A frame is a candidate where the structural phase is self-consistent *and* its running
-    median agrees with the functional long-window phase; noise can sit steadily near 0 px,
-    so consistency alone is not enough. Where the functional channel has no texture at all
-    there is nothing to check against, and consistency decides alone. Each frame then
-    follows the majority of the ``trust_window_frames`` around it.
+    A frame is a candidate where the structural phase is self-consistent *and* the
+    functional channel backs its running median: either the functional channel over
+    ``support_window_frames`` prefers it to the functional long-window phase
+    (``functional_preference`` >= ``support_t_threshold``), or it is within
+    ``agreement_px`` of that phase and the functional channel does not clearly prefer the
+    long-window phase instead (``functional_preference`` <= -``contradict_t_threshold``,
+    counted only when the two differ by more than ``contradict_min_px``). The
+    first lets short excursions (a few dozen frames at another phase, the minority within
+    the long window) follow the structural channel; both reject noise that sits steadily
+    near 0 px, which consistency alone would accept.
+    Where the functional channel has no texture at all over the long window there is
+    nothing to check against, and consistency decides alone. Each frame then follows the
+    majority of the ``trust_window_frames`` around it.
     """
     window = phase.consistency_window_frames
     smoothed = running_median(structural_px, window, structural_textured)
     consistency = local_consistency(
         structural_px, window, phase.consistency_tolerance_px, structural_textured
     )
-    with np.errstate(invalid="ignore"):
-        agrees = np.abs(smoothed - fallback_px) <= phase.agreement_px
+    measured = ~np.isnan(smoothed)
+    smoothed_px = np.nan_to_num(smoothed).astype(int)
+    preference = functional_preference(
+        functional_curves,
+        smoothed_px,
+        fallback_px,
+        phase.support_window_frames,
+        phase.max_shift_px,
+    )
+    separation = np.abs(smoothed_px - fallback_px)
+    backed = preference >= phase.support_t_threshold
+    contradicted = (preference <= -phase.contradict_t_threshold) & (
+        separation > phase.contradict_min_px
+    )
+    agrees = separation <= phase.agreement_px
+    no_functional = ~windowed_texture(functional_curves, phase.fallback_window_frames)
     candidate = (
         (consistency >= phase.consistency_threshold)
         & structural_textured
-        & ~np.isnan(smoothed)
-        & (agrees | ~fallback_textured)
+        & measured
+        & ((agrees & ~contradicted) | backed | no_functional)
     )
     vote = uniform_filter1d(candidate.astype(float), phase.trust_window_frames, mode="nearest")
-    trusted = (vote > 0.5) & ~np.isnan(smoothed)
-    return trusted, np.nan_to_num(smoothed).astype(int), consistency
+    return (vote > 0.5) & measured, smoothed_px, consistency
 
 
 def choose_frame_phases(
@@ -212,11 +273,7 @@ def choose_frame_phases(
         )
     structural_px = best_shifts(structural_curves, max_shift)
     trusted, smoothed, consistency = trusted_structural(
-        structural_px,
-        has_texture(structural_curves),
-        fallback,
-        windowed_texture(functional_curves, window),
-        phase,
+        structural_px, has_texture(structural_curves), functional_curves, fallback, phase
     )
     applied = np.where(trusted, smoothed, fallback)
     return FramePhases(
