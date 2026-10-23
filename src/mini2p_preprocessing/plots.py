@@ -10,6 +10,7 @@ import numpy as np
 from .bidiphase import PhaseEstimate
 from .config import PipelineSettings
 from .contrast import red_green_overlay
+from .frame_phase import FramePhases, fallback_stretches
 
 ROLE_COLORS = {"structural": "tab:red", "functional": "tab:green"}
 
@@ -59,6 +60,51 @@ def plot_phase_trace(trace: list[dict], settings: PipelineSettings, axes=None) -
             axes[1].plot(centers, scores, ".-", color=color, label=role)
     axes[1].set(xlabel="Timepoint", ylabel="Best normalized score")
     axes[1].legend(loc="best")
+    return axes
+
+
+def plot_frame_phases(
+    chosen: FramePhases, structural_loss: np.ndarray | None = None, axes=None, run_name: str = ""
+) -> np.ndarray:
+    """Top: each frame's phase in each channel and the applied phase; grey where the
+    functional channel set it. Bottom: structural line correlation lost at the applied
+    phase (0 = fixed; spikes are frames the correction did not fully fix)."""
+    axes = _axes_grid(axes, 2, 1, (12, 6)).ravel()
+    frames = np.arange(len(chosen.phase_px))
+    for start, end in fallback_stretches(chosen.used_structural):
+        for ax in axes:
+            ax.axvspan(start - 0.5, end - 0.5, color="0.88", linewidth=0, zorder=0)
+    axes[0].plot(
+        frames,
+        chosen.functional_px,
+        ".",
+        ms=1.5,
+        alpha=0.4,
+        color=ROLE_COLORS["functional"],
+        label="functional, single frames",
+    )
+    axes[0].plot(
+        frames,
+        chosen.structural_px,
+        ".",
+        ms=1.5,
+        alpha=0.6,
+        color=ROLE_COLORS["structural"],
+        label="structural, single frames",
+    )
+    axes[0].plot(frames, chosen.phase_px, color="black", linewidth=0.8, label="applied")
+    axes[0].set(
+        ylabel="Odd-row shift (pixels)",
+        title=f"{run_name + ': ' if run_name else ''}per-frame biphase; structural "
+        f"used for {100 * np.mean(chosen.used_structural):.0f}% of frames "
+        "(grey = functional)",
+    )
+    axes[0].legend(loc="upper left", markerscale=6, frameon=False, fontsize=8)
+    if structural_loss is not None:
+        axes[1].plot(frames, structural_loss, color=ROLE_COLORS["structural"], linewidth=0.6)
+    axes[1].set(xlabel="Frame", ylabel="Structural corr lost")
+    axes[0].sharex(axes[1])
+    axes[0].tick_params(labelbottom=False)
     return axes
 
 

@@ -60,3 +60,37 @@ def test_registration_figures_from_ops():
     plots.plot_registration_traces(ops, fs_hz=7.52)
     plots.plot_nonrigid_offsets(ops, fs_hz=7.52)
     plt.close("all")
+
+
+def _per_frame_settings():
+    return PipelineSettings.model_validate(
+        {
+            "phase": {
+                "max_shift_px": 8,
+                "consistency_window_frames": 9,
+                "trust_window_frames": 11,
+                "fallback_window_frames": 21,
+            },
+            "distortion": {"mode": "off"},
+        }
+    )
+
+
+def test_frame_phase_preview_and_plot(recording):
+    raw_tiff, _ = recording
+    preview = qc.frame_phase_preview(raw_tiff, _per_frame_settings())
+    assert preview.curves.shape == (55, 2, 17)
+    assert list(preview.chosen.phase_px[[5, 25, 50]]) == [3, -2, 5]
+    _, axes = plt.subplots(2, 1)
+    drawn = plots.plot_frame_phases(preview.chosen, preview.structural_loss, axes=axes)
+    assert drawn[0] is axes[0] and len(drawn) == 2
+    assert drawn[0].get_xlabel() == "" and drawn[1].get_xlabel() == "Frame"
+    plt.close("all")
+
+
+def test_frame_phase_plot_makes_its_own_axes(recording):
+    raw_tiff, _ = recording
+    preview = qc.frame_phase_preview(raw_tiff, _per_frame_settings())
+    axes = plots.plot_frame_phases(preview.chosen, preview.structural_loss)
+    assert len(axes) == 2
+    plt.close("all")

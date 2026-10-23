@@ -7,6 +7,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+from matplotlib.figure import Figure
+
 from .config import (
     SETTINGS_RECORD,
     PipelineSettings,
@@ -18,6 +21,7 @@ from .config import (
 )
 from .correction import CorrectionSummary, preprocess_tiff
 from .distortion import write_distortion_corrected
+from .plots import plot_frame_phases
 from .progress import format_duration
 from .registration import run_registration
 
@@ -45,6 +49,21 @@ def _log_stage(stage: str, started: float) -> float:
     return now
 
 
+def save_frame_phase_plot(corrected_tiff: Path, summary: CorrectionSummary, run_name: str) -> Path:
+    """``<stem>.phase_frames.png`` beside the corrected TIFF, for screening runs by eye."""
+    record = np.load(corrected_tiff.with_suffix(".phase_frames.npz"))
+    figure = Figure(figsize=(12, 6), layout="constrained")  # no pyplot: safe in batch workers
+    plot_frame_phases(
+        summary.frame_phases,
+        record["structural_loss"],
+        axes=figure.subplots(2, 1),
+        run_name=run_name,
+    )
+    path = corrected_tiff.with_suffix(".phase_frames.png")
+    figure.savefig(path, dpi=120)
+    return path
+
+
 def run_pipeline(input_tiff: Path, output_dir: Path, settings: PipelineSettings) -> PipelineResult:
     # Absolute paths go into the sidecars, which the batch planner compares later.
     input_tiff, output_dir = Path(input_tiff).resolve(), Path(output_dir).resolve()
@@ -57,6 +76,8 @@ def run_pipeline(input_tiff: Path, output_dir: Path, settings: PipelineSettings)
     corrected = corrected_tiff_path(output_dir, input_tiff, settings)
     started = time.monotonic()
     summary = preprocess_tiff(input_tiff, corrected, settings, run_name_from_output_dir(output_dir))
+    if summary.frame_phases is not None:
+        save_frame_phase_plot(corrected, summary, run_name_from_output_dir(output_dir))
     started = _log_stage("Phase correction", started)
     # Written only once outputs were (re)written, so it always describes what is on disk.
     (output_dir / SETTINGS_RECORD).write_text(settings.model_dump_json(indent=2))

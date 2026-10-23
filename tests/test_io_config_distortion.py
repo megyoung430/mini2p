@@ -65,7 +65,8 @@ def test_settings_reject_unknown_source_and_typos():
 def test_load_settings_reads_toml(tmp_path):
     path = tmp_path / "p.toml"
     path.write_text(
-        '[phase]\nchunk_frames = 25\n[phase.manual_first_phase_by_start]\n"200" = -17\n'
+        '[phase]\nmethod = "chunked"\nchunk_frames = 25\n'
+        '[phase.manual_first_phase_by_start]\n"200" = -17\n'
         '[distortion]\nmode = "off"\n'
     )
     settings = load_settings(path)

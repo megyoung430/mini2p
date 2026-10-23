@@ -11,9 +11,20 @@ structural_channel = 1  # red, 1-based
 functional_channel = 2  # green, calcium/ROI channel
 
 [phase]
+method = "per_frame"         # "per_frame" (each frame its own phase) or "chunked" (one per chunk)
+max_shift_px = 40            # raise only if the phase reaches this boundary
+# ---- per_frame: structural sets a frame's phase where it is consistent and agrees with
+# the functional channel; elsewhere the functional channel over fallback_window_frames.
+consistency_window_frames = 9    # odd; frames whose per-frame phases are compared
+consistency_tolerance_px = 2     # "agree" = within this many px of their running median
+consistency_threshold = 0.7      # fraction that must agree (tissue ~0.9, noise ~0.4)
+agreement_px = 6                 # structural must be this close to the functional phase
+trust_window_frames = 25         # odd; a frame follows the majority of these
+fallback_window_frames = 101     # odd; functional frames averaged where structural fails
+frames_per_read = 200            # memory only
+# ---- chunked only
 chunk_frames = 100           # 10-25 helps when the phase changes quickly
 estimator = "wide"           # "wide" or "suite2p" (Suite2p searches only ±10 px)
-max_shift_px = 40            # raise only if the phase trace reaches this boundary
 # score_crop_px = 40         # omit to crop max_shift_px from both edges
 boundary_warning_px = 2
 alignment_source = "functional"   # "best_score", "structural" or "functional"
@@ -22,10 +33,10 @@ run_second_pass = true
 second_pass_mode = "chunked"      # "chunked" or "whole"
 # second_pass_global_max_frames = 2000
 
-[phase.manual_first_phase_by_start]   # chunk start timepoint = phase in px
+[phase.manual_first_phase_by_start]   # chunked only: chunk start timepoint = phase in px
 # 200 = -17
 
-[phase.manual_second_phase_by_start]
+[phase.manual_second_phase_by_start]  # chunked only
 
 [destripe]
 enabled = false

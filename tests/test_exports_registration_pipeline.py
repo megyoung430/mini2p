@@ -100,7 +100,10 @@ def test_pipeline_wires_stages_together(tmp_path, recording, monkeypatch):
 
     monkeypatch.setattr(pipeline_module, "run_registration", fake_registration)
     settings = PipelineSettings.model_validate(
-        {"phase": {"chunk_frames": 20, "max_shift_px": 8}, "distortion": {"mode": "off"}}
+        {
+            "phase": {"method": "chunked", "chunk_frames": 20, "max_shift_px": 8},
+            "distortion": {"mode": "off"},
+        }
     )
     out = tmp_path / "run-01" / "without_distortion_correction" / "without_destriping"
     result = pipeline_module.run_pipeline(raw_tiff, out, settings)
@@ -314,3 +317,21 @@ def test_fast_disk_gives_each_run_its_own_local_binary_folder(tmp_path):
         tmp_path / "local" / "ses-224_date-20260809_funcimg_run-01_with_destriping"
     )
     assert db["save_path0"] == str(output_dir)  # results still go beside the run
+
+
+def test_per_frame_pipeline_saves_its_qc_plot(tmp_path, recording, monkeypatch):
+    raw_tiff, _ = recording
+    monkeypatch.setattr(
+        pipeline_module, "run_registration", lambda tiff, out, s: out / "suite2p" / "plane0"
+    )
+    settings = PipelineSettings.model_validate(
+        {
+            "phase": {"max_shift_px": 8, "trust_window_frames": 11, "fallback_window_frames": 21},
+            "distortion": {"mode": "off"},
+        }
+    )
+    out = tmp_path / "run-01" / "without_distortion_correction" / "without_destriping"
+    result = pipeline_module.run_pipeline(raw_tiff, out, settings)
+    assert list(result.correction.frame_phases.phase_px[[5, 25, 50]]) == [3, -2, 5]
+    for suffix in (".phase.json", ".phase_frames.npz", ".phase_frames.png"):
+        assert result.corrected_tiff.with_suffix(suffix).is_file(), suffix

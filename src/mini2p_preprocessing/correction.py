@@ -1,4 +1,9 @@
-"""Chunked bidiphase correction and optional destriping of an interleaved TIFF."""
+"""Bidiphase correction (per frame, or per chunk) and optional destriping of an interleaved TIFF.
+
+``phase.method = "per_frame"`` reads the TIFF twice: once to measure every frame's line
+correlation in each channel, once to shift each frame by the phase chosen for it
+(``frame_phase.py``). ``"chunked"`` estimates and applies one phase per chunk.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +20,14 @@ import tifffile
 from .bidiphase import AlignmentChoice, apply_bidiphase, select_alignment
 from .config import PipelineSettings
 from .destripe import detrend_chunk
+from .frame_phase import (
+    FramePhases,
+    apply_frame_phases,
+    choose_frame_phases,
+    fallback_stretches,
+    line_correlation_curves,
+    phase_loss,
+)
 from .progress import PROGRESS_EVERY_S, ProgressLog
 from .tiff_io import chunk_bounds, count_timepoints, read_all_channels, write_interleaved
 
@@ -32,8 +45,9 @@ class GlobalResidual:
 
 @dataclass(frozen=True)
 class CorrectionSummary:
-    chunks: list[dict]
+    chunks: list[dict]  # empty for method = "per_frame"
     global_residual: GlobalResidual | None
+    frame_phases: FramePhases | None = None  # method = "per_frame" only
 
     @property
     def global_second_phase_px(self) -> int | None:
@@ -199,6 +213,96 @@ def phase_metadata(
     }
 
 
+def frame_phases_from_curves(curves: np.ndarray, settings: PipelineSettings) -> FramePhases:
+    """Choose every frame's phase from (frames, channels, shifts) line-correlation curves."""
+    channels = settings.channels
+    if curves.ndim != 3 or curves.shape[1] != channels.n_channels:
+        raise ValueError(
+            f"Expected (frames, {channels.n_channels} channels, shifts) curves, got {curves.shape}"
+        )
+    functional = curves[:, channels.functional_channel - 1]
+    structural = (
+        None
+        if channels.structural_channel == channels.functional_channel
+        else curves[:, channels.structural_channel - 1]
+    )
+    return choose_frame_phases(structural, functional, settings.phase)
+
+
+def frame_phase_record(curves: np.ndarray, chosen: FramePhases, settings: PipelineSettings) -> dict:
+    """Arrays for the ``.phase_frames.npz`` sidecar: the choice, its evidence, the curves."""
+    max_shift = settings.phase.max_shift_px
+    channels = settings.channels
+    return {
+        "phase_px": chosen.phase_px,
+        "used_structural": chosen.used_structural,
+        "structural_px": chosen.structural_px,
+        "functional_px": chosen.functional_px,
+        "structural_consistency": chosen.structural_consistency,
+        "fallback_px": chosen.fallback_px,
+        "structural_loss": phase_loss(
+            curves[:, channels.structural_channel - 1], chosen.phase_px, max_shift
+        ),
+        "functional_loss": phase_loss(
+            curves[:, channels.functional_channel - 1], chosen.phase_px, max_shift
+        ),
+        "line_curves": curves.astype(np.float32),
+        "shifts_px": np.arange(-max_shift, max_shift + 1),
+    }
+
+
+def _source_metadata(
+    settings: PipelineSettings, run_name: str, input_tiff: Path, output_tiff: Path
+) -> dict:
+    channels = settings.channels
+    return {
+        "run_name": run_name,
+        "input_tiff": str(input_tiff),
+        "output_tiff": str(output_tiff),
+        "n_channels": channels.n_channels,
+        "structural_channel_one_based": channels.structural_channel,
+        "functional_channel_one_based": channels.functional_channel,
+    }
+
+
+def frame_phase_metadata(
+    settings: PipelineSettings,
+    run_name: str,
+    input_tiff: Path,
+    output_tiff: Path,
+    chosen: FramePhases,
+) -> dict:
+    """JSON sidecar for method = "per_frame": settings, a summary, where functional was used."""
+    phase = settings.phase
+    stretches = fallback_stretches(chosen.used_structural)
+    return {
+        **_source_metadata(settings, run_name, input_tiff, output_tiff),
+        "phase_method": "per_frame",
+        "phase_settings": phase.model_dump(
+            include={
+                "max_shift_px",
+                "consistency_window_frames",
+                "consistency_tolerance_px",
+                "consistency_threshold",
+                "agreement_px",
+                "trust_window_frames",
+                "fallback_window_frames",
+            }
+        ),
+        "motion_alignment_source": settings.registration.motion_alignment_source,
+        "registration_channel_one_based": settings.registration_channel,
+        "destriping_enabled": settings.destripe.enabled,
+        "operation_order": ["per_frame_biphase"]
+        + (["destriping"] if settings.destripe.enabled else []),
+        "preserve_frame_mean": settings.destripe.preserve_frame_mean,
+        "n_frames": int(len(chosen.phase_px)),
+        "phase_range_px": [int(chosen.phase_px.min()), int(chosen.phase_px.max())],
+        "fraction_structural": float(np.mean(chosen.used_structural)),
+        "functional_stretches": [list(stretch) for stretch in stretches],
+        "frames_sidecar": output_tiff.with_suffix(".phase_frames.npz").name,
+    }
+
+
 # ---- I/O: stream the TIFF through the pure functions above -----------------------
 
 
@@ -236,13 +340,99 @@ def estimate_global_residual(
     return GlobalResidual(int(choice.phase_px), int(len(sample_indices)), choice)
 
 
-def preprocess_tiff(
-    input_tiff: Path, output_tiff: Path, settings: PipelineSettings, run_name: str
+def measure_line_curves(tiff: Path, settings: PipelineSettings) -> np.ndarray:
+    """Line-correlation curves of every frame of every channel, (frames, channels, shifts)."""
+    n_channels = settings.channels.n_channels
+    max_shift = settings.phase.max_shift_px
+    parts = []
+    with tifffile.TiffFile(tiff) as tif:
+        n_timepoints = count_timepoints(tif, n_channels, settings.max_timepoints)
+        bounds = chunk_bounds(n_timepoints, settings.phase.frames_per_read)
+        progress = ProgressLog("Measuring frame phases", len(bounds), log.info, PROGRESS_EVERY_S)
+        for start, end in bounds:
+            chunks = read_all_channels(tif, start, end, n_channels)
+            parts.append(np.stack([line_correlation_curves(c, max_shift) for c in chunks], 1))
+            progress.step_done()
+    return np.concatenate(parts, axis=0)
+
+
+def _write_per_frame(
+    input_tiff: Path, output_tiff: Path, phases_px: np.ndarray, settings: PipelineSettings
+) -> None:
+    n_channels = settings.channels.n_channels
+    with (
+        tifffile.TiffFile(input_tiff) as tif,
+        tifffile.TiffWriter(output_tiff, bigtiff=True) as writer,
+    ):
+        n_timepoints = count_timepoints(tif, n_channels, settings.max_timepoints)
+        if n_timepoints != len(phases_px):
+            raise ValueError(f"{len(phases_px)} phases for {n_timepoints} frames of {input_tiff}")
+        bounds = chunk_bounds(n_timepoints, settings.phase.frames_per_read)
+        progress = ProgressLog("Phase correction", len(bounds), log.info, PROGRESS_EVERY_S)
+        for start, end in bounds:
+            shifted = [
+                apply_frame_phases(chunk, phases_px[start:end])
+                for chunk in read_all_channels(tif, start, end, n_channels)
+            ]
+            if settings.destripe.enabled:
+                shifted = [detrend_chunk(c, settings.destripe.preserve_frame_mean) for c in shifted]
+            write_interleaved(writer, shifted, settings.dtype)
+            progress.step_done()
+
+
+def preprocess_per_frame(
+    input_tiff: Path,
+    output_tiff: Path,
+    settings: PipelineSettings,
+    run_name: str,
+    line_curves: np.ndarray | None = None,
 ) -> CorrectionSummary:
-    """Write the phase-corrected (optionally destriped) TIFF and its .phase.json sidecar."""
+    """Measure, choose and apply a phase per frame; write the TIFF and both sidecars.
+
+    ``line_curves`` (from ``measure_line_curves``, e.g. a notebook preview) skips the
+    measuring pass.
+    """
+    curves = measure_line_curves(input_tiff, settings) if line_curves is None else line_curves
+    chosen = frame_phases_from_curves(curves, settings)
+    stretches = fallback_stretches(chosen.used_structural)
+    log.info(
+        "Per-frame phase %+d..%+d px; structural channel used for %.0f%% of %d frames; "
+        "functional channel in %d stretch(es)",
+        chosen.phase_px.min(),
+        chosen.phase_px.max(),
+        100 * np.mean(chosen.used_structural),
+        len(chosen.phase_px),
+        len(stretches),
+    )
+    _write_per_frame(input_tiff, output_tiff, chosen.phase_px, settings)
+    np.savez_compressed(
+        output_tiff.with_suffix(".phase_frames.npz"),
+        **frame_phase_record(curves, chosen, settings),
+    )
+    metadata = frame_phase_metadata(settings, run_name, input_tiff, output_tiff, chosen)
+    output_tiff.with_suffix(".phase.json").write_text(json.dumps(metadata, indent=2))
+    log.info("Saved %s and its .phase.json / .phase_frames.npz sidecars", output_tiff)
+    return CorrectionSummary(chunks=[], global_residual=None, frame_phases=chosen)
+
+
+def preprocess_tiff(
+    input_tiff: Path,
+    output_tiff: Path,
+    settings: PipelineSettings,
+    run_name: str,
+    line_curves: np.ndarray | None = None,
+) -> CorrectionSummary:
+    """Write the phase-corrected (optionally destriped) TIFF and its .phase.json sidecar.
+
+    ``line_curves`` is used only by ``phase.method = "per_frame"``.
+    """
     output_tiff = Path(output_tiff)
     if output_tiff.exists() and not settings.overwrite:
         raise FileExistsError(f"{output_tiff} exists; set overwrite=true to replace it")
+    if settings.phase.method == "per_frame":
+        return preprocess_per_frame(input_tiff, output_tiff, settings, run_name, line_curves)
+    if line_curves is not None:
+        raise ValueError('line_curves are only used by phase.method = "per_frame"')
     phase = settings.phase
     n_channels = settings.channels.n_channels
     records: list[dict] = []

@@ -19,8 +19,8 @@ CLI and the batch workers all read it, so they cannot drift apart.
 ## Running
 
 - **One recording, interactively:** `notebooks/qc_single_run.ipynb`. Previews the
-  phase trace, offers a manual-offset slider, writes each stage and shows QC
-  figures for each.
+  per-frame phase (or, with `method = "chunked"`, the phase trace and a manual-offset
+  slider), writes each stage and shows QC figures for each.
 - **One recording, headless:**
   `uv run mini2p-preprocess --config config/pipeline.toml --input RAW.tif --output-dir RUN_DIR/without_destriping`
   (or `RUN_DIR/with_destriping` with `[destripe] enabled = true`; a folder that disagrees
@@ -262,15 +262,56 @@ F0 kept alongside. ΔF/F0 is NaN wherever F0 ≤ `min_f0`, since the ratio has n
 meaning there. ΔF itself stays finite. The same applies to the green/red ratio,
 Δ(G/R)/(G/R)0.
 
+## Scan-phase correction
+
+`[phase] method = "per_frame"` (the default) gives every frame its own odd-row shift:
+
+1. **Measure.** One pass over the TIFF computes, for every frame of both channels, the
+   even/odd row correlation at every shift within ±`max_shift_px` (each row's mean
+   removed first, so stripes and brightness do not count).
+2. **Choose.** The structural channel sets a frame's phase where its per-frame phases are
+   *consistent* (at least `consistency_threshold` of the `consistency_window_frames`
+   around it lie within `consistency_tolerance_px` of their running median) **and** that
+   running median is within `agreement_px` of the functional channel's phase over
+   `fallback_window_frames`. Each frame then follows the majority of the
+   `trust_window_frames` around it, so single doubtful frames do not switch channel.
+   Everywhere else the functional channel's `fallback_window_frames` average is used.
+   This is decided stretch by stretch, so a structural channel that is good in some
+   parts of a session and pure noise in others is handled.
+3. **Apply.** A second pass shifts each frame by its phase, destripes if enabled, and
+   writes `<stem>_dynamic_bidiphase[_destriped].tif` as before.
+
+Why both conditions: the structural channel's single frames carry about 15× more line
+texture than GCaMP, so where it has tissue it follows phase jumps exactly. Where it
+has none, its per-frame phases scatter, which consistency catches; but tissue-free
+noise can also sit steadily near 0 px, which only the agreement check catches.
+
+Outputs beside the TIFF: `.phase.json` (settings, phase range, fraction of frames set
+by the structural channel, `functional_stretches` as half-open frame ranges),
+`.phase_frames.npz` (per frame: applied phase, which channel, each channel's own
+phase, consistency, the functional fallback, correlation lost at the applied phase in
+each channel, and the measured curves), and `.phase_frames.png` for screening runs by
+eye (grey = functional channel used; spikes in the lower panel = frames not fully fixed).
+
+Tuning, from one clean and one tissue-free-structural session: a higher
+`consistency_threshold` (0.8) or lower `agreement_px` rejects noise more reliably but
+also rejects good structural frames around phase jumps, where the functional average
+lags. Limitation: where the functional fallback is used, a jump inside its window is
+smoothed over.
+
+`method = "chunked"` keeps the original one-phase-per-chunk correction (its settings
+and the manual overrides apply only to it).
+
 ## Layout
 
 | Module | Layer | Contents |
 |---|---|---|
 | `config.py` | boundary | pydantic settings; output naming |
 | `tiff_io.py` | I/O | chunked reads/writes of interleaved TIFFs |
-| `bidiphase.py` | analysis | phase score, estimators, channel selection |
+| `bidiphase.py` | analysis | phase score, estimators, channel selection (chunked) |
+| `frame_phase.py` | analysis | per-frame line correlation, consistency, channel choice, per-frame shifts |
 | `destripe.py` | analysis | even/odd line-profile removal |
-| `correction.py` | analysis + I/O | per-chunk correction stages; TIFF + `.phase.json` writer |
+| `correction.py` | analysis + I/O | per-frame (two-pass) and per-chunk correction; TIFF, `.phase.json`, `.phase_frames.npz` writers |
 | `distortion.py` | analysis + I/O | fixed-map warp; TIFF + `.distortion.json` writer |
 | `registration.py` | I/O | Suite2p settings/db, run, output loaders |
 | `pipeline.py`, `cli.py` | I/O | one recording end to end |
@@ -370,8 +411,8 @@ hand inside it.
 
 ## Known issues, deliberately left for the follow-up fix step
 
-1. `adjacent_line_score` pairs each odd row only with the row above it, which
-   biases the estimate on oblique structure. Line-locked stripes, which are still
+1. Both the chunked `adjacent_line_score` and the per-frame curves pair each odd row
+   only with the row above it, which biases the estimate on oblique structure. Line-locked stripes, which are still
    present during estimation when destriping is off, can also capture the peak.
 2. `adjacent_line_score` returns `-inf` for a flat or non-finite image. If every
    candidate scores `-inf`, the chunk silently gets `-max_shift_px`.
