@@ -1,14 +1,17 @@
 """Per-frame focus QC: how well each registered frame matches the session's mean image.
 
-Rigid registration removes whole-frame x/y shifts only. A frame that still matches the mean
-image worse than its neighbours do has changed in a way a shift cannot undo: the imaged
-plane moved in z, or the brain moved while the frame was being scanned (at ~7.5 Hz a frame
-takes ~130 ms, so a fast movement stretches or shears it). The rigid shifts tell the two
-apart only partly: flagged frames during large, fast excursions are often both.
+A frame that matches the mean image worse than its neighbours do was not made to match by
+the shift registration applied to it. Three causes give the same low score: the imaged
+plane moved in z; the brain moved while the frame was being scanned (at ~7.5 Hz a frame
+takes ~130 ms, so a fast movement stretches or shears it); or registration chose the wrong
+shift. The score alone cannot tell them apart, and the rigid shifts only partly can: one
+shift per frame hides movement during the scan, and z-motion often comes with x/y motion.
 
 The match is a correlation on spatially smoothed frames, so shot noise does not dominate
-it, and is compared with its own running median, so slow changes over the session
-(bleaching, drift in expression) are not flagged.
+it, and is compared with its own running median, so changes slower than the window
+(bleaching, expression, and also slow z-drift) are not flagged; nor is the middle of a bad
+stretch longer than about half the window, which becomes the median itself. The spread is
+one robust SD for the whole session, so a noisier half of a session is flagged more often.
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.ndimage import gaussian_filter, median_filter
+from scipy.ndimage import gaussian_filter
 
 from .config import FocusSettings
 
@@ -27,7 +30,8 @@ MAD_TO_SD = 1.4826  # median absolute deviation -> standard deviation for normal
 class FocusQC:
     match: np.ndarray  # correlation of each frame with the mean image
     baseline: np.ndarray  # running median of ``match``
-    drop: np.ndarray  # (baseline - match) in robust SDs; large = out of focus
+    # (baseline - match) in robust SDs; large = matches the mean worse than its neighbours
+    drop: np.ndarray
     brightness: np.ndarray  # frame mean / its running median
     flagged: np.ndarray  # drop > settings.drop_threshold
 
@@ -38,29 +42,57 @@ def smooth_frames(frames: np.ndarray, sigma_px: float) -> np.ndarray:
 
 
 def frame_match(frames: np.ndarray, reference: np.ndarray) -> np.ndarray:
-    """Pearson correlation of each frame with ``reference``, over all pixels."""
-    frames = np.asarray(frames, np.float64)
+    """Pearson correlation of each frame with ``reference``, over all pixels.
+
+    Works on one float64 copy of ``frames`` (8 bytes per pixel per frame), centred in place.
+    """
     reference = np.asarray(reference, np.float64)
-    if frames.shape[1:] != reference.shape:
-        raise ValueError(f"Frames of shape {frames.shape[1:]} vs reference {reference.shape}")
+    if np.shape(frames)[1:] != reference.shape:
+        raise ValueError(f"Frames of shape {np.shape(frames)[1:]} vs reference {reference.shape}")
     ref = reference - reference.mean()
     if not np.any(ref):
         raise ValueError("The reference image is flat, so nothing can match it")
-    centred = frames - frames.mean(axis=(1, 2), keepdims=True)
-    norms = np.sqrt(np.sum(centred**2, axis=(1, 2)))
+    centred = np.array(frames, np.float64)
+    not_finite = np.flatnonzero(~np.isfinite(centred).all(axis=(1, 2)))
+    if not_finite.size:
+        raise ValueError(f"Frame(s) {not_finite[:10].tolist()} have values that are not finite")
+    centred -= centred.mean(axis=(1, 2), keepdims=True)
+    norms = np.sqrt(np.einsum("fij,fij->f", centred, centred))
     flat = np.flatnonzero(norms == 0)
     if flat.size:
         raise ValueError(f"Flat frame(s) {flat[:10].tolist()} cannot be correlated")
-    return np.tensordot(centred, ref, axes=([1, 2], [0, 1])) / (norms * np.sqrt(np.sum(ref**2)))
+    return np.einsum("fij,ij->f", centred, ref) / (norms * np.sqrt(np.sum(ref**2)))
 
 
 def running_median(values: np.ndarray, window_frames: int) -> np.ndarray:
-    return median_filter(np.asarray(values, np.float64), size=window_frames, mode="nearest")
+    """Median of the ``window_frames`` frames centred on each frame (odd window).
+
+    Frames within half a window of either end take the median of the first / last full
+    window. Padding the ends with copies of the edge value instead would let a bad first or
+    last stretch become its own baseline and never be flagged. A recording shorter than the
+    window gets one median over all of it.
+    """
+    values = np.asarray(values, np.float64)
+    if window_frames % 2 == 0:
+        raise ValueError(f"window_frames must be odd, got {window_frames}")
+    if values.size == 0:
+        raise ValueError("No frames to take a running median of")
+    if values.size <= window_frames:
+        return np.full_like(values, np.median(values))
+    half = window_frames // 2
+    centred = np.median(np.lib.stride_tricks.sliding_window_view(values, window_frames), axis=1)
+    return np.concatenate([np.full(half, centred[0]), centred, np.full(half, centred[-1])])
 
 
 def relative_to_baseline(values: np.ndarray, window_frames: int) -> np.ndarray:
     """``values`` divided by their running median: 1 = typical for that part of the session."""
-    return np.asarray(values, np.float64) / running_median(values, window_frames)
+    baseline = running_median(values, window_frames)
+    if np.any(baseline <= 0):
+        raise ValueError(
+            "The running median brightness is not positive somewhere, so a ratio to it means "
+            "nothing; is the binary offset-subtracted?"
+        )
+    return np.asarray(values, np.float64) / baseline
 
 
 def assess_focus(match: np.ndarray, brightness: np.ndarray, settings: FocusSettings) -> FocusQC:
@@ -73,8 +105,11 @@ def assess_focus(match: np.ndarray, brightness: np.ndarray, settings: FocusSetti
         raise ValueError(
             f"match and brightness must be the same length: {match.shape} vs {brightness.shape}"
         )
-    if not (np.all(np.isfinite(match)) and np.all(np.isfinite(brightness))):
-        raise ValueError("match and brightness must be finite")
+    bad = np.flatnonzero(~(np.isfinite(match) & np.isfinite(brightness)))
+    if bad.size:
+        raise ValueError(
+            f"match and brightness must be finite; not at frame(s) {bad[:10].tolist()}"
+        )
     baseline = running_median(match, settings.window_frames)
     residual = baseline - match
     spread = MAD_TO_SD * np.median(np.abs(residual - np.median(residual)))

@@ -210,10 +210,21 @@ class FocusSettings(_Frozen):
 
     channel: ChannelRole = "structural"  # its signal does not follow activity
     smooth_px: float = Field(2.0, ge=0)  # Gaussian sigma, so shot noise does not dominate
-    window_frames: int = Field(301, ge=3)  # running-median baseline, ~40 s at 7.52 Hz
+    # Running-median baseline (odd), ~40 s at 7.52 Hz. Changes slower than this, and the
+    # middle of a bad stretch longer than about half of it, are not flagged.
+    window_frames: int = Field(301, ge=3)
     drop_threshold: float = Field(4.0, gt=0)  # robust SDs below the baseline to flag
     merge_gap_frames: int = Field(8, ge=0)  # flagged runs this close count as one stretch
-    chunk_frames: int = Field(500, ge=1)  # frames read from the binary at once
+    # Frames read from the binary at once; peak memory is ~20 bytes per pixel per frame
+    # (~0.5 GB for 100 frames of 478 x 501).
+    chunk_frames: int = Field(100, ge=1)
+
+    @field_validator("window_frames")
+    @classmethod
+    def _odd_window(cls, value: int) -> int:
+        if value % 2 == 0:
+            raise ValueError(f"window_frames must be odd so the window is centred, got {value}")
+        return value
 
 
 class PipelineSettings(_Frozen):

@@ -165,8 +165,8 @@ def focus_qc(outputs: RegisteredOutputs, settings: PipelineSettings) -> FocusQC:
     """Per-frame focus QC of the registered binary, inside the region no shift wraps into.
 
     Each frame of ``settings.focus.channel`` is matched against Suite2p's mean image of that
-    channel; both are smoothed first. Reads the binary in chunks, so memory stays at one
-    chunk of frames.
+    channel; both are smoothed first. Reads the binary ``settings.focus.chunk_frames`` at a
+    time; peak memory is about 20 bytes per pixel of one chunk.
     """
     focus = settings.focus
     rows, cols = unwrapped_region(outputs.ops)

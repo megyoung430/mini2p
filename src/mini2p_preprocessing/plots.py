@@ -525,9 +525,9 @@ def plot_focus_qc(
     """Frame match to the mean image, relative brightness and rigid shift over time, with
     flagged stretches shaded in every panel.
 
-    The shift panel shows whether a flagged stretch came with a large, fast excursion
-    (often movement during the scan as well as out of focus) or without one (more likely
-    out of focus alone).
+    The shift panel shows whether a flagged stretch came with a large, fast excursion. It
+    cannot by itself separate z-motion from movement during the scan: one shift per frame
+    hides movement within the frame, and z-motion often comes with x/y motion.
     """
     n = len(result.match)
     yoff = np.asarray(ops["yoff"], float).ravel()

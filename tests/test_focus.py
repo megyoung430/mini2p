@@ -151,3 +151,56 @@ def test_focus_plot_draws_and_checks_frame_counts():
     with pytest.raises(ValueError, match="299 frames"):
         plot_focus_qc(result, 7.52, {"yoff": np.zeros(299), "xoff": np.zeros(299)}, 8)
     plt.close("all")
+
+
+def assessed(frames, settings=SETTINGS):
+    match = frame_match(
+        smooth_frames(frames, settings.smooth_px),
+        smooth_frames(frames.mean(0)[None], settings.smooth_px)[0],
+    )
+    return assess_focus(match, frames.mean(axis=(1, 2)), settings)
+
+
+def test_bad_stretches_at_both_ends_of_the_session_are_flagged():
+    # Copies of the edge value as padding would make these stretches their own baseline.
+    rng = np.random.default_rng(5)
+    image = scene(rng)
+    frames = np.repeat(image[None], 300, axis=0)
+    frames[:15] = frames[285:] = 0.8 * gaussian_filter(image, 3)
+    result = assessed(frames + rng.normal(0, 4, frames.shape))
+    assert flagged_stretches(result.flagged, SETTINGS.merge_gap_frames) == [(0, 15), (285, 300)]
+    assert np.all(result.brightness[:15] < 0.85)
+
+
+def test_a_stretch_longer_than_half_the_window_is_flagged_only_near_its_edges():
+    # Documented limit: the median becomes the bad value in the middle of a long stretch.
+    rng = np.random.default_rng(6)
+    frames = recording(rng, defocused=slice(100, 200))  # 100 frames, window 41
+    result = assessed(frames)
+    assert result.flagged[100:103].all()  # the start, where neighbours are still good
+    assert result.flagged[100:200].mean() < 0.5  # most of it is missed
+
+
+def test_running_median_window_and_length_rules():
+    from mini2p_preprocessing.focus import running_median
+
+    np.testing.assert_allclose(running_median(np.arange(7.0), 3), [1, 1, 2, 3, 4, 5, 5])
+    np.testing.assert_allclose(running_median(np.array([5.0, 1, 3]), 5), [3, 3, 3])
+    with pytest.raises(ValueError, match="odd"):
+        running_median(np.arange(10.0), 4)
+    with pytest.raises(ValueError, match="No frames"):
+        running_median(np.array([]), 3)
+    with pytest.raises(ValueError, match="odd"):
+        FocusSettings(window_frames=300)
+
+
+def test_brightness_and_frames_fail_loudly_when_not_meaningful():
+    with pytest.raises(ValueError, match="not positive"):
+        relative_to_baseline(np.r_[np.zeros(10), np.ones(5)], 5)
+    rng = np.random.default_rng(7)
+    frames = np.stack([scene(rng)] * 3)
+    frames[2, 0, 0] = np.nan
+    with pytest.raises(ValueError, match=r"Frame\(s\) \[2\]"):
+        frame_match(frames, frames[0])
+    with pytest.raises(ValueError, match=r"not at frame\(s\) \[0\]"):
+        assess_focus(np.r_[np.nan, np.linspace(0, 1, 99)], np.ones(100), SETTINGS)
