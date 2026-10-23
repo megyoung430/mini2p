@@ -96,6 +96,7 @@ MOVIE_HELP = {
     "spatial_sigma_px": "Gaussian smoothing of averaged frames (px)",
     "upscale": "pixels drawn upscale x upscale",
     "label": "stage, time, frames, speed and channel burnt in",
+    "suite2p_crop": "also a copy of each movie cropped to where Suite2p's shifts never wrap",
     "contrast_sample_frames": "frames sampled for the display range",
     "quality": "H.264 quality, 0-10",
 }
