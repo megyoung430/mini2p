@@ -14,6 +14,7 @@ from mini2p_preprocessing.frame_phase import (
     line_correlation_curves,
     local_consistency,
     phase_loss,
+    running_median,
     windowed_best_shifts,
 )
 from tests.conftest import misalign, textured_image
@@ -146,8 +147,8 @@ def test_stretches_of_noise_use_the_functional_channel(rng):
 
 
 def test_noise_that_settles_at_zero_is_rejected(rng):
-    # Like the bad example session: a tissue-free structural channel that sits steadily at
-    # 0 px while the real phase, seen in the functional channel, is well away from 0.
+    # A tissue-free structural channel that sits steadily at 0 px while the real phase,
+    # seen in the functional channel, is well away from 0.
     wide = PHASE.model_copy(update={"max_shift_px": 16})
     structural = noise_frames(rng, 200)
     structural[:, 1::2] = structural[:, ::2]  # odd rows copy even rows: a steady 0 px
@@ -185,6 +186,8 @@ def test_the_record_holds_one_value_per_frame(rng):
         "functional_px",
         "structural_consistency",
         "fallback_px",
+        "structural_loss",
+        "functional_loss",
     ):
         assert len(getattr(chosen, field)) == 40, field
 
@@ -224,3 +227,37 @@ def test_fallback_stretches_are_half_open_ranges():
     assert fallback_stretches(used) == [(2, 5), (6, 8)]
     assert fallback_stretches(np.ones(5, bool)) == []
     assert fallback_stretches(np.zeros(3, bool)) == [(0, 3)]
+
+
+def test_blank_frames_do_not_count_as_a_zero_phase():
+    values = np.array([7, 0, 7, 0, 7, 0, 7])
+    valid = values != 0
+    assert np.all(running_median(values, 5, valid) == 7)
+    consistency = local_consistency(values, 3, 0, valid)
+    assert np.all(consistency <= 2 / 3)  # blanks never count as agreeing
+
+
+def test_a_window_of_blank_frames_has_no_median():
+    assert np.all(np.isnan(running_median(np.zeros(5), 3, np.zeros(5, bool))))
+
+
+def test_a_functional_channel_without_texture_leaves_structural_in_charge(rng):
+    true = np.full(80, 7)
+    structural, _ = two_channels(rng, true)
+    blank = np.full_like(structural, np.nan)  # e.g. green PMT off: nothing to check against
+    chosen = choose_frame_phases(structural, blank, PHASE)
+    assert chosen.used_structural.all()
+    assert np.all(chosen.phase_px == 7)
+
+
+def test_without_a_structural_channel_the_loss_is_the_functional_one(rng):
+    _, functional = two_channels(rng, np.full(60, 2))
+    chosen = choose_frame_phases(None, functional, PHASE)
+    assert not chosen.has_structural
+    assert chosen.structural_px is None and chosen.structural_loss is None
+    assert chosen.loss is chosen.functional_loss
+
+
+def test_the_loss_is_zero_where_structural_fixed_the_frame(rng):
+    chosen = choose_frame_phases(*two_channels(rng, np.r_[np.full(40, 1), np.full(40, -4)]), PHASE)
+    assert np.allclose(chosen.structural_loss, 0, atol=1e-6)

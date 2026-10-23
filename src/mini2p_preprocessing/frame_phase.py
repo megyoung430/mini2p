@@ -11,10 +11,11 @@ odd rows towards higher column indices.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.ndimage import median_filter, uniform_filter1d
+from scipy.ndimage import uniform_filter1d
 
 from .bidiphase import apply_bidiphase
 from .config import PhaseSettings
@@ -22,14 +23,28 @@ from .config import PhaseSettings
 
 @dataclass(frozen=True)
 class FramePhases:
-    """The applied phase of every frame and the evidence it was chosen from."""
+    """The applied phase of every frame and the evidence it was chosen from.
+
+    The ``structural_*`` fields are None when there is no separate structural channel.
+    """
 
     phase_px: np.ndarray  # applied odd-row shift per frame
     used_structural: np.ndarray  # True where the structural channel set the phase
-    structural_px: np.ndarray  # best shift of each single structural frame (0 if absent)
     functional_px: np.ndarray  # best shift of each single functional frame
-    structural_consistency: np.ndarray  # fraction of neighbouring frames that agree
     fallback_px: np.ndarray  # functional phase over phase.fallback_window_frames
+    functional_loss: np.ndarray  # functional correlation lost at the applied phase
+    structural_px: np.ndarray | None = None  # best shift of each single structural frame
+    structural_consistency: np.ndarray | None = None  # fraction of neighbours that agree
+    structural_loss: np.ndarray | None = None  # structural correlation lost at applied phase
+
+    @property
+    def has_structural(self) -> bool:
+        return self.structural_px is not None
+
+    @property
+    def loss(self) -> np.ndarray:
+        """Correlation lost in the channel with more texture: structural if there is one."""
+        return self.structural_loss if self.has_structural else self.functional_loss
 
 
 # ---- measuring ---------------------------------------------------------------------
@@ -77,68 +92,132 @@ def best_shifts(curves: np.ndarray, max_shift_px: int) -> np.ndarray:
     return best
 
 
+def has_texture(curves: np.ndarray) -> np.ndarray:
+    """True for each frame whose curve is not all NaN (it had row texture to measure)."""
+    return ~np.all(np.isnan(np.asarray(curves)), axis=1)
+
+
+def windowed_texture(curves: np.ndarray, window: int) -> np.ndarray:
+    """True where at least one frame in the ``window`` around a frame had texture."""
+    return uniform_filter1d(has_texture(curves).astype(float), window, mode="nearest") > 0
+
+
 def windowed_best_shifts(curves: np.ndarray, window: int, max_shift_px: int) -> np.ndarray:
-    """Best shift of the curves averaged over ``window`` frames centred on each frame."""
-    textured = ~np.all(np.isnan(curves), axis=1)
+    """Best shift of the curves averaged over ``window`` frames centred on each frame.
+
+    A window with no texture at all gets 0 (see ``best_shifts``); ``windowed_texture``
+    says where that happened.
+    """
     summed = uniform_filter1d(np.nan_to_num(curves), window, axis=0, mode="nearest")
-    has_texture = uniform_filter1d(textured.astype(float), window, mode="nearest") > 0
-    summed[~has_texture] = np.nan  # a window with no texture at all has no phase
+    summed[~windowed_texture(curves, window)] = np.nan
     return best_shifts(summed, max_shift_px)
 
 
-def local_consistency(phases: np.ndarray, window: int, tolerance_px: int) -> np.ndarray:
+def running_median(values: np.ndarray, window: int, valid: np.ndarray | None = None) -> np.ndarray:
+    """Median of the valid values in the ``window`` around each frame (edges repeat the end
+    values); NaN where the window holds no valid value."""
+    values = np.asarray(values, dtype=float)
+    if valid is not None:
+        values = np.where(valid, values, np.nan)
+    half = window // 2
+    windows = np.lib.stride_tricks.sliding_window_view(np.pad(values, half, mode="edge"), window)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN windows are expected
+        return np.nanmedian(windows, axis=1)
+
+
+def local_consistency(
+    phases: np.ndarray, window: int, tolerance_px: int, valid: np.ndarray | None = None
+) -> np.ndarray:
     """Fraction of the ``window`` frames around each frame within ``tolerance_px`` of their
-    running median: about 1 where a channel's per-frame phase is real, low where it is noise."""
+    running median: about 1 where a channel's per-frame phase is real, low where it is noise.
+
+    Frames that are not ``valid`` (no texture) neither count as agreeing nor shift the median.
+    """
     phases = np.asarray(phases)
-    running_median = median_filter(phases, window, mode="nearest")
-    near = (np.abs(phases - running_median) <= tolerance_px).astype(float)
-    return uniform_filter1d(near, window, mode="nearest")
+    valid = np.ones(len(phases), bool) if valid is None else np.asarray(valid, bool)
+    median = running_median(phases, window, valid)
+    with np.errstate(invalid="ignore"):
+        near = valid & (np.abs(phases - median) <= tolerance_px)
+    return uniform_filter1d(near.astype(float), window, mode="nearest")
 
 
 # ---- choosing ----------------------------------------------------------------------
 
 
+def trusted_structural(
+    structural_px: np.ndarray,
+    structural_textured: np.ndarray,
+    fallback_px: np.ndarray,
+    fallback_textured: np.ndarray,
+    phase: PhaseSettings,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(trusted, smoothed structural phase, consistency) for every frame.
+
+    A frame is a candidate where the structural phase is self-consistent *and* its running
+    median agrees with the functional long-window phase; noise can sit steadily near 0 px,
+    so consistency alone is not enough. Where the functional channel has no texture at all
+    there is nothing to check against, and consistency decides alone. Each frame then
+    follows the majority of the ``trust_window_frames`` around it.
+    """
+    window = phase.consistency_window_frames
+    smoothed = running_median(structural_px, window, structural_textured)
+    consistency = local_consistency(
+        structural_px, window, phase.consistency_tolerance_px, structural_textured
+    )
+    with np.errstate(invalid="ignore"):
+        agrees = np.abs(smoothed - fallback_px) <= phase.agreement_px
+    candidate = (
+        (consistency >= phase.consistency_threshold)
+        & structural_textured
+        & ~np.isnan(smoothed)
+        & (agrees | ~fallback_textured)
+    )
+    vote = uniform_filter1d(candidate.astype(float), phase.trust_window_frames, mode="nearest")
+    trusted = (vote > 0.5) & ~np.isnan(smoothed)
+    return trusted, np.nan_to_num(smoothed).astype(int), consistency
+
+
 def choose_frame_phases(
     structural_curves: np.ndarray | None, functional_curves: np.ndarray, phase: PhaseSettings
 ) -> FramePhases:
-    """Each frame's phase: smoothed structural where it is trustworthy, else functional.
-
-    Structural is trusted where it is self-consistent *and* agrees with the functional
-    channel's long-window phase; noise can sit steadily near 0 px, so consistency alone
-    is not enough. A majority vote over ``trust_window_frames`` keeps single doubtful
-    frames from switching channel. ``structural_curves=None`` uses functional throughout.
-    """
+    """Each frame's phase: smoothed structural where it is trustworthy (``trusted_structural``),
+    else the functional channel over ``fallback_window_frames``. ``structural_curves=None``
+    (no separate structural channel) uses the functional channel throughout."""
     max_shift = phase.max_shift_px
     functional_px = best_shifts(functional_curves, max_shift)
-    fallback = windowed_best_shifts(functional_curves, phase.fallback_window_frames, max_shift)
-    n_frames = len(functional_px)
+    window = phase.fallback_window_frames
+    fallback = windowed_best_shifts(functional_curves, window, max_shift)
     if structural_curves is None:
-        zeros = np.zeros(n_frames, dtype=int)
         return FramePhases(
-            fallback, zeros.astype(bool), zeros, functional_px, zeros * 0.0, fallback
+            phase_px=fallback,
+            used_structural=np.zeros(len(fallback), bool),
+            functional_px=functional_px,
+            fallback_px=fallback,
+            functional_loss=phase_loss(functional_curves, fallback, max_shift),
         )
-    if len(structural_curves) != n_frames:
-        raise ValueError(f"{len(structural_curves)} structural vs {n_frames} functional frames")
+    if len(structural_curves) != len(functional_curves):
+        raise ValueError(
+            f"{len(structural_curves)} structural vs {len(functional_curves)} functional frames"
+        )
     structural_px = best_shifts(structural_curves, max_shift)
-    window = phase.consistency_window_frames
-    smoothed = median_filter(structural_px, window, mode="nearest")
-    consistency = local_consistency(structural_px, window, phase.consistency_tolerance_px)
-    textured = ~np.all(np.isnan(structural_curves), axis=1)
-    candidate = (
-        (consistency >= phase.consistency_threshold)
-        & (np.abs(smoothed - fallback) <= phase.agreement_px)
-        & textured
+    trusted, smoothed, consistency = trusted_structural(
+        structural_px,
+        has_texture(structural_curves),
+        fallback,
+        windowed_texture(functional_curves, window),
+        phase,
     )
-    trusted = (
-        uniform_filter1d(candidate.astype(float), phase.trust_window_frames, mode="nearest") > 0.5
-    )
+    applied = np.where(trusted, smoothed, fallback)
     return FramePhases(
-        phase_px=np.where(trusted, smoothed, fallback),
+        phase_px=applied,
         used_structural=trusted,
-        structural_px=structural_px,
         functional_px=functional_px,
-        structural_consistency=consistency,
         fallback_px=fallback,
+        functional_loss=phase_loss(functional_curves, applied, max_shift),
+        structural_px=structural_px,
+        structural_consistency=consistency,
+        structural_loss=phase_loss(structural_curves, applied, max_shift),
     )
 
 

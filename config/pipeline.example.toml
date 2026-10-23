@@ -21,12 +21,12 @@ consistency_threshold = 0.7      # fraction that must agree (tissue ~0.9, noise 
 agreement_px = 6                 # structural must be this close to the functional phase
 trust_window_frames = 25         # odd; a frame follows the majority of these
 fallback_window_frames = 101     # odd; functional frames averaged where structural fails
-frames_per_read = 200            # memory only
+frames_per_read = 50             # memory only (~300 MB per channel for 512 x 512 frames)
+boundary_warning_px = 2          # flag phases this close to ±max_shift_px
 # ---- chunked only
 chunk_frames = 100           # 10-25 helps when the phase changes quickly
 estimator = "wide"           # "wide" or "suite2p" (Suite2p searches only ±10 px)
 # score_crop_px = 40         # omit to crop max_shift_px from both edges
-boundary_warning_px = 2
 alignment_source = "functional"   # "best_score", "structural" or "functional"
 score_switch_margin = 0.0
 run_second_pass = true

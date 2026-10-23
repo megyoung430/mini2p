@@ -7,7 +7,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 from matplotlib.figure import Figure
 
 from .config import (
@@ -49,19 +48,34 @@ def _log_stage(stage: str, started: float) -> float:
     return now
 
 
-def save_frame_phase_plot(corrected_tiff: Path, summary: CorrectionSummary, run_name: str) -> Path:
-    """``<stem>.phase_frames.png`` beside the corrected TIFF, for screening runs by eye."""
-    record = np.load(corrected_tiff.with_suffix(".phase_frames.npz"))
-    figure = Figure(figsize=(12, 6), layout="constrained")  # no pyplot: safe in batch workers
-    plot_frame_phases(
-        summary.frame_phases,
-        record["structural_loss"],
-        axes=figure.subplots(2, 1),
+FRAME_PHASE_CAPTION = """Per-frame bidiphase correction of {run_name}.
+Top: best odd-row shift of each single frame in each channel (dots) and the shift applied
+(black). Grey stretches: the structural channel was not trusted there (its per-frame
+phases were inconsistent, or disagreed with the functional channel by more than
+{agreement_px} px), so the functional channel averaged over {window} frames set the phase.
+Bottom: even/odd line correlation lost at the applied shift in the {lost_in} channel,
+relative to that frame's best shift; 0 = fixed, spikes = frames not fully fixed.
+"""
+
+
+def save_frame_phase_plot(
+    corrected_tiff: Path, summary: CorrectionSummary, settings: PipelineSettings, run_name: str
+) -> Path:
+    """``<stem>.phase_frames.{png,pdf,svg}`` and a caption beside the corrected TIFF."""
+    chosen = summary.frame_phases
+    figure = Figure(figsize=(13, 6), layout="constrained")  # no pyplot: safe in batch workers
+    plot_frame_phases(chosen, axes=figure.subplots(2, 1), run_name=run_name)
+    stem = corrected_tiff.with_suffix(".phase_frames")
+    for extension in ("png", "pdf", "svg"):
+        figure.savefig(stem.with_name(f"{stem.name}.{extension}"), dpi=120)
+    caption = FRAME_PHASE_CAPTION.format(
         run_name=run_name,
+        agreement_px=settings.phase.agreement_px,
+        window=settings.phase.fallback_window_frames,
+        lost_in="structural" if chosen.has_structural else "functional",
     )
-    path = corrected_tiff.with_suffix(".phase_frames.png")
-    figure.savefig(path, dpi=120)
-    return path
+    stem.with_name(f"{stem.name}.caption.txt").write_text(caption)
+    return stem.with_name(f"{stem.name}.png")
 
 
 def run_pipeline(input_tiff: Path, output_dir: Path, settings: PipelineSettings) -> PipelineResult:
@@ -77,7 +91,7 @@ def run_pipeline(input_tiff: Path, output_dir: Path, settings: PipelineSettings)
     started = time.monotonic()
     summary = preprocess_tiff(input_tiff, corrected, settings, run_name_from_output_dir(output_dir))
     if summary.frame_phases is not None:
-        save_frame_phase_plot(corrected, summary, run_name_from_output_dir(output_dir))
+        save_frame_phase_plot(corrected, summary, settings, run_name_from_output_dir(output_dir))
     started = _log_stage("Phase correction", started)
     # Written only once outputs were (re)written, so it always describes what is on disk.
     (output_dir / SETTINGS_RECORD).write_text(settings.model_dump_json(indent=2))

@@ -333,5 +333,8 @@ def test_per_frame_pipeline_saves_its_qc_plot(tmp_path, recording, monkeypatch):
     out = tmp_path / "run-01" / "without_distortion_correction" / "without_destriping"
     result = pipeline_module.run_pipeline(raw_tiff, out, settings)
     assert list(result.correction.frame_phases.phase_px[[5, 25, 50]]) == [3, -2, 5]
-    for suffix in (".phase.json", ".phase_frames.npz", ".phase_frames.png"):
-        assert result.corrected_tiff.with_suffix(suffix).is_file(), suffix
+    for suffix in (".json", ".npz", ".png", ".pdf", ".svg", ".caption.txt"):
+        path = result.corrected_tiff.with_suffix(".phase_frames" + suffix)
+        if suffix == ".json":
+            path = result.corrected_tiff.with_suffix(".phase.json")
+        assert path.is_file(), path

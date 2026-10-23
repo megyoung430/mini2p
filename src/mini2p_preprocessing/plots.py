@@ -63,12 +63,11 @@ def plot_phase_trace(trace: list[dict], settings: PipelineSettings, axes=None) -
     return axes
 
 
-def plot_frame_phases(
-    chosen: FramePhases, structural_loss: np.ndarray | None = None, axes=None, run_name: str = ""
-) -> np.ndarray:
+def plot_frame_phases(chosen: FramePhases, axes=None, run_name: str = "") -> np.ndarray:
     """Top: each frame's phase in each channel and the applied phase; grey where the
-    functional channel set it. Bottom: structural line correlation lost at the applied
-    phase (0 = fixed; spikes are frames the correction did not fully fix)."""
+    functional channel set it. Bottom: line correlation lost at the applied phase in the
+    structural channel (the functional one if there is no separate structural channel);
+    0 = fixed, spikes = frames the correction did not fully fix."""
     axes = _axes_grid(axes, 2, 1, (12, 6)).ravel()
     frames = np.arange(len(chosen.phase_px))
     for start, end in fallback_stretches(chosen.used_structural):
@@ -81,28 +80,31 @@ def plot_frame_phases(
         ms=1.5,
         alpha=0.4,
         color=ROLE_COLORS["functional"],
-        label="functional, single frames",
+        label="Functional, Single Frames",
     )
-    axes[0].plot(
-        frames,
-        chosen.structural_px,
-        ".",
-        ms=1.5,
-        alpha=0.6,
-        color=ROLE_COLORS["structural"],
-        label="structural, single frames",
-    )
-    axes[0].plot(frames, chosen.phase_px, color="black", linewidth=0.8, label="applied")
+    if chosen.has_structural:
+        axes[0].plot(
+            frames,
+            chosen.structural_px,
+            ".",
+            ms=1.5,
+            alpha=0.6,
+            color=ROLE_COLORS["structural"],
+            label="Structural, Single Frames",
+        )
+    axes[0].plot(frames, chosen.phase_px, color="black", linewidth=0.8, label="Applied")
+    used = f"{100 * np.mean(chosen.used_structural):.0f}%"
     axes[0].set(
-        ylabel="Odd-row shift (pixels)",
-        title=f"{run_name + ': ' if run_name else ''}per-frame biphase; structural "
-        f"used for {100 * np.mean(chosen.used_structural):.0f}% of frames "
-        "(grey = functional)",
+        ylabel="Odd-Row Shift (px)",
+        title=f"{run_name + ': ' if run_name else ''}Per-Frame Biphase, Structural "
+        f"Used For {used} Of Frames",
     )
-    axes[0].legend(loc="upper left", markerscale=6, frameon=False, fontsize=8)
-    if structural_loss is not None:
-        axes[1].plot(frames, structural_loss, color=ROLE_COLORS["structural"], linewidth=0.6)
-    axes[1].set(xlabel="Frame", ylabel="Structural corr lost")
+    axes[0].legend(
+        loc="upper left", bbox_to_anchor=(1.01, 1), markerscale=6, frameon=False, fontsize=8
+    )
+    lost_in = "Structural" if chosen.has_structural else "Functional"
+    axes[1].plot(frames, chosen.loss, color=ROLE_COLORS[lost_in.lower()], linewidth=0.6)
+    axes[1].set(xlabel="Frame", ylabel=f"{lost_in} Corr Lost")
     axes[0].sharex(axes[1])
     axes[0].tick_params(labelbottom=False)
     return axes

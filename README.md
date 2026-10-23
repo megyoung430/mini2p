@@ -279,7 +279,8 @@ meaning there. ΔF itself stays finite. The same applies to the green/red ratio,
    This is decided stretch by stretch, so a structural channel that is good in some
    parts of a session and pure noise in others is handled.
 3. **Apply.** A second pass shifts each frame by its phase, destripes if enabled, and
-   writes `<stem>_dynamic_bidiphase[_destriped].tif` as before.
+   writes `<stem>_dynamic_bidiphase[_destriped].tif`. The output replaces an existing
+   file only once it is complete.
 
 Why both conditions: the structural channel's single frames carry about 15× more line
 texture than GCaMP, so where it has tissue it follows phase jumps exactly. Where it
@@ -290,17 +291,22 @@ Outputs beside the TIFF: `.phase.json` (settings, phase range, fraction of frame
 by the structural channel, `functional_stretches` as half-open frame ranges),
 `.phase_frames.npz` (per frame: applied phase, which channel, each channel's own
 phase, consistency, the functional fallback, correlation lost at the applied phase in
-each channel, and the measured curves), and `.phase_frames.png` for screening runs by
-eye (grey = functional channel used; spikes in the lower panel = frames not fully fixed).
+each channel, and the measured curves), and `.phase_frames.{png,pdf,svg}` with a
+`.caption.txt`, for screening runs by eye (grey = functional channel used; spikes in
+the lower panel = frames not fully fixed). The run log warns when phases reach the
+search limit, when the structural channel set fewer than half the frames, and when the
+config sets chunked-only settings, which per_frame ignores.
 
-Tuning, from one clean and one tissue-free-structural session: a higher
+The default thresholds are provisional: they were set from two sessions, one with a
+clean structural channel and one with none. A higher
 `consistency_threshold` (0.8) or lower `agreement_px` rejects noise more reliably but
 also rejects good structural frames around phase jumps, where the functional average
 lags. Limitation: where the functional fallback is used, a jump inside its window is
 smoothed over.
 
-`method = "chunked"` keeps the original one-phase-per-chunk correction (its settings
-and the manual overrides apply only to it).
+`method = "chunked"` estimates one phase per chunk of `chunk_frames` (its settings and
+the manual overrides apply only to it). A run's `pipeline_settings.json` without a
+`method` is read as chunked.
 
 ## Layout
 

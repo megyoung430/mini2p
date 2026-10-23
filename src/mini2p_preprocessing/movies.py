@@ -62,6 +62,7 @@ from .config import (
     PipelineSettings,
     corrected_tiff_path,
     run_dir_of,
+    settings_from_record,
     undistorted_tiff_path,
     variant_label,
     with_destriping,
@@ -514,7 +515,7 @@ class TiffFrames:
 def load_run_settings(variant_dir: Path) -> PipelineSettings | None:
     """The settings the run was processed with (its ``pipeline_settings.json``), if recorded."""
     record = Path(variant_dir) / SETTINGS_RECORD
-    return PipelineSettings.model_validate_json(record.read_text()) if record.is_file() else None
+    return settings_from_record(record.read_text()) if record.is_file() else None
 
 
 def phase_record(variant_dir: Path, run: PipelineSettings) -> tuple[Path, dict] | None:

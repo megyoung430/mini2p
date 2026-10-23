@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -73,14 +74,17 @@ class PhaseSettings(_Frozen):
     agreement_px: int = Field(6, ge=0)
     trust_window_frames: int = Field(25, ge=1)
     fallback_window_frames: int = Field(101, ge=1)
-    frames_per_read: int = Field(200, ge=1)  # memory only; does not change the result
+    # Frames read at once; memory only, the result is the same. Measuring uses about
+    # 3 x frames_per_read x frame size x 8 bytes per channel (512 x 512: ~300 MB at 50).
+    frames_per_read: int = Field(50, ge=1)
+    # Frames (per_frame) or chunks (chunked) within this many px of ±max_shift_px are flagged.
+    boundary_warning_px: int = Field(2, ge=0)
     # ---- chunked
     chunk_frames: int = Field(100, ge=1)
     estimator: Literal["wide", "suite2p"] = "wide"
     max_shift_px: int = Field(40, ge=1)
     # None crops max_shift_px ('wide') or 10 px ('suite2p') from both image edges.
     score_crop_px: int | None = Field(None, ge=0)
-    boundary_warning_px: int = Field(2, ge=0)
     alignment_source: Literal["best_score", "structural", "functional"] = "functional"
     # In 'best_score' mode the functional channel wins only by more than this margin.
     score_switch_margin: float = 0.0
@@ -215,6 +219,17 @@ class PipelineSettings(_Frozen):
 
 
 NON_PIPELINE_SECTIONS = ("batch", "exports", "qc", "movies", "natex")
+
+
+def settings_from_record(text: str) -> PipelineSettings:
+    """Settings from a run's ``pipeline_settings.json``.
+
+    Records written before ``phase.method`` existed describe chunked runs, so a record
+    without it is read as ``method = "chunked"`` rather than today's default.
+    """
+    record = json.loads(text)
+    record.setdefault("phase", {}).setdefault("method", "chunked")
+    return PipelineSettings.model_validate(record)
 
 
 def load_settings(path: Path, **overrides: object) -> PipelineSettings:

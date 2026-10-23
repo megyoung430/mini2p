@@ -82,15 +82,16 @@ def test_frame_phase_preview_and_plot(recording):
     assert preview.curves.shape == (55, 2, 17)
     assert list(preview.chosen.phase_px[[5, 25, 50]]) == [3, -2, 5]
     _, axes = plt.subplots(2, 1)
-    drawn = plots.plot_frame_phases(preview.chosen, preview.structural_loss, axes=axes)
+    drawn = plots.plot_frame_phases(preview.chosen, axes=axes)
     assert drawn[0] is axes[0] and len(drawn) == 2
     assert drawn[0].get_xlabel() == "" and drawn[1].get_xlabel() == "Frame"
+    assert drawn[1].get_ylabel() == "Structural Corr Lost"
     plt.close("all")
 
 
 def test_frame_phase_plot_makes_its_own_axes(recording):
     raw_tiff, _ = recording
     preview = qc.frame_phase_preview(raw_tiff, _per_frame_settings())
-    axes = plots.plot_frame_phases(preview.chosen, preview.structural_loss)
+    axes = plots.plot_frame_phases(preview.chosen)
     assert len(axes) == 2
     plt.close("all")
