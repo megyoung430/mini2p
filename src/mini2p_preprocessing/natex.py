@@ -42,7 +42,7 @@ from numpy.lib.stride_tricks import sliding_window_view
 from pydantic import BaseModel, ConfigDict, Field
 from scipy import signal
 
-from .config import run_dir_of
+from .config import run_dir_of, variant_dir_of
 from .plane import PlaneTraces, load_plane_traces
 
 log = logging.getLogger(__name__)
@@ -483,9 +483,9 @@ def run_natex(
         neuropil_coefficient = settings.neuropil_coefficient
     result, traces = process_plane(plane_dir, settings, neuropil_coefficient)
     out = write_natex(result, plane_dir, settings, output_dir, overwrite)
-    variant_dir = Path(plane_dir).resolve().parents[1]
-    run_dir = run_dir_of(variant_dir)
-    title = " ".join(run_dir.parts[-3:] + variant_dir.relative_to(run_dir).parts)
+    alignment_folder = Path(plane_dir).resolve().parents[1]
+    run_dir = run_dir_of(variant_dir_of(Path(plane_dir).resolve()))
+    title = " ".join(run_dir.parts[-3:] + alignment_folder.relative_to(run_dir).parts)
     write_report(result, traces, out / REPORT, title)
     log.info("NATEX results in %s", out)
     return out

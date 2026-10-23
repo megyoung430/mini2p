@@ -159,6 +159,7 @@ def test_chunked_correction_writes_int16_and_records_it(tmp_path, rng, caplog):
     settings = PipelineSettings.model_validate(
         {
             "phase": {"method": "chunked", "chunk_frames": 20, "max_shift_px": 8},
+            "registration": {"motion_alignment_source": "functional"},  # "auto" needs per_frame
             "distortion": {"mode": "off"},
         }
     )
@@ -208,6 +209,7 @@ def chunked_settings() -> PipelineSettings:
     return PipelineSettings.model_validate(
         {
             "phase": {"method": "chunked", "chunk_frames": 20, "max_shift_px": 8},
+            "registration": {"motion_alignment_source": "functional"},  # "auto" needs per_frame
             "distortion": {"mode": "off"},
         }
     )

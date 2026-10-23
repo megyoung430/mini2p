@@ -21,6 +21,7 @@ from tests.test_rois_extraction import SETTINGS, label_image, make_plane, offset
 
 SEG = "suite2p/plane0/meanImg_green_functional_contrast_seg.npy"
 IMAGE = "suite2p/plane0/meanImg_green_functional_contrast.png"
+VARIANT = "with_distortion_correction/without_destriping"
 
 
 def add_segmentation(run_dir, plane, dy, dx, image=None):
@@ -38,16 +39,16 @@ def derivatives(tmp_path, rng):
     funcimg = tmp_path / "der" / "ses-001_date-x" / "funcimg"
     planes = {}
     for run in ("run-01", "run-02", "run-03"):
-        planes[run], _ = make_plane(funcimg / run / "without_destriping", rng, texture=True)
+        planes[run], _ = make_plane(
+            funcimg / run / VARIANT / "aligned_structural", rng, texture=True
+        )
     add_segmentation(funcimg / "run-01", planes["run-01"], -2, 3)
     add_segmentation(funcimg / "run-03", planes["run-03"], 0, 0, image=rng.normal(size=(40, 56)))
     return tmp_path / "der", planes
 
 
 def extract(subject_dir, overwrite=False, expected_runs=3):
-    return extract_all(
-        subject_dir, 1, 1, "without_destriping", SEG, IMAGE, SETTINGS, expected_runs, overwrite
-    )
+    return extract_all(subject_dir, 1, 1, VARIANT, SEG, IMAGE, SETTINGS, expected_runs, overwrite)
 
 
 def write_manifest(folder, source):
@@ -106,7 +107,7 @@ def test_a_different_extraction_is_kept_unless_overwritten(derivatives):
 def test_resaved_masks_or_new_settings_are_extracted_again(derivatives):
     subject_dir, planes = derivatives
     extract(subject_dir)
-    seg = planes["run-01"].parents[2] / SEG
+    seg = planes["run-01"].parents[4] / SEG
     masks = np.load(seg, allow_pickle=True).item()["masks"]
     masks[masks == 7] = 0  # edited in the Cellpose GUI, saved under the same name
     np.save(seg, {"masks": masks}, allow_pickle=True)
@@ -116,8 +117,8 @@ def test_resaved_masks_or_new_settings_are_extracted_again(derivatives):
 
 def test_masks_from_another_recording_are_refused(derivatives, tmp_path):
     subject_dir, planes = derivatives
-    run_dir = planes["run-01"].parents[2]
-    write_manifest(run_dir / "without_destriping", tmp_path / "71rtask_00001.tif")
+    run_dir = planes["run-01"].parents[4]
+    write_manifest(run_dir / VARIANT, tmp_path / "71rtask_00001.tif")
     write_manifest(run_dir, tmp_path / "71rtask_00002.tif")
     row = {r["run"]: r for r in extract(subject_dir)}["run-01"]
     assert row["status"] == "failed" and "71rtask_00002.tif" in row["error"]
@@ -165,6 +166,6 @@ def test_review_pdf_needs_rows(tmp_path):
 def test_review_page_survives_masks_deleted_after_extraction(derivatives, tmp_path):
     subject_dir, planes = derivatives
     rows = extract(subject_dir)  # rows from before the masks were deleted
-    (planes["run-01"].parents[2] / SEG).unlink()
+    (planes["run-01"].parents[4] / SEG).unlink()
     pdf = write_mask_alignment_pdf(rows, tmp_path / "m.pdf", Contrast(), "t")
     assert pdf.is_file()

@@ -18,7 +18,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 from .alignment import load_reference_image
 from .batch import read_existing_run
-from .config import VARIANTS, PipelineSettings, run_dir_of
+from .config import VARIANTS, MotionSource, PipelineSettings, run_dir_of, variant_dir_of
 from .contrast import scale_contrast
 from .exports import Contrast, find_run_planes, require_run_count
 from .extraction import (
@@ -117,7 +117,7 @@ def extract_run(
     """Align and extract one variant plane. Refusals are reported in the row; anything
     else (a bug, out of memory) is raised."""
     row = {**row, "seg_file": str(seg_file), "mask_image": str(mask_image)}
-    plane_run = read_existing_run(Path(plane_dir).parents[1])
+    plane_run = read_existing_run(variant_dir_of(plane_dir))
     if plane_run is not None and plane_run.evidence == "manifest":
         status = plane_run.metadata.get("status")
         if status not in (None, "complete"):
@@ -161,16 +161,18 @@ def extract_all(
     settings: PipelineSettings,
     expected_runs: int,
     overwrite: bool = False,
+    alignment: MotionSource = "auto",
 ) -> list[dict]:
-    """Extract every registered ``run-XX/<variant>`` plane from ``run-XX/<seg_relative>``."""
+    """Extract every registered ``run-XX/<variant>`` plane (of *alignment*, see
+    ``find_registered_plane``) from ``run-XX/<seg_relative>``."""
     if variant not in VARIANTS:
         raise ValueError(f"variant must be one of {VARIANTS}, not {variant!r}")
-    runs = find_run_planes(subject_dir, first_session, last_session, variant)
+    runs = find_run_planes(subject_dir, first_session, last_session, variant, alignment)
     require_run_count(runs, expected_runs)
     rows = []
     progress = ProgressLog(f"Cellpose extraction ({variant})", len(runs), log.info)
     for run in sorted(runs, key=lambda r: (r.session, r.run)):
-        run_dir = run_dir_of(run.plane_dir.parents[1])
+        run_dir = run_dir_of(variant_dir_of(run.plane_dir))
         row = summary_row(run.session, run.run_name, variant, run.plane_dir)
         rows.append(
             extract_run(

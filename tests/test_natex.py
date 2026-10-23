@@ -368,8 +368,10 @@ def test_settings_come_from_the_natex_section(tmp_path):
 
 def make_plane(root, n_cells=4, n_frames=900, iscell=None):
     """A Suite2p plane folder with Cellpose-style ROIs: 4x4-pixel squares on a 30 x 40 image."""
-    plane = root / "cohort-01" / "sub-03" / "ses-224_x" / "funcimg" / "run-01" / "v" / "suite2p"
-    plane = plane / "plane0"
+    run_dir = root / "cohort-01" / "sub-03" / "ses-224_x" / "funcimg" / "run-01"
+    plane = (
+        run_dir / "with_distortion_correction" / "v" / "aligned_structural" / "suite2p" / "plane0"
+    )
     plane.mkdir(parents=True)
     f, fneu, spks = plane_arrays(n_cells, n_frames)
     stat = np.array(

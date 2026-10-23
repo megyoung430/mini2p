@@ -188,7 +188,8 @@ def test_both_destriping_variants_coexist_in_either_order(tmp_path, monkeypatch,
         assert [p.action for p in plan] == ["run", "run"]
         expected = "with_destriping" if destripe else "without_destriping"
         assert [p.run_dir.name for p in plan] == [expected, expected]
-        assert [p.run_dir.parent.name for p in plan] == ["run-01", "run-02"]
+        assert [p.run_dir.parent.name for p in plan] == ["with_distortion_correction"] * 2
+        assert [p.run_dir.parents[1].name for p in plan] == ["run-01", "run-02"]
     for destripe in (False, True):
         again = plan_batch(batch.model_copy(update={"destripe": destripe}), corrected=True)
         assert [p.action for p in again] == ["skip", "skip"]

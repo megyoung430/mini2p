@@ -31,8 +31,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output-dir",
         type=Path,
         required=True,
-        help="final output folder, e.g. RUN_DIR/without_destriping or RUN_DIR/with_destriping "
-        "(inside RUN_DIR/without_distortion_correction/ when [distortion] mode is off)",
+        help="final output folder, e.g. RUN_DIR/with_distortion_correction/without_destriping "
+        "(RUN_DIR/without_distortion_correction/... when [distortion] mode is off)",
     )
     parser.add_argument(
         "--destripe", choices=["0", "1"], help="override destripe.enabled from the config"
@@ -71,7 +71,8 @@ MOVIE_HELP = {
     "session": "session number, e.g. 224",
     "run": "run number, e.g. 1 for run-01",
     "run_dir": "a run folder by path (laid out like run-XX/), instead of cohort ... run",
-    "variant": "variant folder, e.g. with_destriping or without_distortion_correction/...",
+    "variant": "variant folder, e.g. with_distortion_correction/with_destriping",
+    "alignment": "registration to use: auto (the one aligned_* folder), structural or functional",
     "whole_recording": "every frame (--no-whole-recording: start to end frame)",
     "start_frame": "first frame (0-based); implies --no-whole-recording",
     "end_frame": "last frame, included; implies --no-whole-recording",
@@ -83,9 +84,9 @@ MOVIE_HELP = {
     "averaged_movie": "average_frames frames per movie frame",
     "derivatives_root": "folder holding cohort-XX/<subject>/ses-*/funcimg/run-XX",
     "raw_tiff": "the acquired TIFF, if not where source_tiff.json says",
-    "output_dir": "where to write (default: run-XX/<variant>/movies)",
+    "output_dir": "where to write (default: run-XX/<variant>/aligned_<channel>/movies)",
     "overwrite": "replace existing movies",
-    "save_folder": "Suite2p output folder inside the variant folder",
+    "save_folder": "Suite2p output folder inside the aligned_<channel> folder",
     "channel": "both side by side (functional left), or one alone",
     "average_frames": "frames per averaged movie frame (2-256)",
     "average_mode": "bin (non-overlapping) or rolling (running mean)",

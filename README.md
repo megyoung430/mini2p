@@ -22,9 +22,9 @@ CLI and the batch workers all read it, so they cannot drift apart.
   per-frame phase (or, with `method = "chunked"`, the phase trace and a manual-offset
   slider), writes each stage and shows QC figures for each.
 - **One recording, headless:**
-  `uv run mini2p-preprocess --config config/pipeline.toml --input RAW.tif --output-dir RUN_DIR/without_destriping`
-  (or `RUN_DIR/with_destriping` with `[destripe] enabled = true`; a folder that disagrees
-  with the setting is refused)
+  `uv run mini2p-preprocess --config config/pipeline.toml --input RAW.tif --output-dir RUN_DIR/with_distortion_correction/without_destriping`
+  (or `.../with_destriping` with `[destripe] enabled = true`; a folder that disagrees
+  with the settings is refused)
 - **Many sessions:** `notebooks/batch_and_exports.ipynb`. Builds a dry-run plan,
   launches one CLI process per pending TIFF, then exports mean images and PDFs.
 - **Sessions the batch has finished, while it runs:** `notebooks/post_batch_sessions.ipynb`,
@@ -33,24 +33,38 @@ CLI and the batch workers all read it, so they cannot drift apart.
 
 ### With and without destriping
 
-Each variant has its own subfolder of `run-XX/`: `without_destriping/` and
-`with_destriping/`. The batch picks it from `[batch] destripe`, the QC notebook and
-the CLI from `[destripe] enabled` (the CLI's `--destripe` overrides it). With
-`[distortion] mode = "off"` the variant goes one level down, so runs with and without
-distortion correction never share a folder:
+Each variant has its own subfolder of `run-XX/`: `with_distortion_correction/` or
+`without_distortion_correction/` (from `[distortion] mode`), then `without_destriping/`
+or `with_destriping/`. The batch picks destriping from `[batch] destripe`, the QC
+notebook and the CLI from `[destripe] enabled` (the CLI's `--destripe` overrides it).
+Suite2p's output goes one level further down, in a folder named for the channel it
+aligned on, so registrations aligned on either channel never share a folder; the
+corrected TIFFs do not depend on that channel and stay in the variant folder:
 
 ```
 run-01/
-  with_destriping/                    distortion corrected
-  without_destriping/                 distortion corrected
+  with_distortion_correction/
+    with_destriping/                  corrected TIFFs and their sidecars
+      aligned_structural/
+        suite2p/plane0/
+        motion_alignment.json         which channel, and why
+        movies/
+      aligned_functional/
+        suite2p/plane0/
+    without_destriping/
   without_distortion_correction/
     with_destriping/
     without_destriping/
 ```
 
-Wherever a variant is named (`[exports] run_subdir`, `[movies] variant`), the nested ones
-are written `without_distortion_correction/with_destriping`; in file names (export
-summaries, PDFs, movies) the `/` becomes `_`.
+`[registration] motion_alignment_source = "auto"` (the default) aligns each run on the
+structural channel when the per-frame bidiphase step trusted it for at least
+`auto_structural_min_fraction` of frames, and on the functional channel otherwise, so
+the folder is the one it chose. Wherever a variant is named (`[exports] run_subdir`,
+`[movies] variant`) it is written `with_distortion_correction/with_destriping`; in file
+names (export summaries, PDFs, movies) the `/` becomes `_`. `[exports] alignment` and
+`[movies] alignment` pick the registration: `"auto"` takes the one `aligned_*` folder a
+run has and refuses a run that has both.
 
 For both variants over many sessions, run the batch once with `destripe = false` and
 once with `destripe = true`, in either order. Each launch freezes its own copy of the
@@ -79,8 +93,8 @@ before that time, e.g. `2026-10-21T09:00:00+01:00` (a time zone is required). Ke
 same time when relaunching after a failure, so runs the rerun already replaced are
 skipped. Each run's `suite2p/` folder is cleared first, because Suite2p would otherwise
 reuse the old binary and skip registration. Clearing needs `overwrite = true` (checked
-at launch), happens only inside a `with_destriping/` or `without_destriping/` folder,
-and is refused if the folder holds any `*_seg.npy`.
+at launch), happens only inside `<variant>/aligned_<channel>/`, and is refused if the
+folder holds any `*_seg.npy`.
 
 After a batch, the last cells of the batch notebook (run once per variant, with
 `[exports] run_subdir` set to it):
@@ -117,13 +131,14 @@ Everything is set in the `[movies]` section of the config (see
   by path (`run_dir`: any folder laid out like a `run-XX/` folder, e.g. one the QC notebook
   made). If the config has both, `run_dir` is used and the by-name settings are ignored, with
   a warning; on the command line, `--run-dir` or a run by name (`--session` ...) overrides
-  whichever the config uses. Then `variant`;
+  whichever the config uses. Then `variant`, and `alignment` (`"auto"`: the one
+  `aligned_*` folder the variant has);
 - **which frames**: `whole_recording` (it must be set), or `start_frame` to `end_frame`,
   0-based and both included (with the whole recording these two are ignored, with a warning);
 - **which stages**: the four switches above (only `stage_registered` is on unless the
   config says otherwise), and **versions**: `unaveraged_movie`, `averaged_movie`;
 - **where to read and write**: `derivatives_root`, `raw_tiff`, `output_dir` (default
-  `run-XX/<variant>/movies/`; `~` works in all of them);
+  `run-XX/<variant>/aligned_<channel>/movies/`; `~` works in all of them);
 - **how they look**.
 
 Suite2p must have finished on the run: it writes `ops.npy` only at the end. Then:
@@ -193,7 +208,7 @@ ported from MATLAB:
 
 ```bash
 uv run mini2p-natex --config config/pipeline.toml \
-    --plane-dir /path/to/run-01/without_destriping/suite2p/plane0
+    --plane-dir /path/to/run-01/with_distortion_correction/without_destriping/aligned_structural/suite2p/plane0
 ```
 
 Per ROI, from the neuropil-corrected trace (`[fluorescence] neuropil_coefficient`, unless

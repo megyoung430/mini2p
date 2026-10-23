@@ -59,11 +59,14 @@ from .config import (
     VARIANTS,
     WITH_DESTRIPING_SUBDIR,
     ChannelSettings,
+    MotionSource,
     PipelineSettings,
     corrected_tiff_path,
+    find_registered_plane,
     run_dir_of,
     settings_from_record,
     undistorted_tiff_path,
+    variant_dir_of,
     variant_label,
     with_destriping,
 )
@@ -95,7 +98,8 @@ class MovieSettings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     # Which run: by name, under derivatives_root/<cohort>/<subject>/ses-<session>_*/funcimg/
-    # run-<run>, or by path, run_dir (a folder laid out like run-XX/: <variant>/suite2p/...).
+    # run-<run>, or by path, run_dir (a folder laid out like run-XX/:
+    # <variant>/aligned_<channel>/suite2p/...).
     # run_dir, when set, is used and the four by-name settings are ignored.
     cohort: str | None = Field(None, min_length=1)  # e.g. "cohort-01"
     subject: str | None = Field(None, min_length=1)  # subject folder or part of it: "sub-03"
@@ -103,11 +107,14 @@ class MovieSettings(BaseModel):
     run: int | None = Field(None, ge=1)  # e.g. 1 for run-01
     run_dir: Path | None = None  # e.g. "/Users/you/Desktop/example_ses/img"
     variant: Literal[
-        "without_destriping",
-        "with_destriping",
+        "with_distortion_correction/without_destriping",
+        "with_distortion_correction/with_destriping",
         "without_distortion_correction/without_destriping",
         "without_distortion_correction/with_destriping",
-    ] = "without_destriping"
+    ] = "with_distortion_correction/without_destriping"
+    # Which registration: "auto" takes the one aligned_* folder there is (refusing a variant
+    # that has both); or "structural" / "functional".
+    alignment: MotionSource = "auto"
     # Which frames: the whole recording, or start_frame to end_frame (0-based, both included).
     # No default: a whole TIFF stage is ~14 GB to read, so it is never chosen by omission.
     whole_recording: bool
@@ -124,9 +131,9 @@ class MovieSettings(BaseModel):
     # Where to read and write
     derivatives_root: Path | None = None  # holds cohort-XX/<subject>/ses-*/funcimg/run-XX
     raw_tiff: Path | None = None  # the acquired TIFF, if not where source_tiff.json says
-    output_dir: Path | None = None  # None: run-XX/<variant>/movies
+    output_dir: Path | None = None  # None: run-XX/<variant>/aligned_<source>/movies
     overwrite: bool = False  # replace existing movies
-    save_folder: str = "suite2p"  # Suite2p output folder inside the variant folder
+    save_folder: str = "suite2p"  # Suite2p output folder inside aligned_<channel>/
     # How they look
     channel: Channel = "side_by_side"  # functional left, structural right; or one alone
     average_frames: int = Field(5, ge=2, le=256)
@@ -257,8 +264,10 @@ def find_plane_dir(
     run: int,
     variant: str,
     save_folder: str = "suite2p",
+    alignment: MotionSource = "auto",
 ) -> Path:
-    """``<root>/<cohort>/<subject>/ses-<session>_*/funcimg/run-<run>/<variant>/<save_folder>/plane0``.
+    """``<root>/<cohort>/<subject>/ses-<session>_*/funcimg/run-<run>/<variant>/aligned_<source>/
+    <save_folder>/plane0`` (see ``find_registered_plane`` for *alignment*).
 
     Raises:
         FileNotFoundError: If a level is missing or ambiguous, listing what is there.
@@ -280,10 +289,21 @@ def find_plane_dir(
     run_dir = funcimg / f"run-{run:02d}"
     if not run_dir.is_dir():
         _one([], f"run-{run:02d}", funcimg)
-    plane_dir = run_dir / variant / save_folder / "plane0"
-    if not (plane_dir / "ops.npy").is_file():
+    return registered_plane(run_dir / variant, alignment, save_folder)
+
+
+def registered_plane(variant_dir: Path, alignment: MotionSource, save_folder: str) -> Path:
+    plane_dir = find_registered_plane(variant_dir, alignment, save_folder)
+    if plane_dir is None:
+        started = sorted(Path(variant_dir).glob(f"aligned_*/{save_folder}/plane0"))
+        if started:
+            raise FileNotFoundError(
+                f"No ops.npy in {[str(p) for p in started]}: Suite2p has not finished (it "
+                "writes ops.npy at the end)"
+            )
         raise FileNotFoundError(
-            f"No registered {variant} output in {run_dir} (no {plane_dir}/ops.npy)"
+            f"No registered output in {variant_dir} (no aligned_*/{save_folder}/plane0/ops.npy "
+            f"for alignment {alignment!r})"
         )
     return plane_dir
 
@@ -634,10 +654,10 @@ def open_stage(
         }
     if run is None:
         raise FileNotFoundError(
-            f"No {SETTINGS_RECORD} in {Path(plane_dir).parents[1]}: the {stage} stage needs "
+            f"No {SETTINGS_RECORD} in {variant_dir_of(plane_dir)}: the {stage} stage needs "
             "the channel order and file names the run was processed with"
         )
-    path = stage_tiff(stage, Path(plane_dir).parents[1], run, raw_tiff)
+    path = stage_tiff(stage, variant_dir_of(plane_dir), run, raw_tiff)
     tif = stack.enter_context(tifffile.TiffFile(path))
     index = {
         "green": run.channels.functional_channel - 1,
@@ -842,7 +862,7 @@ def open_jobs(
     (``run_dir``) without one, e.g. made by the QC notebook, uses ``settings_from_records``
     with the config's settings, which *config* loads only then.
     """
-    variant_dir = plane_dir.parents[1]
+    variant_dir = variant_dir_of(plane_dir)
     stages = settings.stages
     if set(stages) - {"registered"}:
         run = load_run_settings(variant_dir)  # the TIFF stages need it: fail if unreadable
@@ -913,8 +933,9 @@ def run_folder(settings: MovieSettings) -> tuple[Path, tuple[str, ...]]:
             settings.run,
             settings.variant,
             settings.save_folder,
+            settings.alignment,
         )
-        run_dir = run_dir_of(plane_dir.parents[1])
+        run_dir = run_dir_of(variant_dir_of(plane_dir))
     else:
         run_dir = Path(settings.run_dir).resolve()
         variant_dir = run_dir / settings.variant
@@ -923,7 +944,7 @@ def run_folder(settings: MovieSettings) -> tuple[Path, tuple[str, ...]]:
                 sorted(p.name for p in run_dir.iterdir() if p.is_dir()) if run_dir.is_dir() else []
             )
             raise FileNotFoundError(f"No {variant_dir}; folders in {run_dir}: {folders}")
-        plane_dir = variant_dir / settings.save_folder / "plane0"
+        plane_dir = registered_plane(variant_dir, settings.alignment, settings.save_folder)
     in_batch_layout = (
         RUN_FOLDER.match(run_dir.name)
         and run_dir.parent.name == "funcimg"
@@ -949,8 +970,9 @@ def make_movies(
     values, and the stages are on different scales).
     """
     plane_dir, names = run_folder(settings)
-    variant_dir = plane_dir.parents[1]
-    out_dir = Path(settings.output_dir) if settings.output_dir else variant_dir / MOVIE_FOLDER
+    # Beside the registration they show, so movies of two alignments never collide.
+    alignment_folder = plane_dir.parents[1]
+    out_dir = Path(settings.output_dir) if settings.output_dir else alignment_folder / MOVIE_FOLDER
     with ExitStack() as stack:
         jobs = open_jobs(settings, plane_dir, names, stack, config)
         for job in jobs:

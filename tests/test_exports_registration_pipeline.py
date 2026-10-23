@@ -1,3 +1,4 @@
+import importlib
 import json
 import re
 
@@ -27,9 +28,10 @@ from tests.conftest import write_interleaved_tiff  # noqa: E402
 
 
 def fake_plane(root, session, run, rng, subdir=""):
-    plane = (
-        root / f"ses-{session:03d}_x" / "funcimg" / f"run-{run:02d}" / subdir / "suite2p" / "plane0"
-    )
+    """run-XX/suite2p/plane0, or for a variant *subdir* its aligned_structural registration."""
+    run_dir = root / f"ses-{session:03d}_x" / "funcimg" / f"run-{run:02d}"
+    registration = run_dir / subdir / "aligned_structural" if subdir else run_dir
+    plane = registration / "suite2p" / "plane0"
     plane.mkdir(parents=True)
     ops = {"meanImg": rng.normal(100, 10, (12, 16)), "meanImg_chan2": rng.normal(50, 5, (12, 16))}
     np.save(plane / "ops.npy", ops, allow_pickle=True)
@@ -102,6 +104,7 @@ def test_pipeline_wires_stages_together(tmp_path, recording, monkeypatch):
     settings = PipelineSettings.model_validate(
         {
             "phase": {"method": "chunked", "chunk_frames": 20, "max_shift_px": 8},
+            "registration": {"motion_alignment_source": "functional"},  # "auto" needs per_frame
             "distortion": {"mode": "off"},
         }
     )
@@ -191,14 +194,17 @@ def test_each_variant_gets_its_own_summary_and_pdf_names(tmp_path):
     from mini2p_preprocessing.exports import ExportSettings
 
     common = {"subject_dir": tmp_path, "session_first": 1, "session_last": 4, "expected_runs": 1}
-    labels = {
-        sub: ExportSettings(**common, run_subdir=sub).session_label
-        for sub in ("without_destriping", "with_destriping")
-    }
+    subdirs = (
+        "with_distortion_correction/without_destriping",
+        "with_distortion_correction/with_destriping",
+    )
+    labels = {sub: ExportSettings(**common, run_subdir=sub).session_label for sub in subdirs}
     assert labels == {
-        "without_destriping": "sessions-1-4_without_destriping",
-        "with_destriping": "sessions-1-4_with_destriping",
+        subdirs[0]: "sessions-1-4_with_distortion_correction_without_destriping",
+        subdirs[1]: "sessions-1-4_with_distortion_correction_with_destriping",
     }
+    chosen = ExportSettings(**common, run_subdir=subdirs[0], alignment="structural")
+    assert chosen.session_label.endswith("_without_destriping_aligned_structural")
     with pytest.raises(ValueError, match="run_subdir"):  # never export into run-XX/suite2p
         ExportSettings(**common, run_subdir="")
 
@@ -223,16 +229,25 @@ def test_output_folder_must_match_the_destriping_setting(tmp_path, recording, mo
     assert not (tmp_path / "run-01").exists()
 
 
-def _registered_folder(tmp_path, tiff_name="x.tif", shape=(4, 6)):
-    """A variant folder, run-01/without_destriping, holding an earlier registration."""
+# These tests are about clearing, so the channel is fixed rather than "auto".
+STRUCTURAL = {
+    "distortion": {"mode": "off"},
+    "registration": {"motion_alignment_source": "structural"},
+}
+
+
+def _registered_folder(tmp_path, tiff_name="x.tif", shape=(4, 6), variant=True):
+    """A variant folder holding an earlier registration aligned on the structural channel
+    (or, with *variant* False, run-01 itself)."""
     import tifffile
 
-    out = tmp_path / "run-01" / "without_destriping"
-    plane = out / "suite2p" / "plane0"
+    out = tmp_path / "run-01" / "without_distortion_correction" / "without_destriping"
+    out = out if variant else tmp_path / "run-01"
+    plane = out / "aligned_structural" / "suite2p" / "plane0"
     plane.mkdir(parents=True)
     tiff = out / tiff_name
     tifffile.imwrite(tiff, np.zeros((2, *shape), np.int16))
-    np.save(out / "suite2p" / "db.npy", {"file_list": [tiff_name]}, allow_pickle=True)
+    np.save(plane.parent / "db.npy", {"file_list": [tiff_name]}, allow_pickle=True)
     np.save(plane / "ops.npy", {"Ly": shape[0], "Lx": shape[1]}, allow_pickle=True)
     (plane / "data.bin").write_bytes(b"old registration")
     return tiff, plane
@@ -253,7 +268,7 @@ def test_overwrite_replaces_an_earlier_registration(tmp_path, monkeypatch):
 
     tiff, plane = _registered_folder(tmp_path)
     calls = _stub_suite2p(monkeypatch)
-    settings = PipelineSettings.model_validate({"distortion": {"mode": "off"}})
+    settings = PipelineSettings.model_validate(STRUCTURAL)
     run_registration(tiff, tiff.parent, settings)
     assert len(calls) == 1 and not (plane / "data.bin").exists()
 
@@ -263,7 +278,7 @@ def test_earlier_registration_is_kept_without_overwrite_or_with_masks(tmp_path, 
 
     tiff, plane = _registered_folder(tmp_path)
     calls = _stub_suite2p(monkeypatch)
-    keep = PipelineSettings.model_validate({"overwrite": False, "distortion": {"mode": "off"}})
+    keep = PipelineSettings.model_validate({**STRUCTURAL, "overwrite": False})
     with pytest.raises(FileExistsError, match="overwrite"):
         run_registration(tiff, tiff.parent, keep)
     (plane / "meanImg_seg.npy").write_bytes(b"masks")
@@ -274,20 +289,15 @@ def test_earlier_registration_is_kept_without_overwrite_or_with_masks(tmp_path, 
 
 
 def test_registration_outside_a_variant_folder_is_never_cleared(tmp_path, monkeypatch):
-    # run-XX/suite2p holds the registration the Cellpose masks were drawn on.
-    import shutil
-
+    # run-XX/ holds the registration the Cellpose masks were drawn on; never clear there.
     from mini2p_preprocessing.registration import run_registration
 
-    tiff, plane = _registered_folder(tmp_path)
-    run_dir = tmp_path / "run-01"
-    shutil.move(str(plane.parent), run_dir / "suite2p")
-    shutil.move(str(tiff), run_dir / tiff.name)
+    tiff, plane = _registered_folder(tmp_path, variant=False)
     calls = _stub_suite2p(monkeypatch)
-    settings = PipelineSettings.model_validate({"distortion": {"mode": "off"}})
-    with pytest.raises(RuntimeError, match="variant"):
-        run_registration(run_dir / tiff.name, run_dir, settings)
-    assert calls == [] and (run_dir / "suite2p" / "plane0" / "data.bin").exists()
+    settings = PipelineSettings.model_validate(STRUCTURAL)
+    with pytest.raises(RuntimeError, match="Not replacing"):
+        run_registration(tiff, tiff.parent, settings)
+    assert calls == [] and (plane / "data.bin").exists()
 
 
 @pytest.mark.parametrize("folder", ["", ".", "..", "a/b", "/abs"])
@@ -303,20 +313,30 @@ def test_suite2p_save_folder_must_be_a_plain_name(folder):
 def test_fast_disk_gives_each_run_its_own_local_binary_folder(tmp_path):
     from mini2p_preprocessing.registration import build_suite2p_db
 
-    output_dir = (
-        tmp_path / "share" / "ses-224_date-20260809" / "funcimg" / "run-01" / "with_destriping"
-    )
+    run_dir = tmp_path / "share" / "ses-224_date-20260809" / "funcimg" / "run-01"
+    output_dir = run_dir / "with_distortion_correction" / "with_destriping"
     tiff = output_dir / "a_undistorted.tif"
-    plain = PipelineSettings.model_validate({"distortion": {"mode": "off"}})
+    plain = PipelineSettings.model_validate(STRUCTURAL)
     assert "fast_disk" not in build_suite2p_db(output_dir, tiff, plain)
     local = PipelineSettings.model_validate(
-        {"distortion": {"mode": "off"}, "registration": {"fast_disk": str(tmp_path / "local")}}
+        {
+            "distortion": {"mode": "off"},
+            "registration": {
+                "fast_disk": str(tmp_path / "local"),
+                "motion_alignment_source": "functional",
+            },
+        }
     )
     db = build_suite2p_db(output_dir, tiff, local)
     assert db["fast_disk"] == str(
-        tmp_path / "local" / "ses-224_date-20260809_funcimg_run-01_with_destriping"
+        tmp_path / "local" / "ses-224_date-20260809_funcimg_run-01_with_distortion_correction_"
+        "with_destriping_aligned_functional"
     )
-    assert db["save_path0"] == str(output_dir)  # results still go beside the run
+    assert db["save_path0"] == str(output_dir / "aligned_functional")  # results beside the run
+    with pytest.raises(ValueError, match="resolved"):
+        build_suite2p_db(
+            output_dir, tiff, PipelineSettings.model_validate({"distortion": {"mode": "off"}})
+        )
 
 
 def test_per_frame_pipeline_saves_its_qc_plot(tmp_path, recording, monkeypatch):
@@ -338,3 +358,24 @@ def test_per_frame_pipeline_saves_its_qc_plot(tmp_path, recording, monkeypatch):
         if suffix == ".json":
             path = result.corrected_tiff.with_suffix(".phase.json")
         assert path.is_file(), path
+
+
+def test_auto_alignment_reads_the_phase_record_the_pipeline_just_wrote(
+    tmp_path, recording, monkeypatch
+):
+    module = importlib.import_module("suite2p.run_s2p")
+    calls = []
+    monkeypatch.setattr(module, "run_s2p", lambda settings, db: calls.append(settings))
+    raw_tiff, _ = recording
+    settings = PipelineSettings.model_validate(
+        {
+            "phase": {"max_shift_px": 8, "trust_window_frames": 11, "fallback_window_frames": 21},
+            "distortion": {"mode": "off"},
+        }
+    )
+    out = tmp_path / "run-01" / "without_distortion_correction" / "without_destriping"
+    result = pipeline_module.run_pipeline(raw_tiff, out, settings)
+    fraction = float(result.correction.frame_phases.used_structural.mean())
+    chosen = "structural" if fraction >= 0.5 else "functional"
+    assert result.plane_dir == out / f"aligned_{chosen}" / "suite2p" / "plane0"
+    assert calls[0]["registration"]["align_by_chan2"] is (chosen == "structural")

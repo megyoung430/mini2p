@@ -11,13 +11,24 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 ChannelRole = Literal["structural", "functional"]
+# "auto": structural where the bidiphase step trusted it often enough, else functional.
+MotionSource = Literal["structural", "functional", "auto"]
 WITHOUT_DESTRIPING_SUBDIR = "without_destriping"
 WITH_DESTRIPING_SUBDIR = "with_destriping"
 VARIANT_SUBDIRS = (WITHOUT_DESTRIPING_SUBDIR, WITH_DESTRIPING_SUBDIR)
-# Runs without distortion correction go one level down: run-XX/<this>/<destriping folder>.
+# The level above the destriping folder: run-XX/<distortion folder>/<destriping folder>.
+WITH_DISTORTION_SUBDIR = "with_distortion_correction"
 NO_DISTORTION_SUBDIR = "without_distortion_correction"
+DISTORTION_SUBDIRS = (WITH_DISTORTION_SUBDIR, NO_DISTORTION_SUBDIR)
 # Every variant folder, relative to run-XX/
-VARIANTS = VARIANT_SUBDIRS + tuple(f"{NO_DISTORTION_SUBDIR}/{v}" for v in VARIANT_SUBDIRS)
+VARIANTS = tuple(f"{d}/{v}" for d in DISTORTION_SUBDIRS for v in VARIANT_SUBDIRS)
+# Suite2p's output sits one level below the variant folder, named for the channel it was
+# aligned on: <variant>/aligned_structural/suite2p/plane0. The corrected TIFFs do not depend
+# on that channel, so both alignments share them.
+ALIGNMENT_SUBDIRS: dict[str, str] = {
+    "structural": "aligned_structural",
+    "functional": "aligned_functional",
+}
 SETTINGS_RECORD = "pipeline_settings.json"  # the exact settings each run used
 
 
@@ -164,7 +175,10 @@ class RegistrationSettings(_Frozen):
     # One plain folder name inside the output folder; it is cleared when re-registering.
     save_folder: str = Field("suite2p", pattern=r"^[A-Za-z0-9_.-]+$")
     run_roi_detection: bool = False
-    motion_alignment_source: ChannelRole = "functional"
+    motion_alignment_source: MotionSource = "auto"
+    # "auto" aligns on the structural channel when the per-frame bidiphase step trusted it
+    # for at least this fraction of frames (it is textured and consistent there).
+    auto_structural_min_fraction: float = Field(0.5, gt=0, le=1)
     # Local folder for Suite2p's working binaries (data.bin, data_chan2.bin), e.g. on the
     # laptop's SSD; results still go beside the run. Each run gets its own subfolder.
     # Unset: the binaries sit in the run's suite2p folder.
@@ -220,6 +234,16 @@ class PipelineSettings(_Frozen):
     max_timepoints: int | None = Field(None, ge=1)  # small values make quick test runs
     overwrite: bool = True
 
+    @model_validator(mode="after")
+    def _auto_alignment_needs_per_frame_phase(self) -> PipelineSettings:
+        # "auto" reads how often the per-frame bidiphase step trusted the structural channel.
+        if self.registration.motion_alignment_source == "auto" and self.phase.method != "per_frame":
+            raise ValueError(
+                'registration.motion_alignment_source = "auto" needs phase.method = '
+                '"per_frame"; with "chunked", set "structural" or "functional"'
+            )
+        return self
+
     @property
     def dtype(self) -> np.dtype:
         return np.dtype(self.output_dtype)
@@ -234,8 +258,10 @@ class PipelineSettings(_Frozen):
         return self.channels.channel_by_role.get(self.phase.alignment_source)
 
     @property
-    def registration_channel(self) -> int:
-        return self.channels.channel_by_role[self.registration.motion_alignment_source]
+    def registration_channel(self) -> int | None:
+        """1-based channel Suite2p aligns on; None for "auto", decided at registration."""
+        source = self.registration.motion_alignment_source
+        return None if source == "auto" else self.channels.channel_by_role[source]
 
 
 NON_PIPELINE_SECTIONS = ("batch", "exports", "qc", "movies", "natex")
@@ -249,6 +275,8 @@ def settings_from_record(text: str) -> PipelineSettings:
     """
     record = json.loads(text)
     record.setdefault("phase", {}).setdefault("method", "chunked")
+    # Records from before "auto" existed aligned on the then-default functional channel.
+    record.setdefault("registration", {}).setdefault("motion_alignment_source", "functional")
     return PipelineSettings.model_validate(record)
 
 
@@ -280,10 +308,11 @@ def distortion_corrected(settings: PipelineSettings) -> bool:
 
 def variant_subdir(destripe_enabled: bool, *, distortion_corrected: bool) -> str:
     """The variant folder, relative to ``run-XX/``: ``with_destriping`` or
-    ``without_destriping``, inside ``without_distortion_correction/`` when distortion
-    correction is off, so every combination has its own folder."""
+    ``without_destriping`` inside ``with_distortion_correction/`` or
+    ``without_distortion_correction/``, so every combination has its own folder."""
     subdir = WITH_DESTRIPING_SUBDIR if destripe_enabled else WITHOUT_DESTRIPING_SUBDIR
-    return subdir if distortion_corrected else f"{NO_DISTORTION_SUBDIR}/{subdir}"
+    distortion = WITH_DISTORTION_SUBDIR if distortion_corrected else NO_DISTORTION_SUBDIR
+    return f"{distortion}/{subdir}"
 
 
 def settings_variant(settings: PipelineSettings) -> str:
@@ -308,20 +337,64 @@ def variant_label(variant: str) -> str:
 
 
 def run_dir_of(variant_dir: Path) -> Path:
-    """The ``run-XX/`` folder of a variant folder (one or two levels up)."""
+    """The ``run-XX/`` folder of a variant folder (two levels up), or the parent of a plain
+    output folder."""
     variant_dir = Path(variant_dir)
     parent = variant_dir.parent
-    return parent.parent if parent.name == NO_DISTORTION_SUBDIR else parent
+    return parent.parent if parent.name in DISTORTION_SUBDIRS else parent
+
+
+def alignment_dir(variant_dir: Path, source: ChannelRole) -> Path:
+    """``<variant>/aligned_<source>``, which holds Suite2p's output aligned on *source*."""
+    if source not in ALIGNMENT_SUBDIRS:
+        raise ValueError(f"source must be one of {sorted(ALIGNMENT_SUBDIRS)}, not {source!r}")
+    return Path(variant_dir) / ALIGNMENT_SUBDIRS[source]
+
+
+def plane_dir_of(variant_dir: Path, source: ChannelRole, save_folder: str = "suite2p") -> Path:
+    return alignment_dir(variant_dir, source) / save_folder / "plane0"
+
+
+def variant_dir_of(plane_dir: Path) -> Path:
+    """The variant folder of ``<variant>/aligned_<source>/<save_folder>/plane0``."""
+    plane_dir = Path(plane_dir)
+    if plane_dir.parents[1].name not in ALIGNMENT_SUBDIRS.values():
+        raise ValueError(
+            f"{plane_dir} is not inside an {' or '.join(ALIGNMENT_SUBDIRS.values())} folder"
+        )
+    return plane_dir.parents[2]
+
+
+def find_registered_plane(
+    variant_dir: Path, alignment: MotionSource = "auto", save_folder: str = "suite2p"
+) -> Path | None:
+    """The registered plane folder (with an ops.npy) of a variant, or None if there is none.
+
+    "auto" takes whichever alignment exists and refuses to guess when both do.
+    """
+    sources = list(ALIGNMENT_SUBDIRS) if alignment == "auto" else [alignment]
+    found = [
+        plane
+        for plane in (plane_dir_of(variant_dir, s, save_folder) for s in sources)
+        if (plane / "ops.npy").is_file()
+    ]
+    if len(found) > 1:
+        raise ValueError(
+            f"{variant_dir} has registrations aligned on both channels ({found}); set "
+            "alignment to 'structural' or 'functional' to pick one"
+        )
+    return found[0] if found else None
 
 
 def check_variant_folder(
     output_dir: Path, destripe_enabled: bool, *, distortion_corrected: bool
 ) -> None:
     """Refuse a variant folder that disagrees with the destriping or distortion setting, and
-    the ``without_distortion_correction/`` folder itself, which only holds variants."""
+    the ``with_/without_distortion_correction/`` folders themselves, which only hold
+    variants."""
     output_dir = Path(output_dir)
     expected = variant_subdir(destripe_enabled, distortion_corrected=distortion_corrected)
-    if output_dir.name == NO_DISTORTION_SUBDIR:
+    if output_dir.name in DISTORTION_SUBDIRS:
         raise ValueError(f"{output_dir} only holds variant folders; write to .../{expected}/")
     if output_dir.name not in VARIANT_SUBDIRS:
         return  # a plain output folder, as for tests or one-off runs

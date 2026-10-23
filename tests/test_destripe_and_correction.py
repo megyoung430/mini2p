@@ -41,6 +41,7 @@ def settings(**phase):
     return PipelineSettings.model_validate(
         {
             "phase": {"method": "chunked", "chunk_frames": 10, "max_shift_px": 8, **phase},
+            "registration": {"motion_alignment_source": "functional"},  # "auto" needs per_frame
             "distortion": {"mode": "off"},
         }
     )

@@ -17,7 +17,7 @@ import tifffile
 from matplotlib.backends.backend_pdf import PdfPages
 from pydantic import BaseModel, ConfigDict
 
-from .config import variant_label
+from .config import ALIGNMENT_SUBDIRS, MotionSource, find_registered_plane, variant_label
 from .contrast import red_green_overlay, scale_contrast
 from .progress import PROGRESS_EVERY_S, ProgressLog
 from .qc import suite2p_mean_images
@@ -55,11 +55,14 @@ class ExportSettings(BaseModel):
     # The variant to export. Never "": run-XX/suite2p holds the image the Cellpose
     # masks were drawn on, which an export would overwrite.
     run_subdir: Literal[
-        "without_destriping",
-        "with_destriping",
+        "with_distortion_correction/without_destriping",
+        "with_distortion_correction/with_destriping",
         "without_distortion_correction/without_destriping",
         "without_distortion_correction/with_destriping",
     ]
+    # Which registration of each run: "auto" takes the one aligned_* folder there is (and
+    # refuses a run that has both); or "structural" / "functional".
+    alignment: MotionSource = "auto"
     black_percentile: float = 5.0
     white_percentile: float = 99.5
     gamma: float = 1.2
@@ -75,6 +78,8 @@ class ExportSettings(BaseModel):
     def session_label(self) -> str:
         """Names the summary and PDFs, so each variant gets its own files."""
         label = variant_label(self.run_subdir)
+        if self.alignment != "auto":
+            label += f"_{ALIGNMENT_SUBDIRS[self.alignment]}"
         return f"sessions-{self.session_first}-{self.session_last}_{label}"
 
 
@@ -96,9 +101,15 @@ class RunPlane:
 
 
 def find_run_planes(
-    subject_dir: Path, first_session: int, last_session: int, run_subdir: str = ""
+    subject_dir: Path,
+    first_session: int,
+    last_session: int,
+    run_subdir: str = "",
+    alignment: MotionSource = "auto",
 ) -> list[RunPlane]:
-    """Every ``ses-*/funcimg/run-*/<run_subdir>/suite2p/plane0`` with an ops.npy, in order."""
+    """Every registered plane with an ops.npy, in order: for a variant *run_subdir*,
+    ``run-*/<run_subdir>/aligned_<source>/suite2p/plane0`` (see ``find_registered_plane``);
+    for ``""``, ``run-*/suite2p/plane0``."""
     found = []
     for session_dir in Path(subject_dir).glob("ses-*"):
         session_match = SESSION_PATTERN.match(session_dir.name)
@@ -106,8 +117,12 @@ def find_run_planes(
             continue
         for run_dir in (session_dir / "funcimg").glob("run-*"):
             run_match = RUN_PATTERN.match(run_dir.name)
-            plane_dir = run_dir / run_subdir / "suite2p" / "plane0"
-            if run_match and (plane_dir / "ops.npy").is_file():
+            plane_dir = (
+                find_registered_plane(run_dir / run_subdir, alignment)
+                if run_subdir
+                else run_dir / "suite2p" / "plane0"
+            )
+            if run_match and plane_dir is not None and (plane_dir / "ops.npy").is_file():
                 found.append(
                     RunPlane(
                         int(session_match.group(1)),

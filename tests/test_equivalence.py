@@ -52,6 +52,7 @@ def without_output_record(meta: dict) -> dict:
 def settings_for(overrides: dict) -> PipelineSettings:
     base = {
         "phase": {"method": "chunked", "chunk_frames": 20, "max_shift_px": 8},
+        "registration": {"motion_alignment_source": "functional"},  # "auto" needs per_frame
         "distortion": {"mode": "off"},
         "output_dtype": "float32",  # the original notebook wrote float32
     }
@@ -143,6 +144,8 @@ def test_distortion_matches_original(tmp_path, recording):
                 "batch_frames": 16,
             },
             "output_dtype": "float32",
+            # The original notebook had no "auto"; this test only exercises distortion.
+            "registration": {"motion_alignment_source": "functional"},
         }
     )
     calibration = fake_calibration()
@@ -196,4 +199,6 @@ def test_suite2p_settings_match_original(tmp_path, motion_source):
         suite2p.default_settings, tiff, tmp_path
     )
     assert build_suite2p_settings(settings) == old_settings
-    assert build_suite2p_db(tmp_path, tiff, settings) == old_db
+    # Deliberate change: results go in aligned_<channel>/ rather than beside the TIFF.
+    aligned = tmp_path / f"aligned_{motion_source}"
+    assert build_suite2p_db(tmp_path, tiff, settings) == old_db | {"save_path0": str(aligned)}
