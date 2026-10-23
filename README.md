@@ -272,6 +272,29 @@ F0 kept alongside. ΔF/F0 is NaN wherever F0 ≤ `min_f0`, since the ratio has n
 meaning there. ΔF itself stays finite. The same applies to the green/red ratio,
 Δ(G/R)/(G/R)0.
 
+## Output data type
+
+Suite2p registers int16 frames: given any other type, its TIFF reader converts each frame
+with a plain `astype(np.int16)`, which truncates towards zero (9.7 becomes 9, -0.7
+becomes 0) and wraps values beyond -32768..32767 around silently (40000 becomes -25536).
+So the pipeline writes the corrected and undistorted TIFFs as int16 itself
+(`output_dtype = "int16"`, the default): each value is rounded to the nearest count and
+clipped to the int16 range, one frame at a time. If anything is clipped the log warns
+with the count, and above `max_clipped_fraction` (default 1e-4) the run stops instead,
+keeping the previous corrected TIFF; the `.phase.json` / `.distortion.json` sidecars
+record `output_dtype` and `clipped_values`. Before registering, the pipeline warns if the
+TIFF Suite2p will read is not int16 (with `distortion.mode = "cluster_full"` that TIFF
+comes from the cluster script, which this repository does not control). The files are
+half the size of float32 ones. `output_dtype = "float32"` writes the floats unchanged and
+leaves the conversion to Suite2p (the equivalence tests use it, as the original notebook
+did).
+
+Runs processed with float32 TIFFs went through Suite2p's truncation, about -0.5 counts
+on average wherever destriping or distortion correction made values non-integer, so they
+differ slightly from runs processed since. Their sidecars have no `output_dtype` key; to
+compare sessions processed before and after, rerun the older ones (`[batch]
+rerun_completed_before`).
+
 ## Scan-phase correction
 
 `[phase] method = "per_frame"` (the default) gives every frame its own odd-row shift:
@@ -450,5 +473,6 @@ hand inside it.
 5. `two_step_registration = true` with `keep_raw_binary = false`. Suite2p's
    two-step registration needs the raw binary, so check whether it is being
    skipped.
-6. Float output can exceed the int16 range when Suite2p converts it. Consider
-   clipping before writing.
+6. With `output_dtype = "float32"`, values beyond the int16 range would wrap when
+   Suite2p converts them (it uses a plain `astype(np.int16)`). The default `"int16"`
+   rounds and clips them in the pipeline instead, and records how many were clipped.

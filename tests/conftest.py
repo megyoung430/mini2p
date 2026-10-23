@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -121,3 +122,29 @@ def as_contrast_png(image: np.ndarray, path: Path, black=5.0, white=99.5, gamma=
     lo, hi = np.percentile(image, [black, white])
     plt.imsave(path, np.clip((image - lo) / (hi - lo), 0, 1) ** gamma, cmap="gray", vmin=0, vmax=1)
     return path
+
+
+def fake_calibration(shape=(48, 96)):
+    """Stand-in for distortion_correct_full_recording: a gentle barrel-like warp."""
+
+    def load_transform(path, z_um):
+        return {"k": 0.05}, 0.0, "fake-schema", 12
+
+    def make_maps(transform, image_shape):
+        yy, xx = np.mgrid[0 : image_shape[0], 0 : image_shape[1]].astype(np.float64)
+        cy, cx = (image_shape[0] - 1) / 2, (image_shape[1] - 1) / 2
+        r2 = ((yy - cy) / cy) ** 2 + ((xx - cx) / cx) ** 2
+        scale = 1 + transform["k"] * r2
+        return cy + (yy - cy) * scale, cx + (xx - cx) * scale
+
+    def crop_bounds(map_y, map_x, image_shape, padding):
+        return (
+            2 + padding,
+            image_shape[0] - 2 - padding,
+            3 + padding,
+            image_shape[1] - 3 - padding,
+        )
+
+    return SimpleNamespace(
+        load_transform=load_transform, make_maps=make_maps, crop_bounds=crop_bounds
+    )

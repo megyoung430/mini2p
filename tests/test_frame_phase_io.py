@@ -18,6 +18,7 @@ from mini2p_preprocessing.config import (
 from mini2p_preprocessing.correction import measure_line_curves, preprocess_tiff
 from mini2p_preprocessing.destripe import detrend_chunk
 from mini2p_preprocessing.frame_phase import apply_frame_phases
+from mini2p_preprocessing.tiff_io import to_output_dtype
 from tests.conftest import write_interleaved_tiff
 from tests.test_frame_phase import frames_with_phases
 
@@ -73,7 +74,8 @@ def test_destriping_follows_the_per_frame_shift(tmp_path, jump_recording):
     destriped = settings().model_copy(update={"destripe": DestripeSettings(enabled=True)})
     preprocess_tiff(raw, out, destriped, run_name="run-01")
     expected = detrend_chunk(apply_frame_phases(stacks[0], TRUE))
-    np.testing.assert_allclose(read_channels(out)[0], expected, rtol=1e-6, atol=1e-3)
+    # written as int16: rounded to the nearest count
+    np.testing.assert_array_equal(read_channels(out)[0], to_output_dtype(expected, np.int16)[0])
 
 
 def test_reading_in_smaller_pieces_gives_the_same_result(tmp_path, jump_recording):

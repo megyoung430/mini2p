@@ -22,7 +22,15 @@ from scipy.ndimage import map_coordinates
 
 from .config import DistortionSettings, PipelineSettings
 from .progress import PROGRESS_EVERY_S, ProgressLog
-from .tiff_io import chunk_bounds, count_timepoints, read_all_channels, write_interleaved
+from .tiff_io import (
+    check_clipped,
+    chunk_bounds,
+    count_timepoints,
+    n_written_values,
+    output_record,
+    read_all_channels,
+    write_interleaved,
+)
 
 log = logging.getLogger(__name__)
 CALIBRATION_SCRIPT = "distortion_correct_full_recording.py"
@@ -162,20 +170,23 @@ def write_distortion_corrected(
         with tifffile.TiffWriter(output_tiff, bigtiff=True) as writer:
             bounds = chunk_bounds(n_timepoints, distortion.batch_frames)
             progress = ProgressLog("Distortion correction", len(bounds), log.info, PROGRESS_EVERY_S)
+            clipped = 0
             for start, end in bounds:
                 raw = read_all_channels(tif, start, end, n_channels)
                 warped = [
                     apply_distortion_to_chunk(c, maps, distortion.interpolation_order) for c in raw
                 ]
-                write_interleaved(writer, warped, settings.dtype)
+                clipped += write_interleaved(writer, warped, settings.dtype)
                 del raw, warped
                 gc.collect()
                 progress.step_done()
+    top, bottom, left, right = maps.crop
+    n_values = n_written_values(n_timepoints, n_channels, (bottom - top, right - left))
+    check_clipped(clipped, n_values, output_tiff, settings.dtype, settings.max_clipped_fraction)
     sidecar = output_tiff.with_suffix(".distortion.json")
-    sidecar.write_text(
-        json.dumps(
-            distortion_metadata(input_tiff, output_tiff, maps, distortion, n_timepoints), indent=2
-        )
-    )
+    metadata = distortion_metadata(
+        input_tiff, output_tiff, maps, distortion, n_timepoints
+    ) | output_record(settings.output_dtype, clipped)
+    sidecar.write_text(json.dumps(metadata, indent=2))
     log.info("Saved %s and %s", output_tiff, sidecar)
     return maps

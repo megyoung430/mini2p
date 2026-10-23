@@ -212,7 +212,11 @@ class PipelineSettings(_Frozen):
     distortion: DistortionSettings
     registration: RegistrationSettings = RegistrationSettings()
     fluorescence: FluorescenceSettings = FluorescenceSettings()
-    output_dtype: Literal["float32"] = "float32"
+    # TIFFs written for Suite2p, which registers int16: "int16" rounds and clips here (and
+    # says how much was clipped) instead of leaving Suite2p to truncate and wrap silently.
+    output_dtype: Literal["int16", "float32"] = "int16"
+    # Above this fraction of clipped values a run stops instead of warning.
+    max_clipped_fraction: float = Field(1e-4, ge=0, le=1)
     max_timepoints: int | None = Field(None, ge=1)  # small values make quick test runs
     overwrite: bool = True
 

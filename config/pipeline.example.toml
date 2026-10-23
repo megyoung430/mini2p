@@ -4,6 +4,9 @@
 
 overwrite = true
 # max_timepoints = 300        # uncomment for a quick test run
+output_dtype = "int16"        # TIFFs for Suite2p, rounded and clipped here; "float32" leaves
+                              # the conversion to Suite2p (which truncates and wraps)
+max_clipped_fraction = 1e-4   # more clipped than this stops the run
 
 [channels]
 n_channels = 2          # pages must be ch1 red, ch2 green, interleaved

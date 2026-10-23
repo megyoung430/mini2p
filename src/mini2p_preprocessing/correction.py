@@ -28,7 +28,15 @@ from .frame_phase import (
     line_correlation_curves,
 )
 from .progress import PROGRESS_EVERY_S, ProgressLog
-from .tiff_io import chunk_bounds, count_timepoints, read_all_channels, write_interleaved
+from .tiff_io import (
+    check_clipped,
+    chunk_bounds,
+    count_timepoints,
+    n_written_values,
+    output_record,
+    read_all_channels,
+    write_interleaved,
+)
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +55,7 @@ class CorrectionSummary:
     chunks: list[dict]  # empty for method = "per_frame"
     global_residual: GlobalResidual | None
     frame_phases: FramePhases | None = None  # method = "per_frame" only
+    clipped_values: int = 0  # values clipped to fit settings.output_dtype
 
     @property
     def global_second_phase_px(self) -> int | None:
@@ -389,8 +398,11 @@ def measure_line_curves(tiff: Path, settings: PipelineSettings) -> np.ndarray:
 
 def _write_per_frame(
     input_tiff: Path, output_tiff: Path, phases_px: np.ndarray, settings: PipelineSettings
-) -> None:
-    """Shift, destripe and write every frame; ``output_tiff`` is replaced only when complete."""
+) -> int:
+    """Shift, destripe and write every frame; ``output_tiff`` is replaced only when complete.
+
+    Returns how many values were clipped to fit ``settings.output_dtype``.
+    """
     n_channels = settings.channels.n_channels
     partial = output_tiff.with_name(output_tiff.name + ".partial")
     try:
@@ -401,6 +413,7 @@ def _write_per_frame(
             n_timepoints = count_timepoints(tif, n_channels, settings.max_timepoints)
             bounds = chunk_bounds(n_timepoints, settings.phase.frames_per_read)
             progress = ProgressLog("Phase correction", len(bounds), log.info, PROGRESS_EVERY_S)
+            clipped = 0
             for start, end in bounds:
                 shifted = [
                     apply_frame_phases(chunk, phases_px[start:end])
@@ -409,11 +422,15 @@ def _write_per_frame(
                 if settings.destripe.enabled:
                     keep_mean = settings.destripe.preserve_frame_mean
                     shifted = [detrend_chunk(c, keep_mean) for c in shifted]
-                write_interleaved(writer, shifted, settings.dtype)
+                clipped += write_interleaved(writer, shifted, settings.dtype)
                 progress.step_done()
+            n_values = n_written_values(n_timepoints, n_channels, tif.pages[0].shape)
+        # before replacing: a run with too much clipped keeps the previous output
+        check_clipped(clipped, n_values, output_tiff, settings.dtype, settings.max_clipped_fraction)
         partial.replace(output_tiff)
     finally:
         partial.unlink(missing_ok=True)
+    return clipped
 
 
 def check_line_curves(curves: np.ndarray, input_tiff: Path, settings: PipelineSettings) -> None:
@@ -487,15 +504,19 @@ def preprocess_per_frame(
         len(fallback_stretches(chosen.used_structural)),
     )
     warn_about_frame_phases(chosen, settings)
-    _write_per_frame(input_tiff, output_tiff, chosen.phase_px, settings)
+    clipped = _write_per_frame(input_tiff, output_tiff, chosen.phase_px, settings)
     np.savez_compressed(
         output_tiff.with_suffix(".phase_frames.npz"),
         **frame_phase_record(curves, chosen, settings),
     )
-    metadata = frame_phase_metadata(settings, run_name, input_tiff, output_tiff, chosen)
+    metadata = frame_phase_metadata(
+        settings, run_name, input_tiff, output_tiff, chosen
+    ) | output_record(settings.output_dtype, clipped)
     output_tiff.with_suffix(".phase.json").write_text(json.dumps(metadata, indent=2))
     log.info("Saved %s and its .phase.json / .phase_frames.npz sidecars", output_tiff)
-    return CorrectionSummary(chunks=[], global_residual=None, frame_phases=chosen)
+    return CorrectionSummary(
+        chunks=[], global_residual=None, frame_phases=chosen, clipped_values=clipped
+    )
 
 
 # Per-frame sidecars; a chunked rerun of the same folder removes them so none go stale.
@@ -541,10 +562,11 @@ def preprocess_tiff(
         with tifffile.TiffWriter(output_tiff, bigtiff=True) as writer:
             bounds = chunk_bounds(n_timepoints, phase.chunk_frames)
             progress = ProgressLog("Phase correction", len(bounds), log.info, PROGRESS_EVERY_S)
+            clipped = 0
             for start, end in bounds:
                 chunks = read_all_channels(tif, start, end, n_channels)
                 corrected, record = correct_chunk(chunks, start, settings, global_residual)
-                write_interleaved(writer, corrected, settings.dtype)
+                clipped += write_interleaved(writer, corrected, settings.dtype)
                 records.append(record)
                 log.info(
                     "%7d/%d; first=%+d px; second=%+d px; source=%s; score=%.3f; "
@@ -561,9 +583,15 @@ def preprocess_tiff(
                 del chunks, corrected
                 gc.collect()
                 progress.step_done()
-    summary = CorrectionSummary(chunks=records, global_residual=global_residual)
+        n_values = n_written_values(n_timepoints, n_channels, tif.pages[0].shape)
+    check_clipped(clipped, n_values, output_tiff, settings.dtype, settings.max_clipped_fraction)
+    summary = CorrectionSummary(
+        chunks=records, global_residual=global_residual, clipped_values=clipped
+    )
     sidecar = output_tiff.with_suffix(".phase.json")
-    metadata = phase_metadata(settings, run_name, input_tiff, output_tiff, summary)
+    metadata = phase_metadata(settings, run_name, input_tiff, output_tiff, summary) | output_record(
+        settings.output_dtype, clipped
+    )
     sidecar.write_text(json.dumps(metadata, indent=2))
     log.info("Saved %s and %s", output_tiff, sidecar)
     return summary
