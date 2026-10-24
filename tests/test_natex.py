@@ -368,8 +368,10 @@ def test_settings_come_from_the_natex_section(tmp_path):
 
 def make_plane(root, n_cells=4, n_frames=900, iscell=None):
     """A Suite2p plane folder with Cellpose-style ROIs: 4x4-pixel squares on a 30 x 40 image."""
-    plane = root / "cohort-01" / "sub-03" / "ses-224_x" / "funcimg" / "run-01" / "v" / "suite2p"
-    plane = plane / "plane0"
+    run_dir = root / "cohort-01" / "sub-03" / "ses-224_x" / "funcimg" / "run-01"
+    plane = (
+        run_dir / "with_distortion_correction" / "v" / "aligned_structural" / "suite2p" / "plane0"
+    )
     plane.mkdir(parents=True)
     f, fneu, spks = plane_arrays(n_cells, n_frames)
     stat = np.array(
@@ -435,3 +437,20 @@ def test_natex_command(tmp_path):
     with pytest.raises(SystemExit):  # results exist: a usage error, not a traceback
         natex_main(["--config", str(config), "--plane-dir", str(plane)])
     natex_main(["--config", str(config), "--plane-dir", str(plane), "--overwrite"])
+
+
+def test_natex_runs_on_a_plane_outside_a_variant(tmp_path):
+    # run-XX/suite2p/plane0, the registration Cellpose masks are drawn on, is a valid target.
+    from mini2p_preprocessing.natex import report_title, run_natex
+
+    plane, _, _ = make_plane(tmp_path)
+    run_dir = plane.parents[4]  # run-01
+    plain = run_dir / "suite2p" / "plane0"
+    plain.parent.mkdir()
+    plane.rename(plain)
+    assert report_title(plain) == "ses-224_x funcimg run-01 suite2p"
+    assert (run_natex(plain, NatexSettings(), 0.8) / "natex_qc.pdf").is_file()
+    variant_plane = run_dir / "with_distortion_correction" / "v" / "aligned_structural"
+    assert report_title(variant_plane / "suite2p" / "plane0") == (
+        "ses-224_x funcimg run-01 with_distortion_correction v aligned_structural"
+    )

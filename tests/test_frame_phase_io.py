@@ -35,7 +35,16 @@ def settings(**phase) -> PipelineSettings:
         "frames_per_read": 16,
     }
     return PipelineSettings.model_validate(
-        {"phase": {**base, **phase}, "distortion": {"mode": "off"}}
+        {
+            "phase": {**base, **phase},
+            "distortion": {"mode": "off"},
+            # "auto" needs the per-frame method.
+            "registration": {
+                "motion_alignment_source": "functional"
+                if phase.get("method") == "chunked"
+                else "auto"
+            },
+        }
     )
 
 

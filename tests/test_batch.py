@@ -188,7 +188,8 @@ def test_both_destriping_variants_coexist_in_either_order(tmp_path, monkeypatch,
         assert [p.action for p in plan] == ["run", "run"]
         expected = "with_destriping" if destripe else "without_destriping"
         assert [p.run_dir.name for p in plan] == [expected, expected]
-        assert [p.run_dir.parent.name for p in plan] == ["run-01", "run-02"]
+        assert [p.run_dir.parent.name for p in plan] == ["with_distortion_correction"] * 2
+        assert [p.run_dir.parents[1].name for p in plan] == ["run-01", "run-02"]
     for destripe in (False, True):
         again = plan_batch(batch.model_copy(update={"destripe": destripe}), corrected=True)
         assert [p.action for p in again] == ["skip", "skip"]
@@ -351,3 +352,13 @@ def test_runs_without_distortion_correction_get_their_own_folders(tmp_path, monk
     for corrected in (True, False):
         again = plan_batch(batch, corrected=corrected)
         assert [p.action for p in again] == ["skip", "skip"]
+
+
+def test_a_variant_in_the_old_layout_is_flagged_not_skipped(tmp_path):
+    # Its registration sits in <variant>/suite2p, which no reader looks at any more.
+    batch, _ = _batch_with_two_sources(tmp_path)
+    plan = plan_batch(batch, corrected=True)
+    (plan[0].run_dir / "suite2p" / "plane0").mkdir(parents=True)
+    again = plan_batch(batch, corrected=True)
+    assert again[0].action == "conflict" and "old layout" in again[0].reason
+    assert again[1].action == "run"

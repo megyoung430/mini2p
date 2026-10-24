@@ -38,17 +38,20 @@ from mini2p_preprocessing.movies import (
 N_FRAMES, LY, LX, FS = 60, 30, 41, 7.5  # odd width: the MP4 must be padded
 CROP = (2, 28, 3, 38)  # the undistorted stage is cropped: 26 x 35
 SESSION = "ses-224_date-20260809"
+WITHOUT = "with_distortion_correction/without_destriping"
+WITH = "with_distortion_correction/with_destriping"
+ALIGNED = "aligned_structural"  # where the fixture puts the registration
 NAMES = ("sub-03_id-MY_71_R", SESSION, "run-01")
 # Each stage has its own levels, so a reader can be told apart by its values.
 GREEN_OFFSET = {"raw": 1000, "bidiphase": 2000, "undistorted": 3000, "registered": 0}
 RED_LEVEL = {"raw": 110, "bidiphase": 120, "undistorted": 130, "registered": 100}
 
 
-def run_settings(variant: str = "without_destriping", **changes) -> PipelineSettings:
+def run_settings(variant: str = WITHOUT, **changes) -> PipelineSettings:
     """What the pipeline records in pipeline_settings.json; channel 1 red, channel 2 green."""
     raw = {
         "distortion": {"mode": "local_batched", "transform_mat": "transform.mat"},
-        "destripe": {"enabled": variant == "with_destriping"},
+        "destripe": {"enabled": variant == WITH},
         **changes,
     }
     return PipelineSettings.model_validate(raw)
@@ -72,7 +75,7 @@ def write_interleaved_tiff(path: Path, green: np.ndarray, red: np.ndarray, green
 
 def make_run(
     root: Path,
-    variant: str = "without_destriping",
+    variant: str = WITHOUT,
     reg_file: Path | None = None,
     tiffs: bool = True,
     manifest: bool = True,
@@ -85,7 +88,7 @@ def make_run(
     green_page = run.channels.functional_channel - 1
     run_dir = root / "cohort-01" / "sub-03_id-MY_71_R" / SESSION / "funcimg" / "run-01"
     variant_dir = run_dir / variant
-    plane = variant_dir / "suite2p" / "plane0"
+    plane = variant_dir / ALIGNED / "suite2p" / "plane0"
     plane.mkdir(parents=True)
     ramp(GREEN_OFFSET["registered"]).tofile(reg_file or plane / "data.bin")
     flat(RED_LEVEL["registered"]).tofile(plane / "data_chan2.bin")
@@ -159,9 +162,9 @@ def decoded(path: Path) -> tuple[dict, np.ndarray]:
     return meta, frames
 
 
-def movie_dir(root: Path, variant: str = "without_destriping") -> Path:
+def movie_dir(root: Path, variant: str = WITHOUT) -> Path:
     run_dir = root / "cohort-01" / "sub-03_id-MY_71_R" / SESSION / "funcimg" / "run-01"
-    return run_dir / variant / "movies"
+    return run_dir / variant / ALIGNED / "movies"
 
 
 # ---------------------------------------------------------------- pure functions
@@ -272,7 +275,7 @@ def test_upscale_then_pad_to_even():
 def test_stage_titles_say_what_was_done():
     assert stage_title("raw", run_settings()) == "raw"
     assert stage_title("undistorted", run_settings()) == "bidiphase + distortion"
-    assert stage_title("registered", run_settings("with_destriping")) == (
+    assert stage_title("registered", run_settings(WITH)) == (
         "bidiphase + destriping + distortion + registration"
     )
     no_distortion = run_settings(distortion={"mode": "off"})
@@ -281,10 +284,10 @@ def test_stage_titles_say_what_was_done():
 
 
 def test_plan_names_the_stage_and_the_frames_actually_shown():
-    settings = settings_for(Path("."), average_frames=5, speed=4.0, variant="with_destriping")
+    settings = settings_for(Path("."), average_frames=5, speed=4.0, variant=WITH)
     plan = plan_movie("averaged", "undistorted", (10, 151), FS, settings, NAMES)
     assert plan.name == (
-        f"sub-03_id-MY_71_R_{SESSION}_run-01_with_destriping_undistorted_side_by_side_"
+        f"sub-03_id-MY_71_R_{SESSION}_run-01_with_distortion_correction_with_destriping_undistorted_side_by_side_"
         "frames-10-149_bin5_4x.mp4"
     )
     assert (plan.first_frame, plan.last_frame, len(plan.starts)) == (10, 149, 28)
@@ -327,23 +330,23 @@ def test_blocks_hold_a_bounded_number_of_acquired_frames():
 @pytest.mark.parametrize("subject", ["sub-03", "MY_71_R", "sub-03_id-MY_71_R"])
 def test_find_plane_dir_by_subject_name_or_id(tmp_path, subject):
     plane = make_run(tmp_path, tiffs=False)
-    assert find_plane_dir(tmp_path, "cohort-01", subject, 224, 1, "without_destriping") == plane
+    assert find_plane_dir(tmp_path, "cohort-01", subject, 224, 1, WITHOUT) == plane
 
 
 def test_find_plane_dir_lists_what_is_there(tmp_path):
     make_run(tmp_path, tiffs=False)
     with pytest.raises(FileNotFoundError, match="ses-224_date-20260809"):
-        find_plane_dir(tmp_path, "cohort-01", "sub-03", 225, 1, "without_destriping")
+        find_plane_dir(tmp_path, "cohort-01", "sub-03", 225, 1, WITHOUT)
     with pytest.raises(FileNotFoundError, match="run-02"):
-        find_plane_dir(tmp_path, "cohort-01", "sub-03", 224, 2, "without_destriping")
-    with pytest.raises(FileNotFoundError, match="with_destriping"):
-        find_plane_dir(tmp_path, "cohort-01", "sub-03", 224, 1, "with_destriping")
+        find_plane_dir(tmp_path, "cohort-01", "sub-03", 224, 2, WITHOUT)
+    with pytest.raises(FileNotFoundError, match=WITH):
+        find_plane_dir(tmp_path, "cohort-01", "sub-03", 224, 1, WITH)
     (tmp_path / "cohort-01" / "sub-03_id-other").mkdir()
     with pytest.raises(FileNotFoundError, match="2 folders match"):
-        find_plane_dir(tmp_path, "cohort-01", "sub-03", 224, 1, "without_destriping")
+        find_plane_dir(tmp_path, "cohort-01", "sub-03", 224, 1, WITHOUT)
 
 
-@pytest.mark.parametrize("variant", ["without_destriping", "with_destriping"])
+@pytest.mark.parametrize("variant", [WITHOUT, WITH])
 @pytest.mark.parametrize("stage", ["raw", "bidiphase", "undistorted", "registered"])
 def test_each_stage_reads_its_own_file_and_channel(tmp_path, stage, variant):
     plane = make_run(tmp_path, variant=variant)
@@ -395,7 +398,7 @@ def test_raw_tiff_needs_a_record_or_a_path(tmp_path):
     with ExitStack() as stack:  # no manifest: the .phase.json names it
         raw = open_stage("raw", plane, ops, "green", run_settings(), None, stack)["green"]
         assert raw.path == tmp_path / "rawdata" / "71rtask_00039.tif"
-    next(plane.parents[1].glob("*.phase.json")).unlink()
+    next(plane.parents[2].glob("*.phase.json")).unlink()
     with ExitStack() as stack, pytest.raises(FileNotFoundError, match="raw_tiff"):
         open_stage("raw", plane, ops, "green", run_settings(), None, stack)
     raw = tmp_path / "rawdata" / "71rtask_00039.tif"
@@ -406,7 +409,7 @@ def test_raw_tiff_needs_a_record_or_a_path(tmp_path):
 
 def test_missing_stage_file_is_named(tmp_path):
     plane = make_run(tmp_path)
-    next(plane.parents[1].glob("*_undistorted.tif")).unlink()
+    next(plane.parents[2].glob("*_undistorted.tif")).unlink()
     ops = np.load(plane / "ops.npy", allow_pickle=True).item()
     with ExitStack() as stack, pytest.raises(FileNotFoundError, match="No undistorted TIFF"):
         open_stage("undistorted", plane, ops, "green", run_settings(), None, stack)
@@ -482,11 +485,11 @@ def test_unaveraged_and_binned_movies_of_a_frame_range(tmp_path):
 
 
 def test_every_stage_gives_its_movies(tmp_path):
-    make_run(tmp_path, variant="with_destriping")
+    make_run(tmp_path, variant=WITH)
     settings = settings_for(
         tmp_path,
         subject="MY_71_R",
-        variant="with_destriping",
+        variant=WITH,
         average_mode="rolling",
         average_frames=3,
         label=True,
@@ -494,9 +497,9 @@ def test_every_stage_gives_its_movies(tmp_path):
         **ALL_STAGES,
     )
     written = make_movies(settings)
-    assert [p.name.split("_with_destriping_")[1].split("_")[0] for p in written[::2]] == list(
-        movies.STAGES
-    )
+    assert [
+        p.name.split("_with_destriping_aligned_structural_")[1].split("_")[0] for p in written[::2]
+    ] == list(movies.STAGES)
     for path in written:
         frames = decoded(path)[1]
         width = CROP[3] - CROP[2] if "_undistorted_" in path.name else LX
@@ -508,7 +511,7 @@ def test_every_stage_gives_its_movies(tmp_path):
 
 def test_a_missing_stage_stops_before_anything_is_written(tmp_path):
     plane = make_run(tmp_path)
-    next(plane.parents[1].glob("*_undistorted.tif")).unlink()
+    next(plane.parents[2].glob("*_undistorted.tif")).unlink()
     with pytest.raises(FileNotFoundError, match="undistorted"):
         make_movies(settings_for(tmp_path, **ALL_STAGES))
     assert not movie_dir(tmp_path).exists()
@@ -516,7 +519,7 @@ def test_a_missing_stage_stops_before_anything_is_written(tmp_path):
 
 def test_tiff_stages_need_the_runs_settings_record(tmp_path):
     plane = make_run(tmp_path)
-    (plane.parents[1] / "pipeline_settings.json").unlink()
+    (plane.parents[2] / "pipeline_settings.json").unlink()
     with pytest.raises(FileNotFoundError, match="pipeline_settings.json"):
         make_movies(settings_for(tmp_path, stage_raw=True))
     make_movies(settings_for(tmp_path, averaged_movie=False))
@@ -529,7 +532,9 @@ def test_a_run_without_distortion_refuses_the_undistorted_stage(tmp_path):
     written = make_movies(
         settings_for(tmp_path, **{**ALL_STAGES, "stage_undistorted": False}, averaged_movie=False)
     )
-    assert [p.name.split("_without_destriping_")[1].split("_")[0] for p in written] == [
+    assert [
+        p.name.split("_without_destriping_aligned_structural_")[1].split("_")[0] for p in written
+    ] == [
         "raw",
         "bidiphase",
         "registered",
@@ -604,7 +609,7 @@ def test_command_line_options_override_the_config(tmp_path):
          "--channel", "red", "--stage-raw", "--end-frame", "11", "--gamma", "0.8"]
     )  # fmt: skip
     names = sorted(p.name for p in movie_dir(tmp_path).glob("*.mp4"))
-    assert [n.split("_without_destriping_")[1] for n in names] == [
+    assert [n.split("_without_destriping_aligned_structural_")[1] for n in names] == [
         "raw_red_frames-0-11_bin4_3x.mp4",
         "registered_red_frames-0-11_bin4_3x.mp4",
     ]
@@ -623,7 +628,7 @@ def test_cli_reports_a_frame_past_the_end_as_a_usage_error(tmp_path, capsys):
 def test_registered_movies_survive_an_outdated_settings_record(tmp_path):
     """A record from an older version of the settings only loses the registered stage's title."""
     plane = make_run(tmp_path, tiffs=False)
-    record = plane.parents[1] / "pipeline_settings.json"
+    record = plane.parents[2] / "pipeline_settings.json"
     old = json.loads(record.read_text())
     old["phase"]["a_removed_setting"] = 1
     record.write_text(json.dumps(old))
@@ -682,8 +687,8 @@ def run_folder_outside_the_batch(root: Path, run: PipelineSettings | None = None
     plane = make_run(root / "made", manifest=False, run=run)
     run_dir = root / "example_ses" / "img"
     run_dir.parent.mkdir(parents=True)
-    plane.parents[2].rename(run_dir)
-    (run_dir / "without_destriping" / "pipeline_settings.json").unlink()
+    plane.parents[4].rename(run_dir)
+    (run_dir / WITHOUT / "pipeline_settings.json").unlink()
     (root / "made" / "rawdata" / "71rtask_00039.tif").rename(run_dir / "71rtask_00039.tif")
     return run_dir
 
@@ -702,17 +707,20 @@ def config_settings() -> PipelineSettings:
 def test_movies_of_a_run_folder_given_by_path(tmp_path, caplog):
     run_dir = run_folder_outside_the_batch(tmp_path)
     written = make_movies(path_settings(run_dir, averaged_movie=False), config_settings)
-    assert [p.name.split("_without_destriping_")[1].split("_")[0] for p in written] == list(
-        movies.STAGES
+    assert [
+        p.name.split("_without_destriping_aligned_structural_")[1].split("_")[0] for p in written
+    ] == list(movies.STAGES)
+    assert all(
+        p.name.startswith("example_ses_img_with_distortion_correction_without_destriping_")
+        for p in written
     )
-    assert all(p.name.startswith("example_ses_img_without_destriping_") for p in written)
-    assert all(p.parent == run_dir / "without_destriping" / "movies" for p in written)
+    assert all(p.parent == run_dir / WITHOUT / ALIGNED / "movies" for p in written)
     assert "No pipeline_settings.json" in caplog.text
 
 
 def test_the_acquired_tiff_comes_from_the_phase_record(tmp_path):
     run_dir = run_folder_outside_the_batch(tmp_path)
-    plane = run_dir / "without_destriping" / "suite2p" / "plane0"
+    plane = run_dir / WITHOUT / ALIGNED / "suite2p" / "plane0"
     ops = np.load(plane / "ops.npy", allow_pickle=True).item()
     with ExitStack() as stack:  # the recorded path moved: the file of that name beside it
         raw = open_stage("raw", plane, ops, "green", run_settings(), None, stack)["green"]
@@ -723,10 +731,10 @@ def test_the_acquired_tiff_comes_from_the_phase_record(tmp_path):
 def test_a_folder_by_path_takes_its_channel_order_from_its_records(tmp_path, caplog):
     swapped = run_settings(channels={"structural_channel": 2, "functional_channel": 1})
     run_dir = run_folder_outside_the_batch(tmp_path, run=swapped)
-    run = movies.settings_from_records(run_dir / "without_destriping", config_settings())
+    run = movies.settings_from_records(run_dir / WITHOUT, config_settings())
     assert run.channels.functional_channel == 1  # the run's record, not the config's 2
     assert "channel order from" in caplog.text
-    plane = run_dir / "without_destriping" / "suite2p" / "plane0"
+    plane = run_dir / WITHOUT / ALIGNED / "suite2p" / "plane0"
     ops = np.load(plane / "ops.npy", allow_pickle=True).item()
     with ExitStack() as stack:
         sources = open_stage("bidiphase", plane, ops, "side_by_side", run, None, stack)
@@ -736,10 +744,10 @@ def test_a_folder_by_path_takes_its_channel_order_from_its_records(tmp_path, cap
 def test_distortion_follows_the_runs_records_not_the_config(tmp_path):
     run_dir = run_folder_outside_the_batch(tmp_path)
     off = run_settings(distortion={"mode": "off"})
-    run = movies.settings_from_records(run_dir / "without_destriping", off)
+    run = movies.settings_from_records(run_dir / WITHOUT, off)
     assert run.distortion.mode != "off"  # the run has a .distortion.json
-    next((run_dir / "without_destriping").glob("*.distortion.json")).unlink()
-    run = movies.settings_from_records(run_dir / "without_destriping", run_settings())
+    next((run_dir / WITHOUT).glob("*.distortion.json")).unlink()
+    run = movies.settings_from_records(run_dir / WITHOUT, run_settings())
     assert run.distortion.mode == "off"
 
 
@@ -747,14 +755,14 @@ def test_a_run_without_records_or_config_is_refused(tmp_path):
     run_dir = run_folder_outside_the_batch(tmp_path)
     with pytest.raises(FileNotFoundError, match="pipeline_settings.json"):
         make_movies(path_settings(run_dir, stage_raw=False, stage_undistorted=False))
-    next((run_dir / "without_destriping").glob("*.phase.json")).unlink()
+    next((run_dir / WITHOUT).glob("*.phase.json")).unlink()
     with pytest.raises(FileNotFoundError, match="channel order is unknown"):
         make_movies(path_settings(run_dir), config_settings)
 
 
 def test_the_config_fallback_is_only_for_runs_given_by_path(tmp_path):
     plane = make_run(tmp_path)
-    (plane.parents[1] / "pipeline_settings.json").unlink()
+    (plane.parents[2] / "pipeline_settings.json").unlink()
     with pytest.raises(FileNotFoundError, match="pipeline_settings.json"):
         make_movies(settings_for(tmp_path, stage_raw=True), config_settings)
 
@@ -770,21 +778,21 @@ def test_the_config_is_only_loaded_when_needed(tmp_path):
 
 def test_a_manifest_without_its_source_is_refused(tmp_path):
     plane = make_run(tmp_path)
-    (plane.parents[1] / "source_tiff.json").write_text("{}")
+    (plane.parents[2] / "source_tiff.json").write_text("{}")
     with pytest.raises(ValueError, match="no source_tiff"):
         make_movies(settings_for(tmp_path, stage_raw=True))
 
 
 def test_an_unfinished_suite2p_run_is_named(tmp_path):
     run_dir = run_folder_outside_the_batch(tmp_path)
-    (run_dir / "without_destriping" / "suite2p" / "plane0" / "ops.npy").unlink()
+    (run_dir / WITHOUT / ALIGNED / "suite2p" / "plane0" / "ops.npy").unlink()
     with pytest.raises(FileNotFoundError, match="Suite2p has not finished"):
         make_movies(path_settings(run_dir), config_settings)
 
 
 def test_a_batch_run_given_by_path_keeps_its_subject_and_session_names(tmp_path):
     plane = make_run(tmp_path, tiffs=False)
-    run_dir = plane.parents[2]
+    run_dir = plane.parents[4]
     (path,) = make_movies(path_settings(run_dir, **ONLY_REGISTERED, averaged_movie=False))
     by_name = make_movies(settings_for(tmp_path, averaged_movie=False, overwrite=True))
     assert path.name == by_name[0].name
@@ -830,7 +838,7 @@ def test_command_line_run_dir_and_run_by_name(tmp_path):
     make_run(tmp_path, tiffs=False)
     config = write_config(tmp_path, "")  # names sub-03 session 224 run 1 under tmp_path
     movie_main(["--config", str(config), "--run-dir", str(run_dir), "--no-averaged-movie"])
-    assert len(list((run_dir / "without_destriping" / "movies").glob("*.mp4"))) == 1
+    assert len(list((run_dir / WITHOUT / ALIGNED / "movies").glob("*.mp4"))) == 1
     in_config = config.read_text() + f'run_dir = "{run_dir}"\n'
     config.write_text(in_config)
     movie_main(["--config", str(config), "--session", "224", "--no-averaged-movie"])
@@ -841,7 +849,7 @@ def test_command_line_run_dir_and_run_by_name(tmp_path):
 
 def test_a_damaged_phase_record_is_named(tmp_path):
     run_dir = run_folder_outside_the_batch(tmp_path)
-    record = next((run_dir / "without_destriping").glob("*.phase.json"))
+    record = next((run_dir / WITHOUT).glob("*.phase.json"))
     for broken in (
         {"input_tiff": "x.tif"},
         {
@@ -853,7 +861,7 @@ def test_a_damaged_phase_record_is_named(tmp_path):
     ):
         record.write_text(json.dumps(broken))
         with pytest.raises(ValueError, match="usable channel order"):
-            movies.settings_from_records(run_dir / "without_destriping", config_settings())
+            movies.settings_from_records(run_dir / WITHOUT, config_settings())
 
 
 def test_command_line_refuses_an_empty_path_and_reads_derivatives_root_as_by_name(tmp_path):
@@ -872,7 +880,7 @@ def test_a_run_with_its_own_record_never_loads_the_config(tmp_path):
         raise AssertionError("loaded the config")
 
     plane = make_run(tmp_path)
-    make_movies(path_settings(plane.parents[2], averaged_movie=False), must_not_load)
+    make_movies(path_settings(plane.parents[4], averaged_movie=False), must_not_load)
 
 
 def test_movies_of_a_run_without_distortion_correction(tmp_path):
@@ -882,11 +890,14 @@ def test_movies_of_a_run_without_distortion_correction(tmp_path):
         settings_for(tmp_path, variant=nested, stage_raw=True, stage_bidiphase=True,
                      averaged_movie=False)
     )  # fmt: skip
-    assert [p.name.split("_without_distortion_correction_without_destriping_")[1].split("_")[0]
-            for p in written] == ["raw", "bidiphase", "registered"]  # fmt: skip
+    label = "_without_distortion_correction_without_destriping_aligned_structural_"
+    assert [p.name.split(label)[1].split("_")[0] for p in written] == [
+        "raw", "bidiphase", "registered"
+    ]  # fmt: skip
     assert all(p.name.startswith(f"sub-03_id-MY_71_R_{SESSION}_run-01_") for p in written)
     assert all(p.parent == tmp_path.joinpath(
-        "cohort-01", "sub-03_id-MY_71_R", SESSION, "funcimg", "run-01", nested, "movies")
+        "cohort-01", "sub-03_id-MY_71_R", SESSION, "funcimg", "run-01", nested, ALIGNED,
+        "movies")
         for p in written)  # fmt: skip
 
 

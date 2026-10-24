@@ -73,7 +73,10 @@ save_folder = "suite2p"
 # fast_disk = "/Users/you/suite2p_fast"  # local folder for Suite2p's working binaries
 #   (~7 GB per run); much faster and more robust than writing them to a network share
 run_roi_detection = false
-motion_alignment_source = "functional"
+motion_alignment_source = "auto"   # "structural", "functional", or "auto": structural where
+                                   # the per-frame bidiphase step trusted it for at least
+auto_structural_min_fraction = 0.5 # this fraction of frames, else functional. Suite2p's
+                                   # output goes in <variant>/aligned_<channel>/suite2p/
 
 [fluorescence]
 neuropil_coefficient = 0.7
@@ -102,7 +105,7 @@ run_dir = "/path/to/scratch/mini2p-qc/MY_71_R/run-02"
 qc_start_timepoint = 0
 qc_registration_frames = 500
 qc_distortion_frames = 100
-# cellpose_seg = "/path/to/run-02/without_destriping/suite2p/plane0/meanImg_green_functional_contrast_seg.npy"
+# cellpose_seg = "/path/to/run-02/with_distortion_correction/without_destriping/aligned_structural/suite2p/plane0/meanImg_green_functional_contrast_seg.npy"
 # Only if the masks were drawn on another registration's mean image (e.g. first 1000 frames):
 # cellpose_image = "/path/to/that/meanImg_green_functional_contrast.png"
 # valid_frames = "/path/to/session/valid_frames.npz"
@@ -115,8 +118,8 @@ derivatives_subject_dir = "/path/to/derivatives/cohort-01/sub-03_id-MY_71_R"
 session_first = 216
 session_last = 231
 source_substring = "71rtask"
-destripe = false              # false -> run-XX/without_destriping/, true -> run-XX/with_destriping/
-                              # ([distortion] mode = "off": inside run-XX/without_distortion_correction/)
+destripe = false              # false -> run-XX/<distortion>/without_destriping/, true -> .../with_destriping/
+                              # <distortion>: with_distortion_correction, or without_... when [distortion] mode = "off"
 stop_on_error = true
 retry_incomplete_runs = true
 # Register again, replacing them, the runs that finished before this time; keep the
@@ -131,7 +134,8 @@ subject_dir = "/path/to/derivatives/cohort-01/sub-03_id-MY_71_R"
 session_first = 216
 session_last = 231
 expected_runs = 68
-run_subdir = "without_destriping"  # or "with_destriping", or e.g. "without_distortion_correction/without_destriping"
+run_subdir = "with_distortion_correction/without_destriping"  # or .../with_destriping, or "without_distortion_correction/..."
+alignment = "auto"            # the one aligned_* folder each run has; or "structural" / "functional"
 black_percentile = 5.0
 white_percentile = 99.5
 gamma = 1.2
@@ -146,7 +150,8 @@ cohort = "cohort-01"
 subject = "sub-03"            # the subject folder or part of it ("MY_71_R" works too)
 session = 224
 run = 1                       # run-01
-variant = "without_destriping"   # or "with_destriping", or "without_distortion_correction/..."
+variant = "with_distortion_correction/without_destriping"   # or .../with_destriping, or "without_distortion_correction/..."
+alignment = "auto"            # the one aligned_* folder; or "structural" / "functional"
 # Which frames: the whole recording, or start_frame to end_frame (0-based, both included)
 whole_recording = false       # true ignores start_frame and end_frame
 start_frame = 10

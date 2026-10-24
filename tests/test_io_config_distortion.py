@@ -67,7 +67,7 @@ def test_load_settings_reads_toml(tmp_path):
     path.write_text(
         '[phase]\nmethod = "chunked"\nchunk_frames = 25\n'
         '[phase.manual_first_phase_by_start]\n"200" = -17\n'
-        '[distortion]\nmode = "off"\n'
+        '[distortion]\nmode = "off"\n[registration]\nmotion_alignment_source = "functional"\n'
     )
     settings = load_settings(path)
     assert settings.phase.chunk_frames == 25
@@ -87,14 +87,16 @@ def test_distortion_mode_must_be_stated(tmp_path):
 def test_output_naming_follows_destriping_variant():
     base = PipelineSettings.model_validate({"distortion": {"mode": "off"}})
     assert variant_output_dir(Path("/d/run-02"), False, distortion_corrected=True) == Path(
-        "/d/run-02/without_destriping"
+        "/d/run-02/with_distortion_correction/without_destriping"
     )
     assert variant_output_dir(Path("/d/run-02"), True, distortion_corrected=True) == Path(
-        "/d/run-02/with_destriping"
+        "/d/run-02/with_distortion_correction/with_destriping"
     )
     assert run_name_from_output_dir(Path("/d/run-02/without_destriping")) == "run-02"
     assert run_name_from_output_dir(Path("/d/run-02")) == "run-02"
     assert run_name_from_output_dir(Path("/d/run-02/with_destriping")) == "run-02"
+    nested = Path("/d/run-02/with_distortion_correction/with_destriping")
+    assert run_name_from_output_dir(nested) == "run-02"
     assert corrected_tiff_path(Path("/o"), Path("/r/a_001.tif"), base).name == (
         "a_001_dynamic_bidiphase.tif"
     )
