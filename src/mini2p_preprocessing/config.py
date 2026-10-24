@@ -205,6 +205,28 @@ class FluorescenceSettings(_Frozen):
     mask_min_retained_fraction: float = Field(0.5, gt=0, le=1)  # else the mask is dropped
 
 
+class FocusSettings(_Frozen):
+    """Per-frame focus QC: registered frames that still do not match the mean (focus.py)."""
+
+    channel: ChannelRole = "structural"  # its signal does not follow activity
+    smooth_px: float = Field(2.0, ge=0)  # Gaussian sigma, so shot noise does not dominate
+    # Running-median baseline (odd), ~40 s at 7.52 Hz. Changes slower than this, and the
+    # middle of a bad stretch longer than about half of it, are not flagged.
+    window_frames: int = Field(301, ge=3)
+    drop_threshold: float = Field(4.0, gt=0)  # robust SDs below the baseline to flag
+    merge_gap_frames: int = Field(8, ge=0)  # flagged runs this close count as one stretch
+    # Frames read from the binary at once; peak memory is ~20 bytes per pixel per frame
+    # (~0.5 GB for 100 frames of 478 x 501).
+    chunk_frames: int = Field(100, ge=1)
+
+    @field_validator("window_frames")
+    @classmethod
+    def _odd_window(cls, value: int) -> int:
+        if value % 2 == 0:
+            raise ValueError(f"window_frames must be odd so the window is centred, got {value}")
+        return value
+
+
 class PipelineSettings(_Frozen):
     channels: ChannelSettings = ChannelSettings()
     phase: PhaseSettings = PhaseSettings()
@@ -212,6 +234,7 @@ class PipelineSettings(_Frozen):
     distortion: DistortionSettings
     registration: RegistrationSettings = RegistrationSettings()
     fluorescence: FluorescenceSettings = FluorescenceSettings()
+    focus: FocusSettings = FocusSettings()
     # TIFFs written for Suite2p, which registers int16: "int16" rounds and clips here (and
     # says how much was clipped) instead of leaving Suite2p to truncate and wrap silently.
     output_dtype: Literal["int16", "float32"] = "int16"
