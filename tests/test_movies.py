@@ -43,8 +43,15 @@ WITH = "with_distortion_correction/with_destriping"
 ALIGNED = "aligned_structural"  # where the fixture puts the registration
 NAMES = ("sub-03_id-MY_71_R", SESSION, "run-01")
 # Each stage has its own levels, so a reader can be told apart by its values.
-GREEN_OFFSET = {"raw": 1000, "bidiphase": 2000, "undistorted": 3000, "registered": 0}
-RED_LEVEL = {"raw": 110, "bidiphase": 120, "undistorted": 130, "registered": 100}
+GREEN_OFFSET = {
+    "raw": 1000, "bidiphase": 2000, "undistorted": 3000, "registered": 0,
+    "background_removed": 4000,
+}  # fmt: skip
+RED_LEVEL = {
+    "raw": 110, "bidiphase": 120, "undistorted": 130, "registered": 100,
+    "background_removed": 140,
+}  # fmt: skip
+PIPELINE_STAGES = ["raw", "bidiphase", "undistorted", "registered"]
 
 
 def run_settings(variant: str = WITHOUT, **changes) -> PipelineSettings:
@@ -131,6 +138,12 @@ def make_run(
                 green_page,
             )
             (variant_dir / f"71rtask_00039_{suffix}_undistorted.distortion.json").write_text("{}")
+        write_interleaved_tiff(  # the QC notebook's background step, in the registered frame
+            plane / movies.BACKGROUND_TIFF,
+            ramp(GREEN_OFFSET["background_removed"]),
+            flat(RED_LEVEL["background_removed"]),
+            green_page,
+        )
         if manifest:
             (variant_dir / "source_tiff.json").write_text(json.dumps({"source_tiff": str(raw)}))
     return plane
@@ -347,7 +360,7 @@ def test_find_plane_dir_lists_what_is_there(tmp_path):
 
 
 @pytest.mark.parametrize("variant", [WITHOUT, WITH])
-@pytest.mark.parametrize("stage", ["raw", "bidiphase", "undistorted", "registered"])
+@pytest.mark.parametrize("stage", movies.STAGES)
 def test_each_stage_reads_its_own_file_and_channel(tmp_path, stage, variant):
     plane = make_run(tmp_path, variant=variant)
     ops = np.load(plane / "ops.npy", allow_pickle=True).item()
@@ -362,7 +375,7 @@ def test_each_stage_reads_its_own_file_and_channel(tmp_path, stage, variant):
     assert sources["green"].frame_shape == expected_shape
 
 
-@pytest.mark.parametrize("stage", ["raw", "bidiphase", "undistorted"])
+@pytest.mark.parametrize("stage", ["raw", "bidiphase", "undistorted", "background_removed"])
 def test_channel_order_comes_from_the_run_settings(tmp_path, stage):
     swapped = run_settings(channels={"structural_channel": 2, "functional_channel": 1})
     plane = make_run(tmp_path, run=swapped)
@@ -499,7 +512,7 @@ def test_every_stage_gives_its_movies(tmp_path):
     written = make_movies(settings)
     assert [
         p.name.split("_with_destriping_aligned_structural_")[1].split("_")[0] for p in written[::2]
-    ] == list(movies.STAGES)
+    ] == PIPELINE_STAGES
     for path in written:
         frames = decoded(path)[1]
         width = CROP[3] - CROP[2] if "_undistorted_" in path.name else LX
@@ -709,7 +722,7 @@ def test_movies_of_a_run_folder_given_by_path(tmp_path, caplog):
     written = make_movies(path_settings(run_dir, averaged_movie=False), config_settings)
     assert [
         p.name.split("_without_destriping_aligned_structural_")[1].split("_")[0] for p in written
-    ] == list(movies.STAGES)
+    ] == PIPELINE_STAGES
     assert all(
         p.name.startswith("example_ses_img_with_distortion_correction_without_destriping_")
         for p in written
@@ -1009,3 +1022,23 @@ def test_without_suite2p_crop_nothing_changes(tmp_path):
     plane = make_run(tmp_path)
     with_shifts(plane, [-3, 5], [0, 0])
     assert not any("_cropped_" in p.name for p in make_movies(settings_for(tmp_path)))
+
+
+def test_the_background_removed_stage_is_titled_cropped_and_needs_its_tiff(tmp_path):
+    plane = make_run(tmp_path, tiffs=True)
+    with_shifts(plane, [2, -1], [0, 3])
+    written = make_movies(
+        settings_for(tmp_path, stage_registered=False, stage_background_removed=True,
+                     averaged_movie=False, suite2p_crop=True)
+    )  # fmt: skip
+    assert [p.name.split("aligned_structural_")[1].split("_side")[0] for p in written] == [
+        "background_removed", "background_removed"
+    ]  # fmt: skip
+    assert "cropped" in written[1].name
+    assert stage_title("background_removed", run_settings()) == (
+        "bidiphase + distortion + registration + background removed"
+    )
+    (plane / movies.BACKGROUND_TIFF).unlink()
+    with pytest.raises(FileNotFoundError, match="background step"):
+        make_movies(settings_for(tmp_path, stage_registered=False, overwrite=True,
+                                 stage_background_removed=True, averaged_movie=False))  # fmt: skip

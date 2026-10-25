@@ -292,19 +292,7 @@ def motion_choice(suite2p_input_tiff: Path, settings: PipelineSettings) -> Motio
     source = settings.registration.motion_alignment_source
     if source != "auto":
         return MotionChoice(source, "set in the config")
-    path = phase_record_path(suite2p_input_tiff, settings)
-    if not path.is_file():
-        raise FileNotFoundError(
-            f'motion_alignment_source = "auto" needs {path.name} beside the TIFF; run the '
-            'phase correction first, or set "structural" or "functional"'
-        )
-    record = json.loads(path.read_text())
-    if record.get("phase_method") != "per_frame" or "fraction_structural" not in record:
-        raise ValueError(
-            f"{path} is not a per-frame bidiphase record with fraction_structural; rerun the "
-            'phase correction with method = "per_frame"'
-        )
-    fraction = float(record["fraction_structural"])
+    fraction, path = structural_trust(suite2p_input_tiff, settings)
     threshold = settings.registration.auto_structural_min_fraction
     reason = (
         f"auto: the bidiphase step trusted the structural channel for {fraction:.0%} of "
@@ -312,6 +300,37 @@ def motion_choice(suite2p_input_tiff: Path, settings: PipelineSettings) -> Motio
     )
     return MotionChoice(
         choose_motion_source(fraction, threshold), reason, fraction, threshold, path.name
+    )
+
+
+def structural_trust(suite2p_input_tiff: Path, settings: PipelineSettings) -> tuple[float, Path]:
+    """Fraction of frames the per-frame bidiphase step trusted the structural channel in,
+    from the ``.phase.json`` of the corrected TIFF *suite2p_input_tiff* is (or came from)."""
+    path = phase_record_path(suite2p_input_tiff, settings)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"No {path.name} beside the TIFF, which records how often the structural channel "
+            "was usable; run the phase correction first"
+        )
+    record = json.loads(path.read_text())
+    if record.get("phase_method") != "per_frame" or "fraction_structural" not in record:
+        raise ValueError(
+            f"{path} is not a per-frame bidiphase record with fraction_structural; rerun the "
+            'phase correction with method = "per_frame"'
+        )
+    return float(record["fraction_structural"]), path
+
+
+def red_usable(suite2p_input_tiff: Path, settings: PipelineSettings) -> tuple[bool, str]:
+    """Whether the structural (red) channel is usable for this session, by the rule "auto"
+    alignment uses, and why."""
+    fraction, path = structural_trust(suite2p_input_tiff, settings)
+    threshold = settings.registration.auto_structural_min_fraction
+    usable = choose_motion_source(fraction, threshold) == "structural"
+    return usable, (
+        f"the bidiphase step trusted the structural channel for {fraction:.0%} of frames "
+        f"({'at least' if usable else 'below'} the {threshold:.0%} of "
+        f"auto_structural_min_fraction; {path.name})"
     )
 
 
