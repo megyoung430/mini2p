@@ -139,25 +139,29 @@ def test_versions_need_matching_frames():
 # ---------------------------------------------------------------- the registered binaries
 
 
-def registered_movie(rng, tmp_path, n=400, shape=(12, 16)):
-    """A plane folder's registered outputs: a static image per channel plus a vessel-driven
-    background whose strength varies across the field, and the vessel segmentation."""
+def registered_movie(rng, plane, n=400, shape=(12, 16), drawn_on="meanImg.png"):
+    """A plane folder with registered binaries: a static image per channel plus a
+    vessel-driven background whose strength varies across the field, and a vessel
+    segmentation drawn on *drawn_on* in that folder."""
     from mini2p_preprocessing.registration import RegisteredOutputs
 
+    plane.mkdir(parents=True, exist_ok=True)
     ly, lx = shape
     vessel = np.zeros(shape, int)
     vessel[2:4, :] = 1  # one horizontal vessel
     weight = np.linspace(0.5, 1.5, lx)[None, :] * np.ones((ly, 1))
     stacks, backgrounds = {}, {}
-    for name, level in (("green", 300), ("red", 800)):
+    for name, level, binary in (("green", 300, "data.bin"), ("red", 800, "data_chan2.bin")):
         bg = slow_wave(rng, n, 20)
         image = level + 50 * rng.random(shape)
         stack = image[None] + bg[:, None, None] * weight[None] + rng.normal(0, 1, (n, *shape))
         stack[:, vessel > 0] = level / 3 + bg[:, None]  # the vessel is background only
-        stacks[name], backgrounds[name] = stack.astype(np.int16), bg
-    ops = {"nframes": n, "Ly": ly, "Lx": lx, "fs": FS}
-    seg = tmp_path / "vessels_seg.npy"
-    np.save(seg, {"masks": vessel}, allow_pickle=True)
+        stack.astype(np.int16).tofile(plane / binary)
+        stacks[name] = np.memmap(plane / binary, np.int16, "r", shape=(n, *shape))
+        backgrounds[name] = bg
+    ops = {"nframes": n, "Ly": ly, "Lx": lx, "fs": FS, "nchannels": 2}
+    seg = plane / "vessels_seg.npy"
+    np.save(seg, {"masks": vessel, "filename": str(plane / drawn_on)}, allow_pickle=True)
     outputs = RegisteredOutputs(ops=ops, functional=stacks["green"], structural=stacks["red"])
     return outputs, seg, backgrounds, weight
 
@@ -172,22 +176,62 @@ def pipeline_settings(**fluorescence):
 
 
 def test_vessel_traces_follow_the_background_and_are_cached(tmp_path, monkeypatch):
-    from mini2p_preprocessing import background as module
+    from mini2p_preprocessing import background_io as module
 
     rng = np.random.default_rng(5)
     outputs, seg, backgrounds, _ = registered_movie(rng, tmp_path)
-    traces, mask = module.load_vessel_traces(outputs, tmp_path, seg, pipeline_settings())
-    assert mask.sum() == 2 * 16
-    for name in ("green", "red"):
-        assert np.corrcoef(traces[name], backgrounds[name])[0, 1] > 0.99
+    vessel = module.load_vessel_traces(outputs, tmp_path, seg, pipeline_settings())
+    assert vessel.mask.sum() == 2 * 16 and vessel.alignment is None
+    assert np.corrcoef(vessel.green, backgrounds["green"])[0, 1] > 0.99
+    assert np.corrcoef(vessel.red, backgrounds["red"])[0, 1] > 0.99
     monkeypatch.setattr(module, "mask_mean_trace", lambda *a: pytest.fail("cache not used"))
-    again, _ = module.load_vessel_traces(outputs, tmp_path, seg, pipeline_settings())
-    np.testing.assert_array_equal(again["green"], traces["green"])
-    labels = np.load(seg, allow_pickle=True).item()["masks"]
-    labels[8, 3] = 2  # a new segmentation is read afresh
-    np.save(seg, {"masks": labels}, allow_pickle=True)
-    with pytest.raises(pytest.fail.Exception, match="cache not used"):
-        module.load_vessel_traces(outputs, tmp_path, seg, pipeline_settings())
+    again = module.load_vessel_traces(outputs, tmp_path, seg, pipeline_settings())
+    np.testing.assert_array_equal(again.green, vessel.green)
+
+
+@pytest.mark.parametrize("change", ["segmentation", "excluded pixels", "binaries"])
+def test_the_vessel_cache_is_redone_when_its_inputs_change(tmp_path, monkeypatch, change):
+    import os
+
+    from mini2p_preprocessing import background_io as module
+
+    rng = np.random.default_rng(9)
+    outputs, seg, _, _ = registered_movie(rng, tmp_path)
+    module.load_vessel_traces(outputs, tmp_path, seg, pipeline_settings())
+    exclude = None
+    if change == "segmentation":
+        record = np.load(seg, allow_pickle=True).item()
+        record["masks"][8, 3] = 2
+        np.save(seg, record, allow_pickle=True)
+    elif change == "excluded pixels":
+        exclude = np.zeros((12, 16), bool)
+        exclude[2, :4] = True  # a ROI over part of the vessel
+    else:  # a registration replaced without clearing the folder: same size, new mtime
+        stat = (tmp_path / "data.bin").stat()
+        os.utime(tmp_path / "data.bin", ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+    monkeypatch.setattr(module, "mask_mean_trace", lambda *a: pytest.fail("read again"))
+    with pytest.raises(pytest.fail.Exception, match="read again"):
+        module.load_vessel_traces(outputs, tmp_path, seg, pipeline_settings(), exclude=exclude)
+
+
+def test_roi_pixels_are_left_out_of_the_vessel_mask(tmp_path):
+    from mini2p_preprocessing.background_io import load_vessel_traces
+
+    rng = np.random.default_rng(10)
+    outputs, seg, _, _ = registered_movie(rng, tmp_path)
+    exclude = np.zeros((12, 16), bool)
+    exclude[2, :4] = True
+    vessel = load_vessel_traces(outputs, tmp_path, seg, pipeline_settings(), exclude=exclude)
+    assert vessel.mask.sum() == 2 * 16 - 4 and not vessel.mask[2, :4].any()
+
+
+def test_a_vessel_mask_drawn_on_another_image_needs_that_image(tmp_path):
+    from mini2p_preprocessing.background_io import load_vessel_traces
+
+    rng = np.random.default_rng(11)
+    outputs, seg, _, _ = registered_movie(rng, tmp_path, drawn_on="../other/meanImg.png")
+    with pytest.raises(ValueError, match="background_image"):
+        load_vessel_traces(outputs, tmp_path, seg, pipeline_settings())
 
 
 def test_pixel_coefficients_follow_the_background_strength(tmp_path):
@@ -202,12 +246,20 @@ def test_pixel_coefficients_follow_the_background_strength(tmp_path):
 def test_the_corrected_tiff_has_the_background_removed_and_the_means_kept(tmp_path):
     import tifffile
 
-    from mini2p_preprocessing.background import BACKGROUND_RECORD, write_background_tiff
+    from mini2p_preprocessing.background_io import (
+        BACKGROUND_RECORD,
+        VesselTraces,
+        check_background_tiff,
+        load_vessel_traces,
+        write_background_tiff,
+    )
 
     rng = np.random.default_rng(7)
     outputs, seg, backgrounds, _ = registered_movie(rng, tmp_path)
     settings = pipeline_settings()
-    path = write_background_tiff(outputs, backgrounds, tmp_path, settings, {"seg_file": str(seg)})
+    vessel = load_vessel_traces(outputs, tmp_path, seg, settings)
+    exact = VesselTraces(backgrounds["green"], backgrounds["red"], vessel.mask, None, vessel.key)
+    path = write_background_tiff(outputs, exact, tmp_path, settings)
     with tifffile.TiffFile(path) as tif:  # one page per frame and channel
         pages = np.stack([page.asarray() for page in tif.pages])
     assert pages.dtype == np.int16 and pages.shape == (2 * 400, 12, 16)
@@ -219,8 +271,12 @@ def test_the_corrected_tiff_has_the_background_removed_and_the_means_kept(tmp_pa
         assert abs(np.corrcoef(original[:, 8, 10], backgrounds[name])[0, 1]) > 0.9
         np.testing.assert_allclose(movie.mean(axis=0), original.mean(axis=0), atol=0.6)
     record = json.loads((tmp_path / BACKGROUND_RECORD).read_text())
-    assert record["seg_file"] == str(seg) and record["clipped_values"] == 0
+    assert record["vessel"]["seg_file"] == str(seg.resolve()) and record["clipped_values"] == 0
     assert set(record["coefficient_median"]) == {"green", "red"}
+    assert check_background_tiff(tmp_path, outputs.ops) == path
+    (tmp_path / "data_chan2.bin").write_bytes((tmp_path / "data_chan2.bin").read_bytes() + b"x")
+    with pytest.raises(ValueError, match="another registration"):
+        check_background_tiff(tmp_path, outputs.ops)
 
 
 # ---------------------------------------------------------------- choosing and drawing ROIs
@@ -266,3 +322,36 @@ def test_background_and_top_roi_plots_draw():
     with pytest.raises(ValueError, match="No finite"):
         plots.plot_top_rois({"x": np.full((3, 50), np.nan)}, [0, 1])
     plt.close("all")
+
+
+def test_every_coefficient_set_gets_its_own_histogram():
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from mini2p_preprocessing import plots
+
+    rng = np.random.default_rng(12)
+    coefficients = {f"Set {i}": rng.normal(size=20) for i in range(5)}
+    traces = {"green": rng.normal(size=50), "red": rng.normal(size=50)}
+    axes = plots.plot_background(rng.random((6, 6)), np.eye(6, dtype=bool), traces,
+                                 coefficients, FS)  # fmt: skip
+    assert len(axes[2].patches) == 5
+    with pytest.raises(ValueError, match="told apart"):
+        plots.plot_background(rng.random((6, 6)), np.eye(6, dtype=bool), traces,
+                              {f"Set {i}": np.ones(3) for i in range(9)}, FS)  # fmt: skip
+    plt.close("all")
+
+
+def test_green_bleeding_into_red_lets_red_regression_remove_activity():
+    # A documented limit: with clean red, a few % of green in red is enough to take a
+    # sizeable part of each transient with it.
+    rng = np.random.default_rng(13)
+    n = 4000
+    activity = 60 * transients(rng, n, n_events=30)
+    green = 400 + activity + rng.normal(0, 1, n)
+    red = 200 + 0.05 * activity + rng.normal(0, 0.5, n)
+    cleaned = regress_out_each(green[None], red[None]).cleaned[0]
+    kept = np.polyfit(activity, cleaned - cleaned.mean(), 1)[0]
+    assert kept < 0.9

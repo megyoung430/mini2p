@@ -12,6 +12,11 @@ import pytest
 import tifffile
 
 from mini2p_preprocessing import movies
+from mini2p_preprocessing.background_io import (
+    BACKGROUND_RECORD,
+    BACKGROUND_TIFF,
+    binaries_identity,
+)
 from mini2p_preprocessing.cli import movie_main
 from mini2p_preprocessing.config import PipelineSettings, load_settings
 from mini2p_preprocessing.contrast import scale_contrast
@@ -99,7 +104,7 @@ def make_run(
     plane.mkdir(parents=True)
     ramp(GREEN_OFFSET["registered"]).tofile(reg_file or plane / "data.bin")
     flat(RED_LEVEL["registered"]).tofile(plane / "data_chan2.bin")
-    ops = {"nframes": N_FRAMES, "Ly": LY, "Lx": LX, "fs": FS}
+    ops = {"nframes": N_FRAMES, "Ly": LY, "Lx": LX, "fs": FS, "nchannels": 2}
     if reg_file is not None:
         ops["reg_file"] = str(reg_file)
     np.save(plane / "ops.npy", ops, allow_pickle=True)
@@ -139,11 +144,13 @@ def make_run(
             )
             (variant_dir / f"71rtask_00039_{suffix}_undistorted.distortion.json").write_text("{}")
         write_interleaved_tiff(  # the QC notebook's background step, in the registered frame
-            plane / movies.BACKGROUND_TIFF,
+            plane / BACKGROUND_TIFF,
             ramp(GREEN_OFFSET["background_removed"]),
             flat(RED_LEVEL["background_removed"]),
             green_page,
         )
+        made_from = {"vessel": {"binaries": binaries_identity(ops, plane)}}
+        (plane / BACKGROUND_RECORD).write_text(json.dumps(made_from))
         if manifest:
             (variant_dir / "source_tiff.json").write_text(json.dumps({"source_tiff": str(raw)}))
     return plane
@@ -1038,7 +1045,7 @@ def test_the_background_removed_stage_is_titled_cropped_and_needs_its_tiff(tmp_p
     assert stage_title("background_removed", run_settings()) == (
         "bidiphase + distortion + registration + background removed"
     )
-    (plane / movies.BACKGROUND_TIFF).unlink()
+    (plane / BACKGROUND_TIFF).unlink()
     with pytest.raises(FileNotFoundError, match="background step"):
         make_movies(settings_for(tmp_path, stage_registered=False, overwrite=True,
                                  stage_background_removed=True, averaged_movie=False))  # fmt: skip

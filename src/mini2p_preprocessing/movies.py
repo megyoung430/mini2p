@@ -53,7 +53,7 @@ from pydantic import (
 )
 from scipy.ndimage import gaussian_filter
 
-from .background import BACKGROUND_TIFF
+from .background_io import check_background_tiff
 from .batch import MANIFEST_NAME, SESSION_PATTERN
 from .config import (
     SETTINGS_RECORD,
@@ -196,7 +196,7 @@ class MovieSettings(BaseModel):
                 f"({self.white_percentile})"
             )
         if not self.stages:
-            raise ValueError("Choose at least one stage (stage_raw, ..., stage_registered)")
+            raise ValueError("Choose at least one stage (stage_raw, ..., stage_background_removed)")
         if not self.versions:
             raise ValueError("Choose unaveraged_movie and/or averaged_movie")
         if self.suite2p_crop and not set(self.stages) & set(REGISTERED_STAGES):
@@ -675,11 +675,7 @@ def open_stage(
             "the channel order and file names the run was processed with"
         )
     if stage == "background_removed":
-        path = Path(plane_dir) / BACKGROUND_TIFF
-        if not path.is_file():
-            raise FileNotFoundError(
-                f"No {path}: write it with the background step of the QC notebook first"
-            )
+        path = check_background_tiff(plane_dir, ops)
     else:
         path = stage_tiff(stage, variant_dir_of(plane_dir), run, raw_tiff)
     tif = stack.enter_context(tifffile.TiffFile(path))

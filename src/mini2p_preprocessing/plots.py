@@ -16,7 +16,18 @@ from .frame_phase import FramePhases, fallback_stretches
 
 ROLE_COLORS = {"structural": "tab:red", "functional": "tab:green"}
 # Okabe-Ito, readable with colour-vision deficiencies.
-OKABE_ITO = {"blue": "#0072B2", "orange": "#E69F00", "vermillion": "#D55E00", "grey": "#999999"}
+OKABE_ITO = {
+    "blue": "#0072B2",
+    "orange": "#E69F00",
+    "vermillion": "#D55E00",
+    "grey": "#999999",  # not Okabe-Ito: for reference lines
+    "sky_blue": "#56B4E9",
+    "bluish_green": "#009E73",
+    "reddish_purple": "#CC79A7",
+    "yellow": "#F0E442",
+    "black": "#000000",
+}
+SERIES_COLORS = [color for name, color in OKABE_ITO.items() if name != "grey"]
 
 
 def _axes_grid(axes, nrows: int, ncols: int, figsize) -> np.ndarray:
@@ -377,7 +388,10 @@ def plot_background(
             axes[1].plot(minutes, traces[name], color=color, linewidth=0.6, label=name.title())
     axes[1].set(xlabel="Time (minutes)", ylabel="Vessel Fluorescence", title="Background")
     axes[1].legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), frameon=False)
-    for (name, values), color in zip(coefficients.items(), OKABE_ITO.values(), strict=False):
+    if len(coefficients) > len(SERIES_COLORS):
+        raise ValueError(f"At most {len(SERIES_COLORS)} coefficient sets can be told apart")
+    colors = SERIES_COLORS[: len(coefficients)]
+    for (name, values), color in zip(coefficients.items(), colors, strict=True):
         axes[2].hist(values, bins=30, histtype="step", color=color, linewidth=1.2, label=name)
     axes[2].set(xlabel="Coefficient", ylabel="ROIs", title="Regression Coefficients")
     axes[2].legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), frameon=False)
@@ -390,6 +404,7 @@ def plot_top_rois(
     frames: slice = slice(None),
     axes=None,
     spacing: float | None = None,
+    xlabel: str = "Frames",
 ) -> np.ndarray:
     """The same ROIs' ΔF/F0 stacked (first ROI on top), one panel per version, on one
     vertical scale; the scale bar is one *spacing* of ΔF/F0."""
@@ -409,7 +424,7 @@ def plot_top_rois(
         for i, (trace, offset) in enumerate(zip(values, offsets, strict=True)):
             ax.plot(x, trace + offset, color=colors[i % len(colors)], linewidth=0.6)
         ax.set_yticks(offsets, [f"ROI {roi}" for roi in rois])
-        ax.set(xlabel="Frames", title=name, xlim=(x[0], x[-1]))
+        ax.set(xlabel=xlabel, title=name, xlim=(x[0], x[-1]))
         ax.spines[["top", "right"]].set_visible(False)
     bar_x = axes[-1].get_xlim()[1]
     axes[-1].plot([bar_x, bar_x], [offsets[0], offsets[0] + spacing], color="black",

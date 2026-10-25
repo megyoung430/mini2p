@@ -109,9 +109,11 @@ qc_distortion_frames = 100
 # cellpose_seg = "/path/to/run-02/with_distortion_correction/without_destriping/aligned_structural/suite2p/plane0/meanImg_green_functional_contrast_seg.npy"
 # Only if the masks were drawn on another registration's mean image (e.g. first 1000 frames):
 # cellpose_image = "/path/to/that/meanImg_green_functional_contrast.png"
-# Blood vessels segmented in Cellpose on this registration's mean image: their fluorescence
-# is the background regressed out of F and Fneu before ΔF/F0 (QC notebook)
+# Blood vessels segmented in Cellpose: their fluorescence is the background regressed out
+# of F and Fneu before ΔF/F0 (QC notebook). Drawn on this registration's mean image, or set
+# background_image to the image they were drawn on to shift them onto this plane.
 # background_seg = "/path/to/meanImg_green_blood_vessel_seg.npy"
+# background_image = "/path/to/that/meanImg_green_raw.tif"
 # valid_frames = "/path/to/session/valid_frames.npz"
 valid_frames_key = "valid_frames"
 

@@ -462,9 +462,11 @@ class QCRun(_Frozen):
     # than this run (e.g. first 1000 frames vs full session); masks are shifted to fit.
     cellpose_image: Path | None = None
     valid_frames: Path | None = None  # .npz from behaviour alignment; None audits every frame
-    # Cellpose *_seg.npy of blood vessels on the same mean image as cellpose_seg: their
-    # fluorescence is the background regressed out of F and Fneu before ΔF/F0.
+    # Cellpose *_seg.npy of blood vessels: their fluorescence is the background regressed
+    # out of F and Fneu before ΔF/F0. Drawn on this registration's mean image, or set
+    # background_image to the image it was drawn on to shift it onto this plane.
     background_seg: Path | None = None
+    background_image: Path | None = None
     valid_frames_key: str = "valid_frames"
 
 
