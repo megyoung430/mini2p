@@ -494,9 +494,15 @@ def test_one_spike_does_not_flatten_the_top_roi_plot():
     from mini2p_preprocessing import plots
 
     rng = np.random.default_rng(19)
-    dff = rng.normal(0, 0.1, (4, 300))
-    dff[1, 150] = 500.0  # F0 near zero for one frame
-    axes = plots.plot_top_rois({"Standard": dff}, [0, 1, 2, 3])
-    low, high = axes[0].get_ylim()
-    assert high - low < 10  # the stack, not the spike, sets the range
-    plt.close("all")
+    clean = rng.normal(0, 0.1, (4, 300))
+    spiky = clean.copy()
+    spiky[1, 150] = 500.0  # F0 near zero for one frame, in the second panel only
+    try:
+        axes = plots.plot_top_rois({"Clean": clean, "Spiky": spiky}, [0, 1, 2, 3], spacing=1.0)
+        axes[0].figure.canvas.draw()
+        for ax in axes:  # the stack (3 spacings) plus a margin sets every panel's range
+            assert ax.get_ylim() == (-1.0, 4.5)
+        assert axes[0].get_title() == "Clean"
+        assert axes[1].get_title() == "Spiky\n(1 values off scale)"
+    finally:
+        plt.close("all")

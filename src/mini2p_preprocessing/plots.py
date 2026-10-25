@@ -477,8 +477,15 @@ def plot_top_rois(
     for ax in axes[1:]:
         ax.sharey(axes[0])
     # A single spike (e.g. where F0 nears zero) would otherwise stretch the shared axis
-    # until every other trace looks flat; it is clipped instead.
-    axes[0].set_ylim(offsets.min() - spacing, offsets.max() + 1.5 * spacing)
+    # until every other trace looks flat; it is clipped instead, and each title says how
+    # many values were.
+    low, high = offsets.min() - spacing, offsets.max() + 1.5 * spacing
+    axes[0].set_ylim(low, high)
+    for ax, (name, values) in zip(axes, shown.items(), strict=True):
+        placed = values + offsets[:, None]
+        clipped = int(np.count_nonzero((placed < low) | (placed > high)))
+        if clipped:
+            ax.set_title(f"{name}\n({clipped} values off scale)")
     return axes
 
 
