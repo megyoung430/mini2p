@@ -194,19 +194,26 @@ def write_background_tiff(
     return path
 
 
-def check_background_tiff(plane_dir: Path, ops: dict) -> Path:
-    """``data_background_removed.tif`` of this plane, refused if it is missing or was made
-    from other registered binaries than the plane's current ones."""
+def check_background_tiff(plane_dir: Path, ops: dict, vessel_key: dict | None = None) -> Path:
+    """``data_background_removed.tif`` of this plane, refused if it is missing, was made
+    from other registered binaries than the plane's current ones, or (given *vessel_key*)
+    from another vessel mask, image or set of ROI pixels."""
     path, record_path = Path(plane_dir) / BACKGROUND_TIFF, Path(plane_dir) / BACKGROUND_RECORD
     if not path.is_file() or not record_path.is_file():
         raise FileNotFoundError(
             f"No {path} with its {record_path.name}: write it with the background step of "
             "the QC notebook first"
         )
-    made_from = json.loads(record_path.read_text())["vessel"]["binaries"]
-    if made_from != binaries_identity(ops, plane_dir):
+    made_from = json.loads(record_path.read_text())["vessel"]
+    if made_from["binaries"] != binaries_identity(ops, plane_dir):
         raise ValueError(
-            f"{path} was made from another registration of this plane; write it again with "
-            "the background step of the QC notebook"
+            f"{path} was made from another registration of this plane (or the plane folder "
+            "was copied without keeping file times); write it again with the background step "
+            "of the QC notebook"
+        )
+    if vessel_key is not None and made_from != vessel_key:
+        raise ValueError(
+            f"{path} was made with another vessel segmentation, image or ROI set; write it "
+            "again with the background step of the QC notebook"
         )
     return path

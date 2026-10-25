@@ -106,7 +106,7 @@ def test_a_fixed_channel_ignores_the_phase_record(tmp_path, suite2p_calls):
 def test_auto_without_a_per_frame_record_fails_before_suite2p(tmp_path, suite2p_calls):
     out, tiff = variant_with_phase_record(tmp_path, 0.9)
     next(out.glob("*.phase.json")).unlink()
-    with pytest.raises(FileNotFoundError, match="phase.json"):
+    with pytest.raises(ValueError, match="phase.json"):
         run_registration(tiff, out, settings())
     chunked = {"chunks": []}
     (out / "71rtask_00036_dynamic_bidiphase_destriped.phase.json").write_text(json.dumps(chunked))

@@ -355,3 +355,45 @@ def test_green_bleeding_into_red_lets_red_regression_remove_activity():
     cleaned = regress_out_each(green[None], red[None]).cleaned[0]
     kept = np.polyfit(activity, cleaned - cleaned.mean(), 1)[0]
     assert kept < 0.9
+
+
+def test_a_vessel_mask_drawn_on_another_image_is_shifted_onto_this_plane(tmp_path):
+    import tifffile
+    from scipy.ndimage import gaussian_filter
+
+    from mini2p_preprocessing.background_io import vessel_labels_on_plane
+
+    rng = np.random.default_rng(14)
+    tissue = gaussian_filter(rng.random((140, 140)), 2) * 1000
+    plane_image = tissue[10:130, 10:130].astype(np.float32)
+    drawn_on = tissue[13:133, 8:128].astype(np.float32)  # the same tissue, 3 px down, 2 left
+    tifffile.imwrite(tmp_path / "other.tif", drawn_on)
+    labels = np.zeros((120, 120), int)
+    labels[40:44, 20:100] = 1
+    seg = tmp_path / "vessels_seg.npy"
+    np.save(seg, {"masks": labels, "filename": "/elsewhere/other.tif"}, allow_pickle=True)
+    ops = {"meanImg": plane_image, "Ly": 120, "Lx": 120}
+    shifted, report = vessel_labels_on_plane(seg, ops, tmp_path, pipeline_settings(),
+                                             image=tmp_path / "other.tif")  # fmt: skip
+    rows, cols = np.flatnonzero(shifted.any(axis=1)), np.flatnonzero(shifted.any(axis=0))
+    assert (report["dy"], report["dx"]) == (3, -2)
+    assert (rows.min(), rows.max(), cols.min(), cols.max()) == (43, 46, 18, 97)
+
+
+def test_a_tiff_from_another_vessel_mask_is_refused(tmp_path):
+    from mini2p_preprocessing.background_io import (
+        check_background_tiff,
+        load_vessel_traces,
+        write_background_tiff,
+    )
+
+    rng = np.random.default_rng(15)
+    outputs, seg, _, _ = registered_movie(rng, tmp_path, n=100)
+    vessel = load_vessel_traces(outputs, tmp_path, seg, pipeline_settings())
+    write_background_tiff(outputs, vessel, tmp_path, pipeline_settings())
+    assert check_background_tiff(tmp_path, outputs.ops, vessel.key)
+    exclude = np.zeros((12, 16), bool)
+    exclude[2, 0] = True
+    changed = load_vessel_traces(outputs, tmp_path, seg, pipeline_settings(), exclude=exclude)
+    with pytest.raises(ValueError, match="another vessel"):
+        check_background_tiff(tmp_path, outputs.ops, changed.key)

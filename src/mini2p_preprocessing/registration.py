@@ -264,6 +264,11 @@ def run_registration(
     return registration_dir / save_folder / "plane0"
 
 
+class NoPerFrameRecord(ValueError):
+    """The session has no per-frame bidiphase record (``.phase.json`` missing, or written by
+    the chunked method), so how often the structural channel was usable is unknown."""
+
+
 @dataclass(frozen=True)
 class MotionChoice:
     source: ChannelRole
@@ -308,13 +313,13 @@ def structural_trust(suite2p_input_tiff: Path, settings: PipelineSettings) -> tu
     from the ``.phase.json`` of the corrected TIFF *suite2p_input_tiff* is (or came from)."""
     path = phase_record_path(suite2p_input_tiff, settings)
     if not path.is_file():
-        raise FileNotFoundError(
+        raise NoPerFrameRecord(
             f"No {path.name} beside the TIFF, which records how often the structural channel "
             "was usable; run the phase correction first"
         )
     record = json.loads(path.read_text())
     if record.get("phase_method") != "per_frame" or "fraction_structural" not in record:
-        raise ValueError(
+        raise NoPerFrameRecord(
             f"{path} is not a per-frame bidiphase record with fraction_structural; rerun the "
             'phase correction with method = "per_frame"'
         )
