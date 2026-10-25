@@ -217,7 +217,7 @@ class FluorescenceSettings(_Frozen):
     mask_shift_tolerance_px: int = Field(1, ge=0)  # allowed quadrant disagreement
     mask_min_correlation: float = Field(0.5, ge=0, le=1)  # rank correlation after the shift
     mask_min_retained_fraction: float = Field(0.5, gt=0, le=1)  # else the mask is dropped
-    # Frames read at once for the vessel background and the background-corrected TIFF
+    # Frames read at once for the background traces and the background-corrected TIFF
     # (~1 GB of float64 per 500 frames of 512 x 512).
     background_chunk_frames: int = Field(100, ge=1)
 

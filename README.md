@@ -129,7 +129,7 @@ a run at each stage of the preprocessing:
 | bidiphase (`stage_bidiphase`) | `*_dynamic_bidiphase[_destriped].tif` (phase correction, and destriping) |
 | undistorted (`stage_undistorted`) | `*_undistorted.tif` (+ distortion correction; cropped) |
 | registered (`stage_registered`) | Suite2p's `data.bin` / `data_chan2.bin` (+ motion registration) |
-| background removed (`stage_background_removed`) | `data_background_removed.tif` in the plane folder, written by the QC notebook's background step (+ blood-vessel background regressed out of every pixel) |
+| background removed (`stage_background_removed`) | `data_background_removed_<source>.tif` in the plane folder, written by the QC notebook's background step (+ background regressed out of every pixel; `background_source`: `vessel` mask or `non_roi`, every pixel outside the cell ROIs) |
 
 Everything is set in the `[movies]` section of the config (see
 `config/pipeline.example.toml`):

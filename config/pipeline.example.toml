@@ -167,8 +167,9 @@ stage_raw = true              # the acquired TIFF
 stage_bidiphase = true        # + phase correction (and destriping)
 stage_undistorted = true      # + distortion correction
 stage_registered = true       # + motion registration (Suite2p's binaries)
-stage_background_removed = false  # + vessel background regressed out of every pixel
-                              #   (data_background_removed.tif, written by the QC notebook)
+stage_background_removed = false  # + background regressed out of every pixel
+                              #   (data_background_removed_<source>.tif, from the QC notebook)
+background_source = "vessel"  # that background: "vessel" or "non_roi" (outside the ROIs)
 # Which versions of each
 unaveraged_movie = true       # every frame
 averaged_movie = true         # average_frames frames per movie frame

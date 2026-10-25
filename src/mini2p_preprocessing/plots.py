@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Rectangle
@@ -365,37 +366,78 @@ def plot_corrected_trace(
 
 def plot_background(
     mean_img: np.ndarray,
-    mask: np.ndarray,
-    traces: dict[str, np.ndarray],
+    masks: dict[str, np.ndarray],
+    traces: dict[str, dict[str, np.ndarray]],
     coefficients: dict[str, np.ndarray],
     fs_hz: float,
     axes=None,
 ) -> np.ndarray:
-    """The vessel mask on the mean image; the vessel traces (the background) over time; and
-    each ROI's regression coefficient on them."""
+    """Each background source's mask on the mean image; its traces over time (colour: channel,
+    line style: source); and each ROI's regression coefficients."""
     from .rois import outline_labels
 
-    axes = _axes_grid(axes, 1, 3, (16, 4)).ravel()
+    if len(masks) > len(SERIES_COLORS) or len(coefficients) > len(SERIES_COLORS):
+        raise ValueError(
+            f"At most {len(SERIES_COLORS)} sources or coefficient sets can be told apart"
+        )
+    axes = _axes_grid(axes, 1, 3, (17, 4)).ravel()
     axes[0].imshow(mean_img, cmap="gray", interpolation="nearest")
-    outline = np.zeros((*mask.shape, 4), np.float32)
-    outline[outline_labels(mask.astype(int)) > 0] = (1.0, 0.6, 0.0, 1.0)
-    axes[0].imshow(outline, interpolation="nearest")
-    axes[0].set_title("Vessel Mask")
+    for (name, mask), color in zip(masks.items(), SERIES_COLORS, strict=False):
+        overlay = np.zeros((*mask.shape, 4), np.float32)
+        overlay[outline_labels(mask.astype(int)) > 0] = (*matplotlib.colors.to_rgb(color), 1.0)
+        axes[0].imshow(overlay, interpolation="nearest")
+        axes[0].plot([], [], color=color, label=name)  # legend entry for the outline
+    axes[0].legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), frameon=False)
+    axes[0].set_title("Background Masks")
     axes[0].axis("off")
-    for name, color in (("green", "tab:green"), ("red", "tab:red")):
-        if traces.get(name) is not None:
-            minutes = np.arange(len(traces[name])) / fs_hz / 60
-            axes[1].plot(minutes, traces[name], color=color, linewidth=0.6, label=name.title())
-    axes[1].set(xlabel="Time (minutes)", ylabel="Vessel Fluorescence", title="Background")
+    styles = ["-", "--", ":", "-."]
+    if len(traces) > len(styles):
+        raise ValueError(f"At most {len(styles)} background sources can be told apart")
+    for (source, channels), style in zip(traces.items(), styles, strict=False):
+        for name, color in (("green", "tab:green"), ("red", "tab:red")):
+            if channels.get(name) is not None:
+                minutes = np.arange(len(channels[name])) / fs_hz / 60
+                axes[1].plot(minutes, channels[name], color=color, linestyle=style,
+                             linewidth=0.6, label=f"{source}, {name.title()}")  # fmt: skip
+    axes[1].set(xlabel="Time (minutes)", ylabel="Background Fluorescence", title="Background")
     axes[1].legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), frameon=False)
-    if len(coefficients) > len(SERIES_COLORS):
-        raise ValueError(f"At most {len(SERIES_COLORS)} coefficient sets can be told apart")
     colors = SERIES_COLORS[: len(coefficients)]
     for (name, values), color in zip(coefficients.items(), colors, strict=True):
         axes[2].hist(values, bins=30, histtype="step", color=color, linewidth=1.2, label=name)
     axes[2].set(xlabel="Coefficient", ylabel="ROIs", title="Regression Coefficients")
     axes[2].legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), frameon=False)
     return axes
+
+
+def plot_trace_comparison(
+    results: dict,
+    roi: int,
+    fs_hz: float,
+    frames: slice = slice(None),
+    ax=None,
+    quantity: str = "dff",
+    ylabel: str = "ΔF/F0",
+    time_label: str = "Time (s)",
+):
+    """One ROI's ΔF/F0 (``quantity="dff"``) or corrected F (``"f_corr"``, with each F0
+    dashed) from several ΔF/F0 results overlaid, e.g. background removed two ways."""
+    if quantity not in ("dff", "f_corr"):
+        raise ValueError(f"quantity must be 'dff' or 'f_corr', not {quantity!r}")
+    if len(results) > len(SERIES_COLORS):
+        raise ValueError(f"At most {len(SERIES_COLORS)} results can be told apart")
+    if ax is None:
+        _, ax = plt.subplots(figsize=(12, 2.5))
+    first = next(iter(results.values()))
+    t = np.arange(first.dff.shape[1])[frames] / fs_hz
+    for (name, result), color in zip(results.items(), SERIES_COLORS, strict=False):
+        ax.plot(t, getattr(result, quantity)[roi, frames], color=color, linewidth=0.7, label=name)
+        if quantity == "f_corr":
+            ax.plot(t, result.f0[roi, frames], color=color, linewidth=1.0, linestyle="--")
+    if quantity == "dff":
+        ax.axhline(0, color=OKABE_ITO["grey"], linewidth=0.8)
+    ax.set(xlabel=time_label, ylabel=ylabel, xlim=(t[0], t[-1]))
+    ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), frameon=False, fontsize=8)
+    return ax
 
 
 def plot_top_rois(

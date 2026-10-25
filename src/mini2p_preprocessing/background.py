@@ -1,5 +1,9 @@
-"""Blood-vessel background and red-channel regression before ΔF/F0 (computation only;
-reading and writing files is in ``background_io``).
+"""Background and red-channel regression before ΔF/F0 (computation only; reading and
+writing files is in ``background_io``).
+
+Two background sources are compared: a blood-vessel mask, and every pixel outside the
+cell ROIs (``non_roi_mask``). The first holds no labelled cells but is small; the second is
+large but includes unsegmented cells and neuropil, so it carries more neural signal.
 
 A blood vessel holds no labelled cells, so its fluorescence over time is taken as
 background: out-of-focus and scattered light, and brightness changes of the whole field.
@@ -72,6 +76,31 @@ def vessel_mask(
         if not mask.any():
             raise ValueError("Every vessel pixel is also a ROI pixel; no background is left")
     return mask
+
+
+def non_roi_mask(roi_labels: np.ndarray, region: tuple[slice, slice]) -> np.ndarray:
+    """Every pixel outside the cell ROIs, within *region* (rows, columns): the region no
+    frame's registration shifts wrap into, so rolled-in edge pixels are not background."""
+    labels = np.asarray(roi_labels)
+    mask = np.zeros(labels.shape, bool)
+    mask[region] = labels[region] == 0
+    if not mask.any():
+        raise ValueError("No pixel outside the ROIs is left in the region")
+    return mask
+
+
+def rowwise_correlation(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Pearson correlation of each row of *a* with the same row of *b* (NaN frames, e.g.
+    an undefined ΔF/F0, left out pairwise)."""
+    a, b = np.asarray(a, np.float64), np.asarray(b, np.float64)
+    if a.shape != b.shape:
+        raise ValueError(f"Shapes differ: {a.shape} vs {b.shape}")
+    both = np.isfinite(a) & np.isfinite(b)
+    out = np.full(len(a), np.nan)
+    for i, (x, y, keep) in enumerate(zip(a, b, both, strict=True)):
+        if keep.sum() > 2 and np.std(x[keep]) > 0 and np.std(y[keep]) > 0:
+            out[i] = np.corrcoef(x[keep], y[keep])[0, 1]
+    return out
 
 
 def centred_regressor(regressor: np.ndarray, n_frames: int) -> np.ndarray:

@@ -53,7 +53,7 @@ from pydantic import (
 )
 from scipy.ndimage import gaussian_filter
 
-from .background_io import check_background_tiff
+from .background_io import SOURCE_LABELS, BackgroundSource, check_background_tiff
 from .batch import MANIFEST_NAME, SESSION_PATTERN
 from .config import (
     SETTINGS_RECORD,
@@ -135,8 +135,9 @@ class MovieSettings(BaseModel):
     stage_undistorted: bool = False  # after distortion correction too (not if it was off)
     stage_registered: bool = True  # after Suite2p motion registration too
     # the registered movie with the vessel background regressed out of every pixel, from
-    # the QC notebook's data_background_removed.tif in the plane folder
+    # the QC notebook's data_background_removed_<source>.tif in the plane folder
     stage_background_removed: bool = False
+    background_source: BackgroundSource = "vessel"  # or "non_roi": pixels outside the ROIs
     # Which versions of each: every frame, and frames averaged average_frames at a time
     unaveraged_movie: bool = True
     averaged_movie: bool = True
@@ -404,16 +405,19 @@ def compose_panels(panels: dict[str, np.ndarray]) -> np.ndarray:
     return np.repeat(grey[..., None], 3, axis=-1)
 
 
-def stage_title(stage: Stage, run: PipelineSettings | None) -> str:
+def stage_title(
+    stage: Stage, run: PipelineSettings | None, background_source: BackgroundSource = "vessel"
+) -> str:
     """What had been done to the frames by *stage*, from the settings the run used."""
+    removed = f"{SOURCE_LABELS[background_source].lower()} background removed"
     if run is None:
-        return stage
+        return removed if stage == "background_removed" else stage
     steps = ["bidiphase" + (" + destriping" if run.destripe.enabled else "")]
     if run.distortion.mode != "off":
         steps.append("distortion")
     steps.append("registration")
     if stage == "background_removed":
-        return " + ".join([*steps, "background removed"])
+        return " + ".join([*steps, removed])
     shown = {"raw": 0, "bidiphase": 1, "undistorted": 2, "registered": len(steps)}[stage]
     return " + ".join(steps[:shown]) if shown else "raw"
 
@@ -487,7 +491,7 @@ def plan_movie(
         *names,
         variant_label(settings.variant),
         *([alignment] if alignment else []),  # e.g. aligned_structural
-        stage,
+        f"{stage}-{settings.background_source}" if stage == "background_removed" else stage,
         settings.channel,
         *(["cropped"] if cropped else []),
         f"frames-{first}-{last}",
@@ -653,6 +657,7 @@ def open_stage(
     run: PipelineSettings | None,
     raw_tiff: Path | None,
     stack: ExitStack,
+    background_source: BackgroundSource = "vessel",
 ) -> dict[str, Frames]:
     """The frames of each channel shown, for one stage; TIFFs stay open until *stack* closes.
 
@@ -675,7 +680,7 @@ def open_stage(
             "the channel order and file names the run was processed with"
         )
     if stage == "background_removed":
-        path = check_background_tiff(plane_dir, ops)
+        path = check_background_tiff(plane_dir, ops, background_source)
     else:
         path = stage_tiff(stage, variant_dir_of(plane_dir), run, raw_tiff)
     tif = stack.enter_context(tifffile.TiffFile(path))
@@ -906,8 +911,11 @@ def open_jobs(
         )
     jobs = []
     for stage in stages:
-        sources = open_stage(stage, plane_dir, ops, settings.channel, run, settings.raw_tiff, stack)
-        title = stage_title(stage, run)
+        sources = open_stage(
+            stage, plane_dir, ops, settings.channel, run, settings.raw_tiff, stack,
+            settings.background_source,
+        )  # fmt: skip
+        title = stage_title(stage, run, settings.background_source)
         for version in settings.versions:
             plan = plan_movie(version, stage, span, fs, settings, names, alignment=alignment)
             jobs.append(MovieJob(plan, sources, span, title, fs))
