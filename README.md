@@ -129,6 +129,7 @@ a run at each stage of the preprocessing:
 | bidiphase (`stage_bidiphase`) | `*_dynamic_bidiphase[_destriped].tif` (phase correction, and destriping) |
 | undistorted (`stage_undistorted`) | `*_undistorted.tif` (+ distortion correction; cropped) |
 | registered (`stage_registered`) | Suite2p's `data.bin` / `data_chan2.bin` (+ motion registration) |
+| background removed (`stage_background_removed`) | `data_background_removed_<source>.tif` in the plane folder, written by the QC notebook's background step (+ background regressed out of every pixel; `background_source`: `vessel` mask or `non_roi`, every pixel outside the cell ROIs) |
 
 Everything is set in the `[movies]` section of the config (see
 `config/pipeline.example.toml`):
@@ -141,7 +142,7 @@ Everything is set in the `[movies]` section of the config (see
   `aligned_*` folder the variant has);
 - **which frames**: `whole_recording` (it must be set), or `start_frame` to `end_frame`,
   0-based and both included (with the whole recording these two are ignored, with a warning);
-- **which stages**: the four switches above (only `stage_registered` is on unless the
+- **which stages**: the five switches above (only `stage_registered` is on unless the
   config says otherwise), and **versions**: `unaveraged_movie`, `averaged_movie`;
 - **where to read and write**: `derivatives_root`, `raw_tiff`, `output_dir` (default
   `run-XX/<variant>/aligned_<channel>/movies/`; `~` works in all of them);

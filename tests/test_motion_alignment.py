@@ -106,7 +106,7 @@ def test_a_fixed_channel_ignores_the_phase_record(tmp_path, suite2p_calls):
 def test_auto_without_a_per_frame_record_fails_before_suite2p(tmp_path, suite2p_calls):
     out, tiff = variant_with_phase_record(tmp_path, 0.9)
     next(out.glob("*.phase.json")).unlink()
-    with pytest.raises(FileNotFoundError, match="phase.json"):
+    with pytest.raises(ValueError, match="phase.json"):
         run_registration(tiff, out, settings())
     chunked = {"chunks": []}
     (out / "71rtask_00036_dynamic_bidiphase_destriped.phase.json").write_text(json.dumps(chunked))
@@ -239,3 +239,12 @@ def test_registrations_stay_valid_when_the_session_folder_moves(tmp_path, suite2
     tiff = out / "71rtask_00036_dynamic_bidiphase_destriped_undistorted.tif"
     run_registration(tiff, out, settings(motion_alignment_source="structural"))
     assert (out / "aligned_functional" / "suite2p" / "plane0").is_dir()
+
+
+@pytest.mark.parametrize(("fraction", "usable"), [(0.8, True), (0.5, True), (0.2, False)])
+def test_red_is_usable_by_the_same_rule_as_auto_alignment(tmp_path, fraction, usable):
+    from mini2p_preprocessing.registration import red_usable
+
+    _, tiff = variant_with_phase_record(tmp_path, fraction)
+    ok, why = red_usable(tiff, settings(motion_alignment_source="functional"))
+    assert ok is usable and f"{fraction:.0%}" in why

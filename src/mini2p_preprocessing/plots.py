@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Rectangle
@@ -16,7 +17,18 @@ from .frame_phase import FramePhases, fallback_stretches
 
 ROLE_COLORS = {"structural": "tab:red", "functional": "tab:green"}
 # Okabe-Ito, readable with colour-vision deficiencies.
-OKABE_ITO = {"blue": "#0072B2", "orange": "#E69F00", "vermillion": "#D55E00", "grey": "#999999"}
+OKABE_ITO = {
+    "blue": "#0072B2",
+    "orange": "#E69F00",
+    "vermillion": "#D55E00",
+    "grey": "#999999",  # not Okabe-Ito: for reference lines
+    "sky_blue": "#56B4E9",
+    "bluish_green": "#009E73",
+    "reddish_purple": "#CC79A7",
+    "yellow": "#F0E442",
+    "black": "#000000",
+}
+SERIES_COLORS = [color for name, color in OKABE_ITO.items() if name != "grey"]
 
 
 def _axes_grid(axes, nrows: int, ncols: int, figsize) -> np.ndarray:
@@ -301,24 +313,7 @@ def plot_trace_audit(
     axes[0].plot(t, f[roi, frames], color="tab:green", linewidth=0.7, label="F")
     axes[0].plot(t, fneu[roi, frames], color="0.4", linewidth=0.7, label="Fneu")
     axes[0].set(ylabel="Raw fluorescence", title=f"ROI {roi}")
-    axes[1].plot(
-        t, result.f_corr[roi, frames], color="tab:green", linewidth=0.7, label="Fcorr = F − c·Fneu"
-    )
-    axes[1].plot(t, result.f0[roi, frames], color="black", linewidth=1.2, label="F0")
-    axes[1].axhline(0, color="tab:red", linewidth=0.8, linestyle=":")
-    invalid = result.invalid_f0[roi, frames]
-    if invalid.any():
-        axes[1].fill_between(
-            t,
-            0,
-            1,
-            where=invalid,
-            color="tab:red",
-            alpha=0.15,
-            transform=axes[1].get_xaxis_transform(),
-            label="F0 ≤ min_f0",
-        )
-    axes[1].set_ylabel("Corrected F")
+    _plot_corrected(axes[1], t, result, roi, frames, "Fcorr = F − c·Fneu")
     axes[2].plot(t, result.dff[roi, frames], color="tab:blue", linewidth=0.7)
     axes[2].axhline(0, color="0.6", linewidth=0.8)
     axes[2].set(ylabel="ΔF/F0", xlabel=time_label)
@@ -327,6 +322,159 @@ def plot_trace_audit(
         ax.set_xlim(t[0], t[-1])
     for ax in axes[:2]:
         ax.legend(loc="upper right", fontsize=8)
+    return axes
+
+
+def _plot_corrected(ax, t, result, roi: int, frames: slice, label: str) -> None:
+    """Corrected F with its F0, shaded where F0 is invalid."""
+    ax.plot(t, result.f_corr[roi, frames], color="tab:green", linewidth=0.7, label=label)
+    ax.plot(t, result.f0[roi, frames], color="black", linewidth=1.2, label="F0")
+    ax.axhline(0, color="tab:red", linewidth=0.8, linestyle=":")
+    invalid = result.invalid_f0[roi, frames]
+    if invalid.any():
+        ax.fill_between(
+            t,
+            0,
+            1,
+            where=invalid,
+            color="tab:red",
+            alpha=0.15,
+            transform=ax.get_xaxis_transform(),
+            label="F0 ≤ min_f0",
+        )
+    ax.set_ylabel("Corrected F")
+
+
+def plot_corrected_trace(
+    result,
+    roi: int,
+    fs_hz: float,
+    frames: slice = slice(None),
+    ax=None,
+    label: str = "Fcorr",
+    time_label: str = "Time (s)",
+):
+    """One ROI's corrected F and F0 from any ΔF/F0 result, e.g. with the background removed."""
+    if ax is None:
+        _, ax = plt.subplots(figsize=(12, 2.5))
+    t = np.arange(result.f_corr.shape[1])[frames] / fs_hz
+    _plot_corrected(ax, t, result, roi, frames, label)
+    ax.set(xlabel=time_label, xlim=(t[0], t[-1]))
+    ax.legend(loc="upper right", fontsize=8)
+    return ax
+
+
+def plot_background(
+    mean_img: np.ndarray,
+    masks: dict[str, np.ndarray],
+    traces: dict[str, dict[str, np.ndarray]],
+    coefficients: dict[str, np.ndarray],
+    fs_hz: float,
+    axes=None,
+) -> np.ndarray:
+    """Each background source's mask on the mean image; its traces over time (colour: channel,
+    line style: source); and each ROI's regression coefficients."""
+    from .rois import outline_labels
+
+    if len(masks) > len(SERIES_COLORS) or len(coefficients) > len(SERIES_COLORS):
+        raise ValueError(
+            f"At most {len(SERIES_COLORS)} sources or coefficient sets can be told apart"
+        )
+    axes = _axes_grid(axes, 1, 3, (17, 4)).ravel()
+    axes[0].imshow(mean_img, cmap="gray", interpolation="nearest")
+    for (name, mask), color in zip(masks.items(), SERIES_COLORS, strict=False):
+        overlay = np.zeros((*mask.shape, 4), np.float32)
+        overlay[outline_labels(mask.astype(int)) > 0] = (*matplotlib.colors.to_rgb(color), 1.0)
+        axes[0].imshow(overlay, interpolation="nearest")
+        axes[0].plot([], [], color=color, label=name)  # legend entry for the outline
+    axes[0].legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), frameon=False)
+    axes[0].set_title("Background Masks")
+    axes[0].axis("off")
+    styles = ["-", "--", ":", "-."]
+    if len(traces) > len(styles):
+        raise ValueError(f"At most {len(styles)} background sources can be told apart")
+    for (source, channels), style in zip(traces.items(), styles, strict=False):
+        for name, color in (("green", "tab:green"), ("red", "tab:red")):
+            if channels.get(name) is not None:
+                minutes = np.arange(len(channels[name])) / fs_hz / 60
+                axes[1].plot(minutes, channels[name], color=color, linestyle=style,
+                             linewidth=0.6, label=f"{source}, {name.title()}")  # fmt: skip
+    axes[1].set(xlabel="Time (minutes)", ylabel="Background Fluorescence", title="Background")
+    axes[1].legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), frameon=False)
+    colors = SERIES_COLORS[: len(coefficients)]
+    for (name, values), color in zip(coefficients.items(), colors, strict=True):
+        axes[2].hist(values, bins=30, histtype="step", color=color, linewidth=1.2, label=name)
+    axes[2].set(xlabel="Coefficient", ylabel="ROIs", title="Regression Coefficients")
+    axes[2].legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), frameon=False)
+    return axes
+
+
+def plot_trace_comparison(
+    results: dict,
+    roi: int,
+    fs_hz: float,
+    frames: slice = slice(None),
+    ax=None,
+    quantity: str = "dff",
+    ylabel: str = "ΔF/F0",
+    time_label: str = "Time (s)",
+):
+    """One ROI's ΔF/F0 (``quantity="dff"``) or corrected F (``"f_corr"``, with each F0
+    dashed) from several ΔF/F0 results overlaid, e.g. background removed two ways."""
+    if quantity not in ("dff", "f_corr"):
+        raise ValueError(f"quantity must be 'dff' or 'f_corr', not {quantity!r}")
+    if len(results) > len(SERIES_COLORS):
+        raise ValueError(f"At most {len(SERIES_COLORS)} results can be told apart")
+    if ax is None:
+        _, ax = plt.subplots(figsize=(12, 2.5))
+    first = next(iter(results.values()))
+    t = np.arange(first.dff.shape[1])[frames] / fs_hz
+    for (name, result), color in zip(results.items(), SERIES_COLORS, strict=False):
+        ax.plot(t, getattr(result, quantity)[roi, frames], color=color, linewidth=0.7, label=name)
+        if quantity == "f_corr":
+            ax.plot(t, result.f0[roi, frames], color=color, linewidth=1.0, linestyle="--")
+    if quantity == "dff":
+        ax.axhline(0, color=OKABE_ITO["grey"], linewidth=0.8)
+    ax.set(xlabel=time_label, ylabel=ylabel, xlim=(t[0], t[-1]))
+    ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), frameon=False, fontsize=8)
+    return ax
+
+
+def plot_top_rois(
+    dffs: dict[str, np.ndarray],
+    rois: Sequence[int],
+    frames: slice = slice(None),
+    axes=None,
+    spacing: float | None = None,
+    xlabel: str = "Frames",
+) -> np.ndarray:
+    """The same ROIs' ΔF/F0 stacked (first ROI on top), one panel per version, on one
+    vertical scale; the scale bar is one *spacing* of ΔF/F0."""
+    rois = list(rois)
+    axes = _axes_grid(axes, 1, len(dffs), (6 * len(dffs), 9)).ravel()
+    shown = {name: np.asarray(dff)[rois][:, frames] for name, dff in dffs.items()}
+    if spacing is None:
+        ranges = [np.nanpercentile(d, 99.5, axis=1) - np.nanpercentile(d, 0.5, axis=1)
+                  for d in shown.values()]  # fmt: skip
+        spacing = float(np.nanmedian(np.concatenate(ranges)))
+    if not np.isfinite(spacing) or spacing <= 0:
+        raise ValueError("No finite ΔF/F0 to scale the traces by")
+    colors = plt.get_cmap("tab10").colors
+    offsets = spacing * np.arange(len(rois))[::-1]
+    for ax, (name, values) in zip(axes, shown.items(), strict=True):
+        x = np.arange(values.shape[1]) + (frames.start or 0)
+        for i, (trace, offset) in enumerate(zip(values, offsets, strict=True)):
+            ax.plot(x, trace + offset, color=colors[i % len(colors)], linewidth=0.6)
+        ax.set_yticks(offsets, [f"ROI {roi}" for roi in rois])
+        ax.set(xlabel=xlabel, title=name, xlim=(x[0], x[-1]))
+        ax.spines[["top", "right"]].set_visible(False)
+    bar_x = axes[-1].get_xlim()[1]
+    axes[-1].plot([bar_x, bar_x], [offsets[0], offsets[0] + spacing], color="black",
+                  linewidth=2, clip_on=False)  # fmt: skip
+    axes[-1].annotate(f"{spacing:.2g} ΔF/F0", (bar_x, offsets[0] + spacing / 2),
+                      xytext=(4, 0), textcoords="offset points", va="center")  # fmt: skip
+    for ax in axes[1:]:
+        ax.sharey(axes[0])
     return axes
 
 

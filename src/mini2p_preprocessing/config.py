@@ -217,6 +217,9 @@ class FluorescenceSettings(_Frozen):
     mask_shift_tolerance_px: int = Field(1, ge=0)  # allowed quadrant disagreement
     mask_min_correlation: float = Field(0.5, ge=0, le=1)  # rank correlation after the shift
     mask_min_retained_fraction: float = Field(0.5, gt=0, le=1)  # else the mask is dropped
+    # Frames read at once for the background traces and the background-corrected TIFF
+    # (~1 GB of float64 per 500 frames of 512 x 512).
+    background_chunk_frames: int = Field(100, ge=1)
 
 
 class FocusSettings(_Frozen):
@@ -459,6 +462,11 @@ class QCRun(_Frozen):
     # than this run (e.g. first 1000 frames vs full session); masks are shifted to fit.
     cellpose_image: Path | None = None
     valid_frames: Path | None = None  # .npz from behaviour alignment; None audits every frame
+    # Cellpose *_seg.npy of blood vessels: their fluorescence is the background regressed
+    # out of F and Fneu before ΔF/F0. Drawn on this registration's mean image, or set
+    # background_image to the image it was drawn on to shift it onto this plane.
+    background_seg: Path | None = None
+    background_image: Path | None = None
     valid_frames_key: str = "valid_frames"
 
 

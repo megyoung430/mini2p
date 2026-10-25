@@ -80,6 +80,8 @@ MOVIE_HELP = {
     "stage_bidiphase": "movie after phase correction (and destriping)",
     "stage_undistorted": "movie after distortion correction",
     "stage_registered": "movie after motion registration",
+    "stage_background_removed": "registered movie with the background regressed out",
+    "background_source": "background of that movie: vessel or non_roi (outside the ROIs)",
     "unaveraged_movie": "every frame",
     "averaged_movie": "average_frames frames per movie frame",
     "derivatives_root": "folder holding cohort-XX/<subject>/ses-*/funcimg/run-XX",

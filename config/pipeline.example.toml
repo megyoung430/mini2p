@@ -95,6 +95,7 @@ mask_max_shift_px = 50          # largest offset allowed when aligning masks
 mask_shift_tolerance_px = 1     # allowed disagreement between image quadrants
 mask_min_correlation = 0.5      # rank correlation required after the shift
 mask_min_retained_fraction = 0.5  # masks keeping less of their pixels are dropped
+background_chunk_frames = 100   # frames read at once for the vessel background (QC notebook)
 
 # ---- used by the QC notebook ----
 # Keep run_dir outside derivatives_subject_dir: the batch planner treats a run
@@ -108,6 +109,11 @@ qc_distortion_frames = 100
 # cellpose_seg = "/path/to/run-02/with_distortion_correction/without_destriping/aligned_structural/suite2p/plane0/meanImg_green_functional_contrast_seg.npy"
 # Only if the masks were drawn on another registration's mean image (e.g. first 1000 frames):
 # cellpose_image = "/path/to/that/meanImg_green_functional_contrast.png"
+# Blood vessels segmented in Cellpose: their fluorescence is the background regressed out
+# of F and Fneu before ΔF/F0 (QC notebook). Drawn on this registration's mean image, or set
+# background_image to the image they were drawn on to shift them onto this plane.
+# background_seg = "/path/to/meanImg_green_blood_vessel_seg.npy"
+# background_image = "/path/to/that/meanImg_green_raw.tif"
 # valid_frames = "/path/to/session/valid_frames.npz"
 valid_frames_key = "valid_frames"
 
@@ -161,6 +167,9 @@ stage_raw = true              # the acquired TIFF
 stage_bidiphase = true        # + phase correction (and destriping)
 stage_undistorted = true      # + distortion correction
 stage_registered = true       # + motion registration (Suite2p's binaries)
+stage_background_removed = false  # + background regressed out of every pixel
+                              #   (data_background_removed_<source>.tif, from the QC notebook)
+background_source = "vessel"  # that background: "vessel" or "non_roi" (outside the ROIs)
 # Which versions of each
 unaveraged_movie = true       # every frame
 averaged_movie = true         # average_frames frames per movie frame

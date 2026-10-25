@@ -53,6 +53,7 @@ from pydantic import (
 )
 from scipy.ndimage import gaussian_filter
 
+from .background_io import SOURCE_LABELS, BackgroundSource, check_background_tiff
 from .batch import MANIFEST_NAME, SESSION_PATTERN
 from .config import (
     SETTINGS_RECORD,
@@ -80,8 +81,16 @@ log = logging.getLogger(__name__)
 Channel = Literal["side_by_side", "green", "red"]
 AverageMode = Literal["bin", "rolling"]
 Version = Literal["unaveraged", "averaged"]
-Stage = Literal["raw", "bidiphase", "undistorted", "registered"]
-STAGES: tuple[Stage, ...] = ("raw", "bidiphase", "undistorted", "registered")
+Stage = Literal["raw", "bidiphase", "undistorted", "registered", "background_removed"]
+STAGES: tuple[Stage, ...] = (
+    "raw",
+    "bidiphase",
+    "undistorted",
+    "registered",
+    "background_removed",
+)
+# Stages in the registered frame, which suite2p_crop crops
+REGISTERED_STAGES = ("registered", "background_removed")
 BINARIES = {"green": ("reg_file", "data.bin"), "red": ("reg_file_chan2", "data_chan2.bin")}
 CHANNEL_TITLES = {"green": "functional", "red": "structural"}
 PANEL_GAP_PX = 4
@@ -125,6 +134,10 @@ class MovieSettings(BaseModel):
     stage_bidiphase: bool = False  # after phase correction (and destriping)
     stage_undistorted: bool = False  # after distortion correction too (not if it was off)
     stage_registered: bool = True  # after Suite2p motion registration too
+    # the registered movie with the vessel background regressed out of every pixel, from
+    # the QC notebook's data_background_removed_<source>.tif in the plane folder
+    stage_background_removed: bool = False
+    background_source: BackgroundSource = "vessel"  # or "non_roi": pixels outside the ROIs
     # Which versions of each: every frame, and frames averaged average_frames at a time
     unaveraged_movie: bool = True
     averaged_movie: bool = True
@@ -184,12 +197,13 @@ class MovieSettings(BaseModel):
                 f"({self.white_percentile})"
             )
         if not self.stages:
-            raise ValueError("Choose at least one stage (stage_raw, ..., stage_registered)")
+            raise ValueError("Choose at least one stage (stage_raw, ..., stage_background_removed)")
         if not self.versions:
             raise ValueError("Choose unaveraged_movie and/or averaged_movie")
-        if self.suite2p_crop and not self.stage_registered:
+        if self.suite2p_crop and not set(self.stages) & set(REGISTERED_STAGES):
             raise ValueError(
-                "suite2p_crop crops the registered movies, so it needs stage_registered = true"
+                "suite2p_crop crops the registered movies, so it needs stage_registered or "
+                "stage_background_removed = true"
             )
         if not self.whole_recording:
             if self.start_frame is None or self.end_frame is None:
@@ -391,14 +405,19 @@ def compose_panels(panels: dict[str, np.ndarray]) -> np.ndarray:
     return np.repeat(grey[..., None], 3, axis=-1)
 
 
-def stage_title(stage: Stage, run: PipelineSettings | None) -> str:
+def stage_title(
+    stage: Stage, run: PipelineSettings | None, background_source: BackgroundSource = "vessel"
+) -> str:
     """What had been done to the frames by *stage*, from the settings the run used."""
+    removed = f"{SOURCE_LABELS[background_source].lower()} background removed"
     if run is None:
-        return stage
+        return removed if stage == "background_removed" else stage
     steps = ["bidiphase" + (" + destriping" if run.destripe.enabled else "")]
     if run.distortion.mode != "off":
         steps.append("distortion")
     steps.append("registration")
+    if stage == "background_removed":
+        return " + ".join([*steps, removed])
     shown = {"raw": 0, "bidiphase": 1, "undistorted": 2, "registered": len(steps)}[stage]
     return " + ".join(steps[:shown]) if shown else "raw"
 
@@ -472,7 +491,7 @@ def plan_movie(
         *names,
         variant_label(settings.variant),
         *([alignment] if alignment else []),  # e.g. aligned_structural
-        stage,
+        f"{stage}-{settings.background_source}" if stage == "background_removed" else stage,
         settings.channel,
         *(["cropped"] if cropped else []),
         f"frames-{first}-{last}",
@@ -638,6 +657,7 @@ def open_stage(
     run: PipelineSettings | None,
     raw_tiff: Path | None,
     stack: ExitStack,
+    background_source: BackgroundSource = "vessel",
 ) -> dict[str, Frames]:
     """The frames of each channel shown, for one stage; TIFFs stay open until *stack* closes.
 
@@ -659,7 +679,10 @@ def open_stage(
             f"No {SETTINGS_RECORD} in {variant_dir_of(plane_dir)}: the {stage} stage needs "
             "the channel order and file names the run was processed with"
         )
-    path = stage_tiff(stage, variant_dir_of(plane_dir), run, raw_tiff)
+    if stage == "background_removed":
+        path = check_background_tiff(plane_dir, ops, background_source)
+    else:
+        path = stage_tiff(stage, variant_dir_of(plane_dir), run, raw_tiff)
     tif = stack.enter_context(tifffile.TiffFile(path))
     index = {
         "green": run.channels.functional_channel - 1,
@@ -888,12 +911,15 @@ def open_jobs(
         )
     jobs = []
     for stage in stages:
-        sources = open_stage(stage, plane_dir, ops, settings.channel, run, settings.raw_tiff, stack)
-        title = stage_title(stage, run)
+        sources = open_stage(
+            stage, plane_dir, ops, settings.channel, run, settings.raw_tiff, stack,
+            settings.background_source,
+        )  # fmt: skip
+        title = stage_title(stage, run, settings.background_source)
         for version in settings.versions:
             plan = plan_movie(version, stage, span, fs, settings, names, alignment=alignment)
             jobs.append(MovieJob(plan, sources, span, title, fs))
-            if region is not None and stage == "registered":
+            if region is not None and stage in REGISTERED_STAGES:
                 cropped = {name: CroppedFrames(src, *region) for name, src in sources.items()}
                 plan = plan_movie(
                     version, stage, span, fs, settings, names, cropped=True, alignment=alignment
