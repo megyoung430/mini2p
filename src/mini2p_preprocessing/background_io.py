@@ -128,6 +128,7 @@ def vessel_cache_key(
         "seg_file": str(Path(seg_file).resolve()),
         "seg_sha256": file_sha256(seg_file),
         "image_sha256": file_sha256(image) if image is not None else None,
+        "region_sha256": mask_sha256(region_mask(ops)),
         "excluded_sha256": mask_sha256(exclude) if exclude is not None else None,
         "shape": [int(ops["nframes"]), int(ops["Ly"]), int(ops["Lx"])],
         "binaries": binaries_identity(ops, plane_dir),
@@ -169,15 +170,24 @@ def load_vessel_traces(
     image: Path | None = None,
     exclude: np.ndarray | None = None,
 ) -> BackgroundTraces:
-    """The background from a blood-vessel segmentation; *exclude* (e.g. the ROI pixels) is
-    left out of the vessel mask."""
+    """The background from a blood-vessel segmentation, within the region no frame's
+    registration shifts wrap into (as for the non-ROI background); *exclude* (e.g. the ROI
+    pixels) is left out of the vessel mask."""
     labels, alignment = vessel_labels_on_plane(seg_file, outputs.ops, plane_dir, settings, image)
+    labels = np.where(region_mask(outputs.ops), labels, 0)
     mask = build_vessel_mask(labels, outputs.functional.shape[1:], exclude)
     if exclude is not None and (overlap := int(((labels > 0) & exclude).sum())):
         log.info("Left %d ROI pixels out of the vessel mask", overlap)
     key = vessel_cache_key(seg_file, outputs.ops, plane_dir, image, exclude)
     green, red = cached_mask_traces(outputs, plane_dir, "vessel", mask, key, settings)
     return BackgroundTraces("vessel", green, red, mask, alignment, key)
+
+
+def region_mask(ops: dict) -> np.ndarray:
+    """True inside the region no frame's registration shifts wrap into."""
+    inside = np.zeros((int(ops["Ly"]), int(ops["Lx"])), bool)
+    inside[unwrapped_region(ops)] = True
+    return inside
 
 
 def load_non_roi_traces(

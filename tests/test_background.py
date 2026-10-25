@@ -159,7 +159,8 @@ def registered_movie(rng, plane, n=400, shape=(12, 16), drawn_on="meanImg.png"):
         stack.astype(np.int16).tofile(plane / binary)
         stacks[name] = np.memmap(plane / binary, np.int16, "r", shape=(n, *shape))
         backgrounds[name] = bg
-    ops = {"nframes": n, "Ly": ly, "Lx": lx, "fs": FS, "nchannels": 2}
+    ops = {"nframes": n, "Ly": ly, "Lx": lx, "fs": FS, "nchannels": 2,
+           "yoff": np.zeros(n), "xoff": np.zeros(n)}  # fmt: skip
     seg = plane / "vessels_seg.npy"
     np.save(seg, {"masks": vessel, "filename": str(plane / drawn_on)}, allow_pickle=True)
     outputs = RegisteredOutputs(ops=ops, functional=stacks["green"], structural=stacks["red"])
@@ -426,7 +427,6 @@ def test_non_roi_traces_follow_the_background_and_are_redone_for_new_rois(tmp_pa
 
     rng = np.random.default_rng(16)
     outputs, _, backgrounds, _ = registered_movie(rng, tmp_path)
-    outputs.ops.update(yoff=np.zeros(400), xoff=np.zeros(400))
     rois = np.zeros((12, 16), int)
     rois[6:9, 4:8] = 1
     non_roi = module.load_non_roi_traces(outputs, tmp_path, rois, pipeline_settings())
@@ -471,3 +471,15 @@ def test_trace_comparison_overlays_each_result():
     with pytest.raises(ValueError, match="quantity"):
         plots.plot_trace_comparison(results, 1, FS, quantity="F")
     plt.close("all")
+
+
+def test_vessel_pixels_in_wrapped_edges_are_not_background(tmp_path):
+    from mini2p_preprocessing.background_io import load_vessel_traces
+
+    rng = np.random.default_rng(18)
+    outputs, seg, _, _ = registered_movie(rng, tmp_path)  # the vessel is rows 2-3
+    yoff = np.zeros(400)
+    yoff[5] = -3  # one frame rolls rows 0-2 in from the bottom edge
+    outputs.ops.update(yoff=yoff, xoff=np.zeros(400))
+    vessel = load_vessel_traces(outputs, tmp_path, seg, pipeline_settings())
+    assert not vessel.mask[2].any() and vessel.mask[3].all()
