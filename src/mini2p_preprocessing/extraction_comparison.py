@@ -78,8 +78,10 @@ def fitted_neuropil_coefficients(
     """Each ROI's neuropil coefficient: the c that best removes its neuropil's fast
     fluctuations from it, i.e. the least-squares slope of high-passed F on high-passed Fneu
     (with the high-passed *background* as a second regressor, so a field-wide change is not
-    taken as neuropil), kept in *bounds*. The cell's own transients (frames far above the
-    fit) are left out of the later fits, which steadies the slope of an active cell.
+    taken as neuropil; a noisy background trace, e.g. from a small mask, lets part of that
+    change through and biases the coefficient high), kept in *bounds*. The cell's own
+    transients (frames far above the fit) are left out of the later fits, which steadies the
+    slope of an active cell.
 
     Not a measurement of the contamination: noise and local signal in Fneu that never reach
     the ROI pull a least-squares slope towards 0, and activity that appears in both the ROI
@@ -213,12 +215,9 @@ def method_metrics(
     - ``mean_pairwise_r``: mean correlation between the ROIs' high-passed corrected F, over up
       to ``PAIRWISE_MAX_ROIS`` ROIs (raised by any signal shared across the field).
 
-    Raises:
-        ValueError: If *common* holds fewer than one ROI.
+    With no common ROI, noise and skew are NaN (the counts are still given).
     """
     common = np.asarray(common, bool)
-    if not common.any():
-        raise ValueError("No ROI has a valid F0 under every correction; nothing to compare")
     f_hp = high_pass(result.f_corr, fs_hz, detrend_s)
     bg_hp = high_pass(background, fs_hz, detrend_s)
     f_c = f_hp - f_hp.mean(axis=1, keepdims=True)
@@ -227,16 +226,37 @@ def method_metrics(
         r_background = f_c @ b_c / (np.linalg.norm(f_c, axis=1) * np.linalg.norm(b_c))
     invalid = np.asarray(result.invalid_f0)
     dff = np.asarray(result.dff, np.float64)[common]
+    spread = (
+        (float(np.median(_noise(dff))), float(np.nanmedian(_skew(dff))))
+        if common.any()
+        else (np.nan, np.nan)
+    )
     return {
         "rois_invalid_f0_anywhere": int(invalid.any(axis=1).sum()),
         "rois_invalid_f0_mostly": int((invalid.mean(axis=1) >= 0.5).sum()),
         "fraction_frames_invalid_f0": float(invalid.mean()),
         "median_f0": float(np.median(np.median(result.f0, axis=1))),
-        "median_noise": float(np.median(_noise(dff))),
-        "median_skew": float(np.nanmedian(_skew(dff))),
+        "median_noise": spread[0],
+        "median_skew": spread[1],
         "median_abs_r_background": float(np.nanmedian(np.abs(r_background))),
         "mean_pairwise_r": _mean_pairwise_r(f_hp),
     }
+
+
+def channel_fraction(
+    trace: np.ndarray, fs_hz: float, dark: float = 0.0, detrend_s: float = DETREND_S, name: str = ""
+) -> np.ndarray:
+    """A background trace high-passed, as a fraction of its mean above the dark level.
+
+    Raises:
+        ValueError: If the trace is not finite or its mean is not above *dark*.
+    """
+    trace = np.asarray(trace, np.float64)
+    _check_finite(f"The {name} background".replace("  ", " "), trace)
+    level = trace.mean() - dark
+    if level <= 0:
+        raise ValueError(f"The {name} background's mean is not above its dark level ({dark:g})")
+    return high_pass(trace, fs_hz, detrend_s) / level
 
 
 def background_channel_check(
@@ -258,23 +278,24 @@ def background_channel_check(
       Noise in red pulls it towards 0.
     - ``r_squared``: the fraction of green's fluctuation shared with red; the rest is in
       green alone (indicator signal, or green's noise).
+    - ``slope_low``, ``slope_high``: the slope's range, from green on red to the reverse
+      regression (slope / r²). Noise in red pulls the first down, signal or noise in green
+      alone pushes the second up; the shared part's true slope lies between them, so a
+      reading of "near 1" needs a narrow range.
 
     Raises:
         ValueError: If a channel's mean is not above its dark level.
     """
-    fractions = {}
-    for name, trace, dark in (("green", green, dark_green), ("red", red, dark_red)):
-        trace = np.asarray(trace, np.float64)
-        _check_finite(f"The {name} background", trace)
-        level = trace.mean() - dark
-        if level <= 0:
-            raise ValueError(f"The {name} background's mean is not above its dark level ({dark:g})")
-        fractions[name] = high_pass(trace, fs_hz, detrend_s) / level
-    g, r = fractions["green"], fractions["red"]
+    g = channel_fraction(green, fs_hz, dark_green, detrend_s, "green")
+    r = channel_fraction(red, fs_hz, dark_red, detrend_s, "red")
     g, r = g - g.mean(), r - r.mean()
     correlation = float(np.corrcoef(g, r)[0, 1])
+    slope = float(g @ r / (r @ r))
+    reverse = slope / correlation**2 if correlation != 0 else np.inf
     return {
-        "green_on_red_slope": float(g @ r / (r @ r)),
+        "green_on_red_slope": slope,
+        "slope_low": min(slope, reverse),
+        "slope_high": max(slope, reverse),
         "r": correlation,
         "r_squared": correlation**2,
         "green_sd_fraction": float(g.std()),

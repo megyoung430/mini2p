@@ -12,6 +12,7 @@ from matplotlib.patches import Rectangle
 from .bidiphase import PhaseEstimate
 from .config import PipelineSettings
 from .contrast import red_green_overlay
+from .extraction_comparison import channel_fraction
 from .focus import FocusQC, flagged_stretches
 from .frame_phase import FramePhases, fallback_stretches
 
@@ -804,11 +805,9 @@ def plot_background_channels(green: np.ndarray, red: np.ndarray, fs_hz: float, c
     """Left: each channel's high-passed background as a fraction of its mean above the dark
     level, over time. Right: green against red with the least-squares slope (1: both change
     by the same fraction; above 1: green changes more)."""
-    from .extraction_comparison import high_pass
-
     axes = _axes_grid(axes, 1, 2, (14, 4)).ravel()
-    g = high_pass(green, fs_hz) / (np.mean(green) - dark_green)
-    r = high_pass(red, fs_hz) / (np.mean(red) - dark_red)
+    g = channel_fraction(green, fs_hz, dark_green, name="green")
+    r = channel_fraction(red, fs_hz, dark_red, name="red")
     minutes = np.arange(len(g)) / fs_hz / 60
     axes[0].plot(minutes, g, color=OKABE_ITO["bluish_green"], linewidth=0.6, label="Green")
     axes[0].plot(minutes, r, color=OKABE_ITO["vermillion"], linewidth=0.6, label="Red")
@@ -822,7 +821,10 @@ def plot_background_channels(green: np.ndarray, red: np.ndarray, fs_hz: float, c
     axes[1].plot(line, slope * line, color="black", linewidth=1, label=f"Slope {slope:.2f}")
     axes[1].plot(line, line, color=OKABE_ITO["grey"], linestyle="--", linewidth=1, label="Slope 1")
     axes[1].set(xlabel="Red Change (Fraction)", ylabel="Green Change (Fraction)")
-    axes[1].set_title(f"Green Against Red (r²={check['r_squared']:.2f})")
+    axes[1].set_title(
+        f"Green Against Red (r²={check['r_squared']:.2f}, "
+        f"Slope {check['slope_low']:.2f} to {check['slope_high']:.2f})"
+    )
     axes[1].legend(frameon=False, loc="upper left", bbox_to_anchor=(1.0, 1.0))
     for ax in axes:
         ax.spines[["top", "right"]].set_visible(False)

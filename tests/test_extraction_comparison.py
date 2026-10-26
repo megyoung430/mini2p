@@ -156,10 +156,14 @@ def test_metrics_count_invalid_baselines_on_all_rois():
     assert metrics["fraction_frames_invalid_f0"] == pytest.approx((10 + 100) / 300)
 
 
-def test_metrics_need_a_common_roi():
-    with pytest.raises(ValueError, match="No ROI"):
-        method_metrics(result_of(np.ones((2, 50)), np.ones((2, 50))), np.arange(50.0), FS,
-                       common=np.zeros(2, bool))  # fmt: skip
+def test_metrics_without_a_common_roi_still_count_baselines():
+    rng = np.random.default_rng(8)
+    f0 = np.ones((2, 50))
+    f0[0] = -1
+    metrics = method_metrics(result_of(1 + rng.normal(0, 0.1, (2, 50)), f0), rng.normal(size=50),
+                             FS, common=np.zeros(2, bool))  # fmt: skip
+    assert metrics["rois_invalid_f0_anywhere"] == 1
+    assert np.isnan(metrics["median_noise"]) and np.isnan(metrics["median_skew"])
 
 
 def test_metrics_see_a_fast_shared_signal_and_its_removal():
@@ -217,6 +221,16 @@ def test_blood_volume_moves_green_more_than_red():
     volume = fluctuation(3)
     check = background_channel_check(200 * (1 - 2 * volume), 50 * (1 - 0.5 * volume), FS)
     assert check["green_on_red_slope"] == pytest.approx(4, rel=0.05)
+
+
+def test_the_slope_range_holds_the_truth_when_red_is_noisy():
+    rng = np.random.default_rng(9)
+    volume = fluctuation(6, sd=0.02)
+    green = 200 * (1 - 4 * volume) + rng.normal(0, 0.5, N_FRAMES)
+    red = 50 * (1 - volume) + rng.normal(0, 2, N_FRAMES)  # red noise drags the slope down
+    check = background_channel_check(green, red, FS)
+    assert check["green_on_red_slope"] < 2.5
+    assert check["slope_low"] < 4 < check["slope_high"]
 
 
 def test_a_dark_offset_is_taken_off_before_the_fractions():
