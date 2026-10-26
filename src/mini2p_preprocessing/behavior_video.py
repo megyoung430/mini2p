@@ -121,6 +121,8 @@ def video_frame_count(path: Path) -> int:
         meta = next(reader)
     finally:
         reader.close()
+    if not meta.get("duration") or not meta.get("fps"):
+        raise ValueError(f"{path} does not give its duration and frame rate")
     return round(meta["duration"] * meta["fps"])
 
 
@@ -161,7 +163,7 @@ def load_behavior_sync(run_dir: Path, n_frames: int, video: Path | None = None) 
         raise FileNotFoundError(
             f"No behavior video {video}; set behavior_video in [movies] if it has moved"
         )
-    check_frame_times(frame_time_s[:n_frames], str(run_dir / FRAME_TIMES_FILE))
+    check_frame_times(frame_time_s[:n_frames], str(run_dir / FRAME_TIMES_FILE), min_timed=2)
     check_frame_times(video_time_s, str(run_dir / VIDEO_FRAME_TIMES_FILE), min_timed=2)
     check_frame_count(video_frame_count(video), len(video_time_s), video)
     return BehaviorSync(frame_time_s[:n_frames], video_time_s, video)
