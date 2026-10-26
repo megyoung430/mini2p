@@ -173,7 +173,7 @@ background_source = "vessel"  # that background: "vessel" or "non_roi" (outside 
 # Which versions of each
 unaveraged_movie = true       # every frame
 averaged_movie = true         # average_frames frames per movie frame
-behavior = false              # true: also each movie with the behaviour video on the left,
+behavior = false              # true: also each movie with the behavior video on the left,
                               #   in sync (needs run-XX/frame_times.npz and video_frame_times.npz
                               #   from magnitude-bandit-analysis's reward_responses notebook)
 # Where to read and write

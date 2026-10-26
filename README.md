@@ -144,8 +144,8 @@ Everything is set in the `[movies]` section of the config (see
   0-based and both included (with the whole recording these two are ignored, with a warning);
 - **which stages**: the five switches above (only `stage_registered` is on unless the
   config says otherwise), and **versions**: `unaveraged_movie`, `averaged_movie`;
-- **behaviour**: with `behavior = true`, every movie also gets a twin (`..._behavior_...`)
-  with the run's behaviour video on the left of the imaging, scaled to its height and in
+- **behavior**: with `behavior = true`, every movie also gets a twin (`..._behavior_...`)
+  with the run's behavior video on the left of the imaging, scaled to its height and in
   sync: each movie frame shows the video frame on screen at the middle of its imaging
   window, by pyControl time. It reads `run-XX/frame_times.npz` (imaging frames) and
   `run-XX/video_frame_times.npz` (video frames, and the video's path), which

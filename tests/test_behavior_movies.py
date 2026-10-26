@@ -1,4 +1,4 @@
-"""Movies with the behaviour video beside the imaging, paired by pyControl time."""
+"""Movies with the behavior video beside the imaging, paired by pyControl time."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def write_video(path: Path, n_frames: int = VIDEO_FRAMES) -> None:
     writer.close()
 
 
-def add_behavior(plane: Path, video_name: str = "behaviour.mp4", n_video: int = VIDEO_FRAMES):
+def add_behavior(plane: Path, video_name: str = "behavior.mp4", n_video: int = VIDEO_FRAMES):
     """frame_times.npz and video_frame_times.npz beside the run, as magnitude-bandit-analysis
     writes them, and the video they name. The video's first and last frames have no time
     (outside the sync pulses)."""
@@ -192,6 +192,96 @@ def test_behavior_movies_for_every_stage_version_and_crop(tmp_path):
     np.save(plane / "ops.npy", ops, allow_pickle=True)
     written = make_movies(settings_for(tmp_path, behavior=True, suite2p_crop=True))
     names = sorted(p.name for p in written)
-    assert len(names) == 8  # (unaveraged, averaged) x (whole, cropped) x (plain, behaviour)
+    assert len(names) == 8  # (unaveraged, averaged) x (whole, cropped) x (plain, behavior)
     assert sum("behavior" in n for n in names) == 4
     assert LX % 2  # the fixture's odd width exercises the padding
+
+
+# ---------------------------------------------------------------- uneven and broken timing
+
+
+def test_uneven_video_timing_leaves_no_gaps_inside_the_video():
+    rng = np.random.default_rng(0)
+    gaps = np.full(6000, 1 / 60) + rng.normal(0, 2e-4, 6000)
+    gaps[rng.choice(6000, 12, replace=False)] *= 2  # dropped camera frames
+    video = np.concatenate([[0.0], np.cumsum(gaps)])
+    times = np.linspace(0.5, video[-1] - 0.5, 700)
+    assert np.all(video_frame_for(times, video) >= 0)
+
+
+@pytest.mark.parametrize("n_timed", [0, 1])
+def test_too_few_timed_video_frames_are_refused(tmp_path, n_timed):
+    plane = make_run(tmp_path, tiffs=False)
+    run_dir, video = add_behavior(plane)
+    video_time_s = np.full(VIDEO_FRAMES, np.nan)
+    video_time_s[:n_timed] = VIDEO_START_S
+    np.savez(run_dir / VIDEO_FRAME_TIMES_FILE, time_s=video_time_s, video=str(video))
+    with pytest.raises(ValueError, match=f"has {n_timed} frames with a time"):
+        load_behavior_sync(run_dir, N_FRAMES)
+
+
+def test_a_timing_file_without_its_arrays_is_named(tmp_path):
+    plane = make_run(tmp_path, tiffs=False)
+    run_dir, _ = add_behavior(plane)
+    np.savez(run_dir / VIDEO_FRAME_TIMES_FILE, time_s=np.arange(VIDEO_FRAMES, dtype=float))
+    with pytest.raises(ValueError, match="video_frame_times.npz lacks \\['video'\\]"):
+        load_behavior_sync(run_dir, N_FRAMES)
+
+
+def test_imaging_times_that_go_back_are_refused(tmp_path):
+    plane = make_run(tmp_path, tiffs=False)
+    run_dir, _ = add_behavior(plane)
+    times = IMAGING_START_S + np.arange(N_FRAMES) / FS
+    times[10] = times[5]
+    np.savez(run_dir / FRAME_TIMES_FILE, time_s=times)
+    with pytest.raises(ValueError, match="frame times must increase"):
+        load_behavior_sync(run_dir, N_FRAMES)
+
+
+def test_a_video_shorter_than_its_frame_times_is_refused(tmp_path):
+    plane = make_run(tmp_path, tiffs=False)
+    run_dir, _ = add_behavior(plane, n_video=VIDEO_FRAMES - 20)
+    with pytest.raises(ValueError, match=f"about {VIDEO_FRAMES - 20} frames"):
+        load_behavior_sync(run_dir, N_FRAMES)
+
+
+def test_a_video_that_misses_the_imaging_stops_before_anything_is_written(tmp_path):
+    plane = make_run(tmp_path, tiffs=False)
+    run_dir, video = add_behavior(plane)
+    late = VIDEO_START_S + 1000 + np.arange(VIDEO_FRAMES) / VIDEO_HZ  # another session's clock
+    np.savez(run_dir / VIDEO_FRAME_TIMES_FILE, time_s=late, video=str(video))
+    with pytest.raises(ValueError, match="do not overlap"):
+        make_movies(settings_for(tmp_path, behavior=True))
+    assert not movie_dir(tmp_path).exists()
+
+
+def test_imaging_frames_without_a_time_show_a_black_panel(tmp_path):
+    plane = make_run(tmp_path, tiffs=False)
+    run_dir, _ = add_behavior(plane)
+    times = IMAGING_START_S + np.arange(N_FRAMES) / FS
+    times[:5] = np.nan  # before the first sync pulse
+    np.savez(run_dir / FRAME_TIMES_FILE, time_s=times)
+    written = make_movies(settings_for(tmp_path, averaged_movie=False, behavior=True))
+    _, frames = decoded(next(p for p in written if "behavior" in p.name))
+    panel = behavior_width((VIDEO_W, VIDEO_H), LY)
+    assert frames[0, 5 : LY - 5, 5 : panel - 5].max() <= 3
+    assert frames[10, 5 : LY - 5, 5 : panel - 5].mean() > 5
+
+
+@pytest.mark.parametrize("mode", ["bin", "rolling"])
+def test_averaged_movies_show_the_video_at_the_middle_of_each_window(tmp_path, mode):
+    plane = make_run(tmp_path, tiffs=False)
+    add_behavior(plane)
+    settings = settings_for(
+        tmp_path, unaveraged_movie=False, behavior=True, average_frames=4, average_mode=mode
+    )
+    written = make_movies(settings)
+    _, frames = decoded(next(p for p in written if "behavior" in p.name))
+    step = 4 if mode == "bin" else 1
+    panel = behavior_width((VIDEO_W, VIDEO_H), LY)
+    for k in (0, len(frames) // 2, len(frames) - 1):
+        first = k * step
+        middle_s = IMAGING_START_S + (first + 2) / FS  # 4 frames from first: middle after 2
+        shown = int(np.floor((middle_s - VIDEO_START_S) * VIDEO_HZ + 1e-9))
+        level = frames[k, 5 : LY - 5, 5 : panel - 5].mean()
+        assert abs(level - video_level(shown)) <= 3, (mode, k, level, shown)

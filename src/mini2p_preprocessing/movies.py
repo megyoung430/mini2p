@@ -14,7 +14,7 @@ Each stage gives up to two MP4s (H.264, yuv420p, which PowerPoint, Keynote and Q
   in non-overlapping bins (``"bin"``: fewer frames, each covering a longer time) or as a
   running mean (``"rolling"``: one movie frame per acquired frame, smoothed in time).
 
-With ``behavior``, every movie also gets a twin with the run's behaviour video on the left
+With ``behavior``, every movie also gets a twin with the run's behavior video on the left
 of the imaging, paired by pyControl time (see ``behavior_video``).
 
 Movies are greyscale. By default the functional (green) channel is on the left and the
@@ -153,7 +153,7 @@ class MovieSettings(BaseModel):
     # Which versions of each: every frame, and frames averaged average_frames at a time
     unaveraged_movie: bool = True
     averaged_movie: bool = True
-    # Also each movie with the run's behaviour video on the left, in sync: needs the run
+    # Also each movie with the run's behavior video on the left, in sync: needs the run
     # folder's frame_times.npz and video_frame_times.npz from magnitude-bandit-analysis
     behavior: bool = False
     # Where to read and write
@@ -748,7 +748,7 @@ class BehaviorFrames:
 def with_behavior(
     imaging: np.ndarray, video_frame: np.ndarray | None, video_size: tuple[int, int], gap: int
 ) -> tuple[np.ndarray, int]:
-    """The behaviour panel, at the imaging's height, then *gap* black columns, then the
+    """The behavior panel, at the imaging's height, then *gap* black columns, then the
     imaging frame; and where the imaging now starts."""
     height = imaging.shape[0]
     width = behavior_width(video_size, height)
@@ -768,7 +768,7 @@ def rendered_frames(
     behavior: BehaviorFrames | None = None,
 ) -> Iterator[np.ndarray]:
     """RGB uint8 movie frames, read *block* movie frames at a time (default: ``block_size``),
-    with the behaviour video on the left when *behavior* is given."""
+    with the behavior video on the left when *behavior* is given."""
     block = block or block_size(plan.n, settings.average_mode)
     for b in range(0, len(plan.starts), block):
         first = plan.starts[b : b + block]
@@ -879,7 +879,7 @@ class MovieJob:
     span: tuple[int, int]
     title: str
     fs: float
-    behavior: BehaviorSync | None = None  # set: the behaviour video beside the imaging
+    behavior: BehaviorSync | None = None  # set: the behavior video beside the imaging
 
 
 def settings_from_records(variant_dir: Path, config: PipelineSettings) -> PipelineSettings:
@@ -1070,9 +1070,35 @@ def make_movies(
                 raise FileExistsError(
                     f"{out_dir / job.plan.name} exists; set overwrite = true to replace it"
                 )
+        for job in jobs:  # every behavior movie pairs with its video before any is written
+            if job.behavior is not None:
+                behavior_indices(job.behavior, job.plan)
         out_dir.mkdir(parents=True, exist_ok=True)
         written = [_write_job(job, out_dir, settings) for job in jobs]
     return written
+
+
+MAX_UNSHOWN_FRACTION = 0.1  # more movie frames without video than this: warn
+
+
+def behavior_indices(sync: BehaviorSync, plan: MoviePlan) -> np.ndarray:
+    """The video frame for each movie frame of *plan* (-1: none).
+
+    Raises:
+        ValueError: If no movie frame has a video frame: the video and the imaging do not
+            overlap in time (another run's video, or another clock).
+    """
+    indices = video_frame_for(movie_frame_times(sync.frame_time_s, plan.starts, plan.n),
+                              sync.video_time_s)  # fmt: skip
+    unshown = float(np.mean(indices < 0))
+    if unshown == 1:
+        raise ValueError(
+            f"No frame of {plan.name} falls within {sync.video}'s frame times: the video and "
+            "the imaging do not overlap"
+        )
+    if unshown > MAX_UNSHOWN_FRACTION:
+        log.warning("%s: %.0f%% of movie frames have no video frame", plan.name, 100 * unshown)
+    return indices
 
 
 def _write_job(job: MovieJob, out_dir: Path, settings: MovieSettings) -> Path:
@@ -1101,8 +1127,7 @@ def _write_job(job: MovieJob, out_dir: Path, settings: MovieSettings) -> Path:
         frames = rendered_frames(job.sources, plan, limits, settings, job.fs, job.title)
         write_mp4(path, frames, len(plan.starts), plan.fps, settings.quality)
         return path
-    times = movie_frame_times(job.behavior.frame_time_s, plan.starts, plan.n)
-    indices = video_frame_for(times, job.behavior.video_time_s)
+    indices = behavior_indices(job.behavior, plan)
     log.info(
         "%s: video %s; %d of %d movie frames have no video frame (black panel)",
         plan.name, job.behavior.video, int((indices < 0).sum()), len(indices),
