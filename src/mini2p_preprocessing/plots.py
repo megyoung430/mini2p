@@ -715,16 +715,19 @@ def plot_focus_qc(
 
 # ---------------------------------------------------------------- extraction comparison
 
-METRIC_TITLES = {
-    "rois_f0_le_0_anywhere": "ROIs With F0 ≤ 0 Somewhere",
-    "rois_f0_le_0_median": "ROIs With F0 ≤ 0 Most Of The Time",
-    "fraction_frames_f0_le_0": "Fraction Of Frames Without ΔF/F0",
-    "median_f0": "Median F0",
-    "median_noise": "Median Noise (ΔF/F0 Per Frame)",
-    "median_skew": "Median Skew Of ΔF/F0",
-    "median_abs_r_background": "Median |r| With Background",
-    "mean_pairwise_r": "Mean Pairwise r Between ROIs",
-}
+
+def metric_titles(min_f0: float) -> dict[str, str]:
+    """Panel titles of ``extraction_comparison.method_metrics``' numbers."""
+    return {
+        "rois_invalid_f0_anywhere": f"ROIs With F0 ≤ {min_f0:g} Somewhere",
+        "rois_invalid_f0_mostly": f"ROIs With F0 ≤ {min_f0:g} Most Of The Time",
+        "fraction_frames_invalid_f0": "Fraction Of Frames Without ΔF/F0",
+        "median_f0": "Median F0",
+        "median_noise": "Median Noise (ΔF/F0 Per Frame, Common ROIs)",
+        "median_skew": "Median Skew Of ΔF/F0 (Common ROIs)",
+        "median_abs_r_background": "Median |r| With Background (High-Passed)",
+        "mean_pairwise_r": "Mean Pairwise r Between ROIs",
+    }
 
 
 def plot_contrast_ratio(ratio: np.ndarray, ax=None):
@@ -752,15 +755,21 @@ def plot_fitted_coefficients(coefficients: np.ndarray, fixed: float, ax=None):
     return ax
 
 
-def plot_f0_by_method(f0_medians: dict[str, np.ndarray], ax=None):
-    """Cumulative distribution of each ROI's median F0, one line per correction."""
-    if len(f0_medians) > len(SERIES_COLORS):
-        raise ValueError(f"At most {len(SERIES_COLORS)} methods, got {len(f0_medians)}")
+def _method_colors(n: int) -> list[str]:
+    if n > len(SERIES_COLORS):
+        raise ValueError(f"At most {len(SERIES_COLORS)} methods, got {n}")
+    return SERIES_COLORS[:n]
+
+
+def plot_f0_by_method(f0_medians: dict[str, np.ndarray], min_f0: float, ax=None):
+    """Cumulative distribution of each ROI's median F0, one line per correction; *min_f0*
+    (at or below which ΔF/F0 is undefined) dashed."""
+    colors = _method_colors(len(f0_medians))
     ax = _axes_grid(ax, 1, 1, (8, 4.5))[0, 0]
-    for (name, values), color in zip(f0_medians.items(), SERIES_COLORS, strict=False):
+    for (name, values), color in zip(f0_medians.items(), colors, strict=True):
         x = np.sort(values)
         ax.plot(x, np.arange(1, len(x) + 1) / len(x), color=color, label=name)
-    ax.axvline(0, color=OKABE_ITO["grey"], linestyle="--", linewidth=1)
+    ax.axvline(min_f0, color=OKABE_ITO["grey"], linestyle="--", linewidth=1)
     ax.set(xlabel="Median F0 Per ROI", ylabel="Fraction Of ROIs", ylim=(0, 1))
     ax.set_title("Baseline F0 By Correction")
     ax.legend(frameon=False, loc="upper left", bbox_to_anchor=(1.0, 1.0))
@@ -768,20 +777,21 @@ def plot_f0_by_method(f0_medians: dict[str, np.ndarray], ax=None):
     return ax
 
 
-def plot_method_metrics(metrics: dict[str, dict[str, float]], keys: Sequence[str], axes=None):
+def plot_method_metrics(
+    metrics: dict[str, dict[str, float]], keys: Sequence[str], min_f0: float, axes=None
+):
     """One horizontal bar panel per metric in *keys*, one bar per correction."""
     names = list(metrics)
-    if len(names) > len(SERIES_COLORS):
-        raise ValueError(f"At most {len(SERIES_COLORS)} methods, got {len(names)}")
+    colors = _method_colors(len(names))
+    titles = metric_titles(min_f0)
     ncols = 2
     nrows = -(-len(keys) // ncols)
     axes = _axes_grid(axes, nrows, ncols, (13, 2.2 * nrows + 1)).ravel()
     y = np.arange(len(names))[::-1]
     for ax, key in zip(axes, keys, strict=False):
-        values = [metrics[name][key] for name in names]
-        ax.barh(y, values, color=SERIES_COLORS[: len(names)])
+        ax.barh(y, [metrics[name][key] for name in names], color=colors)
         ax.set_yticks(y, names)
-        ax.set_title(METRIC_TITLES.get(key, key))
+        ax.set_title(titles.get(key, key))
         ax.spines[["top", "right"]].set_visible(False)
     for ax in axes[len(keys) :]:
         ax.set_visible(False)
@@ -789,26 +799,30 @@ def plot_method_metrics(metrics: dict[str, dict[str, float]], keys: Sequence[str
 
 
 def plot_background_channels(green: np.ndarray, red: np.ndarray, fs_hz: float, check: dict,
+                             dark_green: float = 0.0, dark_red: float = 0.0,
                              axes=None) -> np.ndarray:  # fmt: skip
-    """Left: each channel's background as a fraction of its mean, over time. Right: red
-    against green with the least-squares slope (1: both channels move by the same fraction)."""
+    """Left: each channel's high-passed background as a fraction of its mean above the dark
+    level, over time. Right: green against red with the least-squares slope (1: both change
+    by the same fraction; above 1: green changes more)."""
+    from .extraction_comparison import high_pass
+
     axes = _axes_grid(axes, 1, 2, (14, 4)).ravel()
-    g = np.asarray(green, float) / np.mean(green) - 1
-    r = np.asarray(red, float) / np.mean(red) - 1
+    g = high_pass(green, fs_hz) / (np.mean(green) - dark_green)
+    r = high_pass(red, fs_hz) / (np.mean(red) - dark_red)
     minutes = np.arange(len(g)) / fs_hz / 60
     axes[0].plot(minutes, g, color=OKABE_ITO["bluish_green"], linewidth=0.6, label="Green")
     axes[0].plot(minutes, r, color=OKABE_ITO["vermillion"], linewidth=0.6, label="Red")
     axes[0].set(xlabel="Time (minutes)", ylabel="Change From Mean (Fraction)")
-    axes[0].set_title("Background, Green And Red")
+    axes[0].set_title("Background, Green And Red (High-Passed)")
     axes[0].legend(frameon=False, loc="upper left", bbox_to_anchor=(1.0, 1.0))
     step = max(1, len(g) // 3000)
-    axes[1].scatter(g[::step], r[::step], s=3, color=OKABE_ITO["blue"], alpha=0.4, linewidths=0)
-    line = np.array([g.min(), g.max()])
-    slope = check["red_vs_green_slope"]
+    axes[1].scatter(r[::step], g[::step], s=3, color=OKABE_ITO["blue"], alpha=0.4, linewidths=0)
+    line = np.array([r.min(), r.max()])
+    slope = check["green_on_red_slope"]
     axes[1].plot(line, slope * line, color="black", linewidth=1, label=f"Slope {slope:.2f}")
     axes[1].plot(line, line, color=OKABE_ITO["grey"], linestyle="--", linewidth=1, label="Slope 1")
-    axes[1].set(xlabel="Green Change (Fraction)", ylabel="Red Change (Fraction)")
-    axes[1].set_title(f"Red Against Green (r={check['r']:.2f})")
+    axes[1].set(xlabel="Red Change (Fraction)", ylabel="Green Change (Fraction)")
+    axes[1].set_title(f"Green Against Red (r²={check['r_squared']:.2f})")
     axes[1].legend(frameon=False, loc="upper left", bbox_to_anchor=(1.0, 1.0))
     for ax in axes:
         ax.spines[["top", "right"]].set_visible(False)

@@ -5,74 +5,113 @@ Suite2p's correction ``F - 0.7 * Fneu`` assumes the ring of neuropil around a RO
 contaminating calcium signal about as bright as the halo inside it. With an indicator kept in
 the soma (ribosome-tethered GCaMP), the neuropil holds little indicator: its signal is mostly
 out-of-focus somata, autofluorescence and any detector offset, so subtracting 0.7 of it can
-take most of a dim cell's own baseline and leave F0 <= 0. The corrections compared:
+take most of a dim cell's own baseline and leave F0 at or below ``min_f0``. The corrections:
 
 - ``Neuropil <c>``: the fixed coefficient (``[fluorescence] neuropil_coefficient``);
-- ``Neuropil Fitted``: each ROI's own coefficient, the least-squares slope of F on its
-  neuropil outside its transients (``fitted_neuropil_coefficients``), kept in [0, 1];
+- ``Neuropil Fitted``: each ROI's own coefficient (``fitted_neuropil_coefficients``);
 - ``No Neuropil``: raw F;
 - ``No Neuropil, <source> Bg Regressed``: raw F with a background trace (vessel, or every
   pixel outside the ROIs) regressed out, each ROI with its own coefficient, mean kept;
 - ``Neuropil <c>, <source> Bg Regressed``: the background removed from F and Fneu before the
   fixed neuropil correction, as in the QC notebook (``background.dff_versions``).
+
+Slow changes (bleaching, drift) dominate the variance of raw traces, so fits and correlations
+here use high-passed traces: each minus its running mean over ``detrend_s``.
 """
 
 from __future__ import annotations
 
 import numpy as np
+from scipy.ndimage import uniform_filter1d
 
 from .background import regress_out
 from .fluorescence import DffResult, neuropil_correct
 
 MAD_TO_SD = 1.4826  # scales a median absolute deviation to a normal standard deviation
-FIT_ITERATIONS = 3
+FIT_ITERATIONS = 3  # fits without the frames above the previous fit
 PAIRWISE_MAX_ROIS = 300  # mean pairwise correlation on at most this many ROIs (evenly spaced)
+DETREND_S = 60.0
+
+
+def high_pass(traces: np.ndarray, fs_hz: float, detrend_s: float = DETREND_S) -> np.ndarray:
+    """Each trace (last axis: frames) minus its running mean over *detrend_s* seconds."""
+    window = max(3, int(round(detrend_s * fs_hz)) | 1)  # odd: centred on each frame
+    traces = np.asarray(traces, np.float64)
+    return traces - uniform_filter1d(traces, window, axis=-1, mode="nearest")
+
+
+def _check_finite(name: str, values: np.ndarray) -> None:
+    if not np.isfinite(values).all():
+        raise ValueError(f"{name} has values that are not finite")
 
 
 # ---------------------------------------------------------------- neuropil coefficient
 
 
-def _robust_sd(values: np.ndarray) -> float:
-    return MAD_TO_SD * float(np.median(np.abs(values - np.median(values))))
+def _robust_sd(values: np.ndarray, axis=None) -> np.ndarray:
+    centre = np.nanmedian(values, axis=axis, keepdims=True)
+    return MAD_TO_SD * np.nanmedian(np.abs(values - centre), axis=axis)
 
 
-def _fit_one(f: np.ndarray, fneu: np.ndarray, transient_sd: float) -> float:
-    """Slope of F on Fneu, refitted without the frames far above the fit (transients)."""
+def _fit_one(f: np.ndarray, regressors: np.ndarray, transient_sd: float) -> float:
+    """Least-squares coefficients of F on *regressors* (columns; the first is the neuropil),
+    each fit after the first without the frames more than *transient_sd* robust SDs above
+    the previous fit (the cell's transients). Returns the neuropil's coefficient."""
+    design = np.column_stack([regressors, np.ones(len(f))])
     keep = np.ones(len(f), bool)
     for _ in range(FIT_ITERATIONS):
-        slope, intercept = np.polyfit(fneu[keep], f[keep], 1)
-        residual = f - (slope * fneu + intercept)
-        kept = residual[keep]
-        keep = residual <= np.median(kept) + transient_sd * _robust_sd(kept)
-    return float(slope)
+        coef = np.linalg.lstsq(design[keep], f[keep], rcond=None)[0]
+        residual = f - design @ coef
+        keep = residual <= np.median(residual[keep]) + transient_sd * _robust_sd(residual[keep])
+    return float(np.linalg.lstsq(design[keep], f[keep], rcond=None)[0][0])
 
 
 def fitted_neuropil_coefficients(
     f: np.ndarray,
     fneu: np.ndarray,
+    fs_hz: float,
+    background: np.ndarray | None = None,
+    detrend_s: float = DETREND_S,
     transient_sd: float = 2.0,
     bounds: tuple[float, float] = (0.0, 1.0),
 ) -> np.ndarray:
-    """Each ROI's neuropil coefficient: the least-squares slope of its F on its Fneu, refitted
-    ``FIT_ITERATIONS`` times without frames more than *transient_sd* robust SDs above the fit
-    (the cell's own transients, which would otherwise pull the slope), then kept in *bounds*.
+    """Each ROI's neuropil coefficient: the c that best removes its neuropil's fast
+    fluctuations from it, i.e. the least-squares slope of high-passed F on high-passed Fneu
+    (with the high-passed *background* as a second regressor, so a field-wide change is not
+    taken as neuropil), kept in *bounds*. The cell's own transients (frames far above the
+    fit) are left out of the later fits, which steadies the slope of an active cell.
 
-    A heuristic: the slope measures how much of the neuropil's fluctuation appears in the ROI,
-    which is what a neuropil correction should remove. A slow signal shared by the whole field
-    raises it, as it should.
+    Not a measurement of the contamination: noise and local signal in Fneu that never reach
+    the ROI pull a least-squares slope towards 0, and activity that appears in both the ROI
+    and its neuropil (population events, the cell's own light spilling into the ring) pushes
+    it up.
 
     Raises:
-        ValueError: If *transient_sd* is not positive, or a ROI's neuropil is flat.
+        ValueError: If *transient_sd* is not positive, the traces are not finite or do not
+            match, or a ROI's neuropil has no fluctuation left after high-passing.
     """
-    f, fneu = np.asarray(f, np.float64), np.asarray(fneu, np.float64)
     if transient_sd <= 0:
         raise ValueError(f"transient_sd must be positive, got {transient_sd}")
+    f, fneu = np.asarray(f, np.float64), np.asarray(fneu, np.float64)
     if f.shape != fneu.shape or f.ndim != 2:
         raise ValueError(f"F {f.shape} and Fneu {fneu.shape} must be the same (ROIs, frames)")
-    flat = np.flatnonzero(np.ptp(fneu, axis=1) == 0)
+    _check_finite("F", f)
+    _check_finite("Fneu", fneu)
+    f_hp, fneu_hp = high_pass(f, fs_hz, detrend_s), high_pass(fneu, fs_hz, detrend_s)
+    flat = np.flatnonzero(np.ptp(fneu_hp, axis=1) == 0)
     if flat.size:
         raise ValueError(f"Neuropil is flat for ROI(s) {flat[:10].tolist()}; no slope to fit")
-    slopes = np.array([_fit_one(a, b, transient_sd) for a, b in zip(f, fneu, strict=True)])
+    extra = []
+    if background is not None:
+        background = np.asarray(background, np.float64)
+        if background.shape != (f.shape[1],):
+            raise ValueError(f"Background of shape {background.shape} for {f.shape[1]} frames")
+        _check_finite("Background", background)
+        extra = [high_pass(background, fs_hz, detrend_s)]
+    slopes = [
+        _fit_one(row, np.column_stack([neu, *extra]), transient_sd)
+        for row, neu in zip(f_hp, fneu_hp, strict=True)
+    ]
     return np.clip(slopes, *bounds)
 
 
@@ -126,87 +165,118 @@ def corrected_traces(
 # ---------------------------------------------------------------- comparing them
 
 
+def valid_everywhere(results: dict[str, DffResult]) -> np.ndarray:
+    """ROIs whose F0 is valid in every frame under every correction: the common set that
+    noise and skew are compared on."""
+    return np.logical_and.reduce([~np.asarray(r.invalid_f0).any(axis=1) for r in results.values()])
+
+
 def _noise(dff: np.ndarray) -> np.ndarray:
     """Frame-to-frame SD of each ROI's ΔF/F0 (robust SD of the differences / sqrt 2)."""
-    out = np.full(len(dff), np.nan)
-    for i, row in enumerate(dff):
-        steps = np.diff(row)
-        steps = steps[np.isfinite(steps)]
-        if steps.size > 1:
-            out[i] = _robust_sd(steps) / np.sqrt(2)
-    return out
+    return _robust_sd(np.diff(dff, axis=1), axis=1) / np.sqrt(2)
 
 
 def _skew(dff: np.ndarray) -> np.ndarray:
-    out = np.full(len(dff), np.nan)
-    for i, row in enumerate(dff):
-        row = row[np.isfinite(row)]
-        if row.size > 2 and row.std() > 0:
-            out[i] = np.mean(((row - row.mean()) / row.std()) ** 3)
-    return out
+    centred = dff - np.mean(dff, axis=1, keepdims=True)
+    sd = np.std(dff, axis=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(sd > 0, np.mean(centred**3, axis=1) / sd**3, np.nan)
 
 
 def _mean_pairwise_r(traces: np.ndarray) -> float:
+    if len(traces) < 2:
+        raise ValueError("Pairwise correlation needs at least two ROIs")
     rows = np.unique(np.linspace(0, len(traces) - 1, PAIRWISE_MAX_ROIS).round().astype(int))
     r = np.corrcoef(traces[rows])
     return float(np.nanmean(r[~np.eye(len(rows), dtype=bool)]))
 
 
-def method_metrics(result: DffResult, background: np.ndarray) -> dict[str, float]:
+def method_metrics(
+    result: DffResult,
+    background: np.ndarray,
+    fs_hz: float,
+    common: np.ndarray,
+    detrend_s: float = DETREND_S,
+) -> dict[str, float]:
     """Numbers to compare one correction by.
 
-    - ``rois_f0_le_0_anywhere`` / ``rois_f0_le_0_median``: ROIs whose F0 is <= 0 in any frame /
-      in at least half of the frames;
-    - ``fraction_frames_f0_le_0``: of all ROI-frames, those without a ΔF/F0;
-    - ``median_f0``: median over ROIs of each ROI's median F0;
-    - ``median_noise``: median frame-to-frame SD of ΔF/F0;
-    - ``median_skew``: median skewness of ΔF/F0 (calcium transients make it positive);
-    - ``median_abs_r_background``: median |r| of the corrected F with the background trace
-      (what of the background is left);
-    - ``mean_pairwise_r``: mean correlation between the ROIs' corrected F (a field-wide
-      signal raises it), over up to ``PAIRWISE_MAX_ROIS`` ROIs.
+    - ``rois_invalid_f0_anywhere`` / ``rois_invalid_f0_mostly``: ROIs whose F0 is at or below
+      ``min_f0`` in any frame / in at least half of the frames;
+    - ``fraction_frames_invalid_f0``: of all ROI-frames, those without a ΔF/F0;
+    - ``median_f0``: median over all ROIs of each ROI's median F0;
+    - ``median_noise``, ``median_skew``: frame-to-frame SD and skewness of ΔF/F0, median over
+      the *common* ROIs (valid under every correction; ``valid_everywhere``), so every
+      correction is summarised over the same cells;
+    - ``median_abs_r_background``: median |r| of the high-passed corrected F with the
+      high-passed *background* (the fast background left in the traces; zero by construction
+      for a correction that regressed out this background or one nearly identical to it);
+    - ``mean_pairwise_r``: mean correlation between the ROIs' high-passed corrected F, over up
+      to ``PAIRWISE_MAX_ROIS`` ROIs (raised by any signal shared across the field).
+
+    Raises:
+        ValueError: If *common* holds fewer than one ROI.
     """
-    background = np.asarray(background, np.float64)
-    f_corr = np.asarray(result.f_corr, np.float64)
-    r_background = [np.corrcoef(row, background)[0, 1] for row in f_corr]
+    common = np.asarray(common, bool)
+    if not common.any():
+        raise ValueError("No ROI has a valid F0 under every correction; nothing to compare")
+    f_hp = high_pass(result.f_corr, fs_hz, detrend_s)
+    bg_hp = high_pass(background, fs_hz, detrend_s)
+    f_c = f_hp - f_hp.mean(axis=1, keepdims=True)
+    b_c = bg_hp - bg_hp.mean()
+    with np.errstate(divide="ignore", invalid="ignore"):
+        r_background = f_c @ b_c / (np.linalg.norm(f_c, axis=1) * np.linalg.norm(b_c))
     invalid = np.asarray(result.invalid_f0)
+    dff = np.asarray(result.dff, np.float64)[common]
     return {
-        "rois_f0_le_0_anywhere": int(invalid.any(axis=1).sum()),
-        "rois_f0_le_0_median": int((invalid.mean(axis=1) >= 0.5).sum()),
-        "fraction_frames_f0_le_0": float(invalid.mean()),
+        "rois_invalid_f0_anywhere": int(invalid.any(axis=1).sum()),
+        "rois_invalid_f0_mostly": int((invalid.mean(axis=1) >= 0.5).sum()),
+        "fraction_frames_invalid_f0": float(invalid.mean()),
         "median_f0": float(np.median(np.median(result.f0, axis=1))),
-        "median_noise": float(np.nanmedian(_noise(result.dff))),
-        "median_skew": float(np.nanmedian(_skew(result.dff))),
+        "median_noise": float(np.median(_noise(dff))),
+        "median_skew": float(np.nanmedian(_skew(dff))),
         "median_abs_r_background": float(np.nanmedian(np.abs(r_background))),
-        "mean_pairwise_r": _mean_pairwise_r(f_corr),
+        "mean_pairwise_r": _mean_pairwise_r(f_hp),
     }
 
 
-def background_channel_check(green: np.ndarray, red: np.ndarray) -> dict[str, float]:
-    """How the red background follows the green one, as fractions of each channel's mean.
+def background_channel_check(
+    green: np.ndarray,
+    red: np.ndarray,
+    fs_hz: float,
+    dark_green: float = 0.0,
+    dark_red: float = 0.0,
+    detrend_s: float = DETREND_S,
+) -> dict[str, float]:
+    """How the green background's fast fluctuation relates to the red one's, each as a
+    fraction of its mean above the detector's dark level, after high-passing (so bleaching
+    and slow drift, which differ between channels, do not count).
 
-    Laser power or shared detection drift moves both channels by the same fraction (slope
-    near 1); blood volume dims green more than red (hemoglobin absorbs green more): slope
-    between 0 and 1; activity in green indicator alone: slope near 0. A noisy red channel
-    pulls the slope towards 0 too, so read it with ``r``.
-
-    Returns:
-        ``red_vs_green_slope`` (least squares of red's fractional change on green's), ``r``,
-        and each channel's SD as a fraction of its mean.
+    - ``green_on_red_slope``: least squares of green's fractional change on red's. Whatever
+      moves both channels by the same fraction (laser power, shared detection, focus or
+      motion) gives 1; blood volume dims green more than red (hemoglobin absorbs green
+      more), above 1. Signal in green alone (indicator) does not bias it, it only lowers r.
+      Noise in red pulls it towards 0.
+    - ``r_squared``: the fraction of green's fluctuation shared with red; the rest is in
+      green alone (indicator signal, or green's noise).
 
     Raises:
-        ValueError: If a channel's mean is not positive (no fraction to take).
+        ValueError: If a channel's mean is not above its dark level.
     """
     fractions = {}
-    for name, trace in (("green", green), ("red", red)):
+    for name, trace, dark in (("green", green, dark_green), ("red", red, dark_red)):
         trace = np.asarray(trace, np.float64)
-        if trace.mean() <= 0:
-            raise ValueError(f"The {name} background's mean is {trace.mean():g}; must be > 0")
-        fractions[name] = trace / trace.mean() - 1
+        _check_finite(f"The {name} background", trace)
+        level = trace.mean() - dark
+        if level <= 0:
+            raise ValueError(f"The {name} background's mean is not above its dark level ({dark:g})")
+        fractions[name] = high_pass(trace, fs_hz, detrend_s) / level
     g, r = fractions["green"], fractions["red"]
+    g, r = g - g.mean(), r - r.mean()
+    correlation = float(np.corrcoef(g, r)[0, 1])
     return {
-        "red_vs_green_slope": float(g @ r / (g @ g)),
-        "r": float(np.corrcoef(g, r)[0, 1]),
+        "green_on_red_slope": float(g @ r / (r @ r)),
+        "r": correlation,
+        "r_squared": correlation**2,
         "green_sd_fraction": float(g.std()),
         "red_sd_fraction": float(r.std()),
     }
