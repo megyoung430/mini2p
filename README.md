@@ -30,6 +30,13 @@ CLI and the batch workers all read it, so they cannot drift apart.
 - **Sessions the batch has finished, while it runs:** `notebooks/post_batch_sessions.ipynb`,
   in a second kernel. Exports, Cellpose extraction and an alignment review for the chosen
   sessions, only for runs the batch completed since `rerun_completed_before`.
+- **Which correction before ΔF/F0, for one run:** `notebooks/extraction_comparison.ipynb`,
+  after the QC notebook has registered and extracted the run. Compares, on the same ROIs,
+  the fixed neuropil correction, a per-ROI fitted coefficient, no neuropil subtraction, and
+  background regression (vessel or non-ROI) with and without neuropil subtraction (for
+  soma-targeted indicators, whose neuropil holds little indicator), with two diagnostics:
+  how far ROIs stand above their neuropil, and whether the field-wide fluctuation moves green
+  and red by the same fraction (hardware) or green more (blood volume, indicator signal).
 
 ### With and without destriping
 

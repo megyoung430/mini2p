@@ -711,3 +711,105 @@ def plot_focus_qc(
         f"Frames Not Matching The Mean After Registration: {flagged_pct:.1f}% Flagged (Shaded)"
     )
     return axes
+
+
+# ---------------------------------------------------------------- extraction comparison
+
+METRIC_TITLES = {
+    "rois_f0_le_0_anywhere": "ROIs With F0 ≤ 0 Somewhere",
+    "rois_f0_le_0_median": "ROIs With F0 ≤ 0 Most Of The Time",
+    "fraction_frames_f0_le_0": "Fraction Of Frames Without ΔF/F0",
+    "median_f0": "Median F0",
+    "median_noise": "Median Noise (ΔF/F0 Per Frame)",
+    "median_skew": "Median Skew Of ΔF/F0",
+    "median_abs_r_background": "Median |r| With Background",
+    "mean_pairwise_r": "Mean Pairwise r Between ROIs",
+}
+
+
+def plot_contrast_ratio(ratio: np.ndarray, ax=None):
+    """Histogram of each ROI's median F over median neuropil; 1 = no brighter than its
+    surroundings."""
+    ax = _axes_grid(ax, 1, 1, (6, 4))[0, 0]
+    finite = ratio[np.isfinite(ratio)]
+    ax.hist(finite, bins=40, color=OKABE_ITO["blue"])
+    ax.axvline(1, color="black", linestyle="--", linewidth=1)
+    ax.set(xlabel="Median F / Median Neuropil", ylabel="ROIs")
+    ax.set_title(f"ROI Contrast Over Neuropil (Median {np.median(finite):.2f}, n={len(finite)})")
+    ax.spines[["top", "right"]].set_visible(False)
+    return ax
+
+
+def plot_fitted_coefficients(coefficients: np.ndarray, fixed: float, ax=None):
+    """Histogram of the fitted neuropil coefficients, with the fixed one dashed."""
+    ax = _axes_grid(ax, 1, 1, (6, 4))[0, 0]
+    ax.hist(coefficients, bins=np.linspace(0, 1, 41), color=OKABE_ITO["bluish_green"])
+    ax.axvline(fixed, color="black", linestyle="--", linewidth=1, label=f"Fixed {fixed:g}")
+    ax.set(xlabel="Fitted Neuropil Coefficient", ylabel="ROIs")
+    ax.set_title(f"Fitted Neuropil Coefficients (Median {np.median(coefficients):.2f})")
+    ax.legend(frameon=False, loc="upper left", bbox_to_anchor=(1.0, 1.0))
+    ax.spines[["top", "right"]].set_visible(False)
+    return ax
+
+
+def plot_f0_by_method(f0_medians: dict[str, np.ndarray], ax=None):
+    """Cumulative distribution of each ROI's median F0, one line per correction."""
+    if len(f0_medians) > len(SERIES_COLORS):
+        raise ValueError(f"At most {len(SERIES_COLORS)} methods, got {len(f0_medians)}")
+    ax = _axes_grid(ax, 1, 1, (8, 4.5))[0, 0]
+    for (name, values), color in zip(f0_medians.items(), SERIES_COLORS, strict=False):
+        x = np.sort(values)
+        ax.plot(x, np.arange(1, len(x) + 1) / len(x), color=color, label=name)
+    ax.axvline(0, color=OKABE_ITO["grey"], linestyle="--", linewidth=1)
+    ax.set(xlabel="Median F0 Per ROI", ylabel="Fraction Of ROIs", ylim=(0, 1))
+    ax.set_title("Baseline F0 By Correction")
+    ax.legend(frameon=False, loc="upper left", bbox_to_anchor=(1.0, 1.0))
+    ax.spines[["top", "right"]].set_visible(False)
+    return ax
+
+
+def plot_method_metrics(metrics: dict[str, dict[str, float]], keys: Sequence[str], axes=None):
+    """One horizontal bar panel per metric in *keys*, one bar per correction."""
+    names = list(metrics)
+    if len(names) > len(SERIES_COLORS):
+        raise ValueError(f"At most {len(SERIES_COLORS)} methods, got {len(names)}")
+    ncols = 2
+    nrows = -(-len(keys) // ncols)
+    axes = _axes_grid(axes, nrows, ncols, (13, 2.2 * nrows + 1)).ravel()
+    y = np.arange(len(names))[::-1]
+    for ax, key in zip(axes, keys, strict=False):
+        values = [metrics[name][key] for name in names]
+        ax.barh(y, values, color=SERIES_COLORS[: len(names)])
+        ax.set_yticks(y, names)
+        ax.set_title(METRIC_TITLES.get(key, key))
+        ax.spines[["top", "right"]].set_visible(False)
+    for ax in axes[len(keys) :]:
+        ax.set_visible(False)
+    return axes
+
+
+def plot_background_channels(green: np.ndarray, red: np.ndarray, fs_hz: float, check: dict,
+                             axes=None) -> np.ndarray:  # fmt: skip
+    """Left: each channel's background as a fraction of its mean, over time. Right: red
+    against green with the least-squares slope (1: both channels move by the same fraction)."""
+    axes = _axes_grid(axes, 1, 2, (14, 4)).ravel()
+    g = np.asarray(green, float) / np.mean(green) - 1
+    r = np.asarray(red, float) / np.mean(red) - 1
+    minutes = np.arange(len(g)) / fs_hz / 60
+    axes[0].plot(minutes, g, color=OKABE_ITO["bluish_green"], linewidth=0.6, label="Green")
+    axes[0].plot(minutes, r, color=OKABE_ITO["vermillion"], linewidth=0.6, label="Red")
+    axes[0].set(xlabel="Time (minutes)", ylabel="Change From Mean (Fraction)")
+    axes[0].set_title("Background, Green And Red")
+    axes[0].legend(frameon=False, loc="upper left", bbox_to_anchor=(1.0, 1.0))
+    step = max(1, len(g) // 3000)
+    axes[1].scatter(g[::step], r[::step], s=3, color=OKABE_ITO["blue"], alpha=0.4, linewidths=0)
+    line = np.array([g.min(), g.max()])
+    slope = check["red_vs_green_slope"]
+    axes[1].plot(line, slope * line, color="black", linewidth=1, label=f"Slope {slope:.2f}")
+    axes[1].plot(line, line, color=OKABE_ITO["grey"], linestyle="--", linewidth=1, label="Slope 1")
+    axes[1].set(xlabel="Green Change (Fraction)", ylabel="Red Change (Fraction)")
+    axes[1].set_title(f"Red Against Green (r={check['r']:.2f})")
+    axes[1].legend(frameon=False, loc="upper left", bbox_to_anchor=(1.0, 1.0))
+    for ax in axes:
+        ax.spines[["top", "right"]].set_visible(False)
+    return axes
