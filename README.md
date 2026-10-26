@@ -144,6 +144,16 @@ Everything is set in the `[movies]` section of the config (see
   0-based and both included (with the whole recording these two are ignored, with a warning);
 - **which stages**: the five switches above (only `stage_registered` is on unless the
   config says otherwise), and **versions**: `unaveraged_movie`, `averaged_movie`;
+- **behaviour**: with `behavior = true`, every movie also gets a twin (`..._behavior_...`)
+  with the run's behaviour video on the left of the imaging, scaled to its height and in
+  sync: each movie frame shows the video frame on screen at the middle of its imaging
+  window, by pyControl time. It reads `run-XX/frame_times.npz` (imaging frames) and
+  `run-XX/video_frame_times.npz` (video frames, and the video's path), which
+  magnitude-bandit-analysis's `scripts/funcimg/reward_responses.ipynb` writes (steps 1 and
+  1b); `behavior_video` gives the video if it has moved. Where a movie frame or the video
+  has no time (outside the sync pulses, or after the video ends), the panel is black and
+  labelled "behavior (no video)". The video is decoded from its start for every movie, so
+  a frame range late in a long run waits for the video to reach it;
 - **where to read and write**: `derivatives_root`, `raw_tiff`, `output_dir` (default
   `run-XX/<variant>/aligned_<channel>/movies/`; `~` works in all of them);
 - **how they look**.

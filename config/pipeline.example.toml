@@ -173,9 +173,13 @@ background_source = "vessel"  # that background: "vessel" or "non_roi" (outside 
 # Which versions of each
 unaveraged_movie = true       # every frame
 averaged_movie = true         # average_frames frames per movie frame
+behavior = false              # true: also each movie with the behaviour video on the left,
+                              #   in sync (needs run-XX/frame_times.npz and video_frame_times.npz
+                              #   from magnitude-bandit-analysis's reward_responses notebook)
 # Where to read and write
 derivatives_root = "/path/to/derivatives"   # cohort-XX/<subject>/ses-*/funcimg/run-XX (by name)
 # raw_tiff = "/path/to/71rtask_00039.tif"   # only if not where source_tiff.json says
+# behavior_video = "/path/to/MY_71_R_2026-08-07-105203.mp4"   # only if not where video_frame_times.npz says
 # output_dir = "/Users/you/movies"          # default: run-XX/<variant>/movies
 overwrite = false
 # How they look (greyscale)

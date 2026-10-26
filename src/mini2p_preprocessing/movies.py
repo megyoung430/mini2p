@@ -14,6 +14,9 @@ Each stage gives up to two MP4s (H.264, yuv420p, which PowerPoint, Keynote and Q
   in non-overlapping bins (``"bin"``: fewer frames, each covering a longer time) or as a
   running mean (``"rolling"``: one movie frame per acquired frame, smoothed in time).
 
+With ``behavior``, every movie also gets a twin with the run's behaviour video on the left
+of the imaging, paired by pyControl time (see ``behavior_video``).
+
 Movies are greyscale. By default the functional (green) channel is on the left and the
 structural (red) channel on the right, each labelled. Each channel's contrast uses the QC
 notebook's formula (black and white percentiles, then a gamma), but with the percentiles
@@ -55,6 +58,15 @@ from scipy.ndimage import gaussian_filter
 
 from .background_io import SOURCE_LABELS, BackgroundSource, check_background_tiff
 from .batch import MANIFEST_NAME, SESSION_PATTERN
+from .behavior_video import (
+    BehaviorSync,
+    VideoFrames,
+    behavior_panel,
+    behavior_width,
+    load_behavior_sync,
+    movie_frame_times,
+    video_frame_for,
+)
 from .config import (
     SETTINGS_RECORD,
     VARIANTS,
@@ -92,7 +104,7 @@ STAGES: tuple[Stage, ...] = (
 # Stages in the registered frame, which suite2p_crop crops
 REGISTERED_STAGES = ("registered", "background_removed")
 BINARIES = {"green": ("reg_file", "data.bin"), "red": ("reg_file_chan2", "data_chan2.bin")}
-CHANNEL_TITLES = {"green": "functional", "red": "structural"}
+CHANNEL_TITLES = {"green": "functional", "red": "structural", "behavior": "behavior"}
 PANEL_GAP_PX = 4
 MOVIE_FOLDER = "movies"
 MIN_FPS = 1.0  # imageio-ffmpeg rounds the rate to 0.01 fps
@@ -141,9 +153,13 @@ class MovieSettings(BaseModel):
     # Which versions of each: every frame, and frames averaged average_frames at a time
     unaveraged_movie: bool = True
     averaged_movie: bool = True
+    # Also each movie with the run's behaviour video on the left, in sync: needs the run
+    # folder's frame_times.npz and video_frame_times.npz from magnitude-bandit-analysis
+    behavior: bool = False
     # Where to read and write
     derivatives_root: Path | None = None  # holds cohort-XX/<subject>/ses-*/funcimg/run-XX
     raw_tiff: Path | None = None  # the acquired TIFF, if not where source_tiff.json says
+    behavior_video: Path | None = None  # the video, if not where video_frame_times.npz says
     output_dir: Path | None = None  # None: run-XX/<variant>/aligned_<source>/movies
     overwrite: bool = False  # replace existing movies
     save_folder: str = "suite2p"  # Suite2p output folder inside aligned_<channel>/
@@ -169,7 +185,9 @@ class MovieSettings(BaseModel):
     contrast_sample_frames: int = Field(200, ge=1)
     quality: float = Field(8.0, ge=0, le=10)  # H.264 quality, 0-10
 
-    @field_validator("run_dir", "derivatives_root", "raw_tiff", "output_dir", mode="before")
+    @field_validator(
+        "run_dir", "derivatives_root", "raw_tiff", "output_dir", "behavior_video", mode="before"
+    )
     @classmethod
     def _expand_home(cls, value):
         if value is None:
@@ -461,6 +479,7 @@ def plan_movie(
     names: tuple[str, ...],
     cropped: bool = False,
     alignment: str | None = None,
+    behavior: bool = False,
 ) -> MoviePlan:
     """The frames, playback rate and file name of one stage's unaveraged or averaged movie
     (pure).
@@ -493,6 +512,7 @@ def plan_movie(
         *([alignment] if alignment else []),  # e.g. aligned_structural
         f"{stage}-{settings.background_source}" if stage == "background_removed" else stage,
         settings.channel,
+        *(["behavior"] if behavior else []),
         *(["cropped"] if cropped else []),
         f"frames-{first}-{last}",
         "unaveraged" if unaveraged else f"{settings.average_mode}{n}",
@@ -717,6 +737,26 @@ def channel_limits(
     return limits
 
 
+@dataclass(frozen=True)
+class BehaviorFrames:
+    """The video frame to show beside each movie frame (-1: none), and the video."""
+
+    indices: np.ndarray
+    video: VideoFrames
+
+
+def with_behavior(
+    imaging: np.ndarray, video_frame: np.ndarray | None, video_size: tuple[int, int], gap: int
+) -> tuple[np.ndarray, int]:
+    """The behaviour panel, at the imaging's height, then *gap* black columns, then the
+    imaging frame; and where the imaging now starts."""
+    height = imaging.shape[0]
+    width = behavior_width(video_size, height)
+    black = np.zeros((height, gap, 3), np.uint8)
+    panel = behavior_panel(video_frame, height, width)
+    return np.concatenate([panel, black, imaging], axis=1), width + gap
+
+
 def rendered_frames(
     sources: dict[str, Frames],
     plan: MoviePlan,
@@ -725,8 +765,10 @@ def rendered_frames(
     fs: float,
     title: str = "",
     block: int | None = None,
+    behavior: BehaviorFrames | None = None,
 ) -> Iterator[np.ndarray]:
-    """RGB uint8 movie frames, read *block* movie frames at a time (default: ``block_size``)."""
+    """RGB uint8 movie frames, read *block* movie frames at a time (default: ``block_size``),
+    with the behaviour video on the left when *behavior* is given."""
     block = block or block_size(plan.n, settings.average_mode)
     for b in range(0, len(plan.starts), block):
         first = plan.starts[b : b + block]
@@ -739,16 +781,25 @@ def rendered_frames(
         rgb = compose_panels(panels)
         width = next(iter(panels.values())).shape[-1]
         lefts = [i * (width + PANEL_GAP_PX) * settings.upscale for i in range(len(panels))]
-        for frame, f in zip(rgb, first, strict=True):
+        for k, (frame, f) in enumerate(zip(rgb, first, strict=True)):
             frame = upscale_and_pad(frame, settings.upscale)
+            titles = {CHANNEL_TITLES[name]: left for name, left in zip(panels, lefts, strict=True)}
+            if behavior is not None:
+                index = int(behavior.indices[b + k])
+                video_frame = behavior.video.frame(index) if index >= 0 else None
+                gap = PANEL_GAP_PX * settings.upscale
+                frame, shift = with_behavior(frame, video_frame, behavior.video.size, gap)
+                name = CHANNEL_TITLES["behavior"] + (" (no video)" if video_frame is None else "")
+                titles = {name: 0, **{text: left + shift for text, left in titles.items()}}
             if settings.label:
                 lines = [title, frame_label(int(f), plan.n, fs, settings.speed).strip()]
-                frame = _draw_labels(frame, lines, dict(zip(panels, lefts, strict=True)))
+                frame = _draw_labels(frame, lines, titles)
             yield frame
 
 
-def _draw_labels(rgb: np.ndarray, lines: list[str], panel_lefts: dict[str, int]) -> np.ndarray:
-    """*lines* at the top left; each channel's name at the bottom left of its panel."""
+def _draw_labels(rgb: np.ndarray, lines: list[str], panel_titles: dict[str, int]) -> np.ndarray:
+    """*lines* at the top left; each panel's title at the bottom left of the panel, given as
+    ``{title: left edge}``."""
     from PIL import Image, ImageDraw, ImageFont
 
     size = max(10, rgb.shape[0] // 36)
@@ -762,8 +813,8 @@ def _draw_labels(rgb: np.ndarray, lines: list[str], panel_lefts: dict[str, int])
     }
     for row, text in enumerate(line for line in lines if line):
         draw.text((size // 2, size // 2 + row * (size + size // 3)), text, **style)
-    for name, left in panel_lefts.items():
-        draw.text((left + size // 2, rgb.shape[0] - 2 * size), CHANNEL_TITLES[name], **style)
+    for text, left in panel_titles.items():
+        draw.text((left + size // 2, rgb.shape[0] - 2 * size), text, **style)
     return np.asarray(image)
 
 
@@ -828,6 +879,7 @@ class MovieJob:
     span: tuple[int, int]
     title: str
     fs: float
+    behavior: BehaviorSync | None = None  # set: the behaviour video beside the imaging
 
 
 def settings_from_records(variant_dir: Path, config: PipelineSettings) -> PipelineSettings:
@@ -904,6 +956,10 @@ def open_jobs(
     fs = float(ops["fs"])
     span = frame_span(int(ops["nframes"]), *settings.frames_requested)
     region = crop_region(ops) if settings.suite2p_crop else None
+    sync = None
+    if settings.behavior:
+        run_dir = run_dir_of(variant_dir)
+        sync = load_behavior_sync(run_dir, int(ops["nframes"]), settings.behavior_video)
     if region is not None and set(stages) - {"registered"}:
         log.info(
             "suite2p_crop: only the registered stage has wrapped edges, so only the "
@@ -916,15 +972,18 @@ def open_jobs(
             settings.background_source,
         )  # fmt: skip
         title = stage_title(stage, run, settings.background_source)
+        crops = [(False, sources, title)]
+        if region is not None and stage in REGISTERED_STAGES:
+            cropped = {name: CroppedFrames(src, *region) for name, src in sources.items()}
+            crops.append((True, cropped, f"{title}, cropped"))
         for version in settings.versions:
-            plan = plan_movie(version, stage, span, fs, settings, names, alignment=alignment)
-            jobs.append(MovieJob(plan, sources, span, title, fs))
-            if region is not None and stage in REGISTERED_STAGES:
-                cropped = {name: CroppedFrames(src, *region) for name, src in sources.items()}
-                plan = plan_movie(
-                    version, stage, span, fs, settings, names, cropped=True, alignment=alignment
-                )
-                jobs.append(MovieJob(plan, cropped, span, f"{title}, cropped", fs))
+            for is_cropped, shown, label in crops:
+                for paired in [None, sync] if sync is not None else [None]:
+                    plan = plan_movie(
+                        version, stage, span, fs, settings, names, cropped=is_cropped,
+                        alignment=alignment, behavior=paired is not None,
+                    )  # fmt: skip
+                    jobs.append(MovieJob(plan, shown, span, label, fs, paired))
     return jobs
 
 
@@ -1038,6 +1097,20 @@ def _write_job(job: MovieJob, out_dir: Path, settings: MovieSettings) -> Path:
         limits,
     )
     path = out_dir / plan.name
-    frames = rendered_frames(job.sources, plan, limits, settings, job.fs, job.title)
-    write_mp4(path, frames, len(plan.starts), plan.fps, settings.quality)
+    if job.behavior is None:
+        frames = rendered_frames(job.sources, plan, limits, settings, job.fs, job.title)
+        write_mp4(path, frames, len(plan.starts), plan.fps, settings.quality)
+        return path
+    times = movie_frame_times(job.behavior.frame_time_s, plan.starts, plan.n)
+    indices = video_frame_for(times, job.behavior.video_time_s)
+    log.info(
+        "%s: video %s; %d of %d movie frames have no video frame (black panel)",
+        plan.name, job.behavior.video, int((indices < 0).sum()), len(indices),
+    )  # fmt: skip
+    with VideoFrames(job.behavior.video) as video:
+        frames = rendered_frames(
+            job.sources, plan, limits, settings, job.fs, job.title,
+            behavior=BehaviorFrames(indices, video),
+        )  # fmt: skip
+        write_mp4(path, frames, len(plan.starts), plan.fps, settings.quality)
     return path
