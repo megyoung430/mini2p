@@ -294,6 +294,22 @@ F0 kept alongside. ΔF/F0 is NaN wherever F0 ≤ `min_f0`, since the ratio has n
 meaning there. ΔF itself stays finite. The same applies to the green/red ratio,
 Δ(G/R)/(G/R)0.
 
+## Frame order
+
+Every chunked step (bidiphase, destriping, distortion correction, registration) is checked
+against the acquired TIFF by content, in the QC notebook ("Frame order") or with
+`frame_order.check_frame_order(plane_dir, stages, run_settings)`: each frame's mean per
+channel, minus a ~4 s running mean, is a signature the corrections barely change, and every
+200 frames of a stage are matched against every position of the acquired TIFF. A window is
+*in place* (best match at its own position), *moved* (another position clearly better; the
+summary names it) or *unclear* (no position matches well). A stage matching the other
+acquired channel better is reported as swapped channels. On the good example session (MY_71_R, 7 Aug
+2026) every window of the bidiphase/destriped, undistorted and registered stages is in
+place (r = 0.99-1.00 with the acquired channel, 0.3 with the other); one dropped frame or two
+swapped 500-frame blocks are found. The background-removed TIFF is not checked (removing
+the background takes most of the signature out). The tests also run the chunked bidiphase
+and distortion writers with chunk sizes that do not divide the recording.
+
 ## Output data type
 
 Suite2p registers int16 frames: given any other type, its TIFF reader converts each frame

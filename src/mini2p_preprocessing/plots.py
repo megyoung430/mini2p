@@ -711,3 +711,28 @@ def plot_focus_qc(
         f"Frames Not Matching The Mean After Registration: {flagged_pct:.1f}% Flagged (Shaded)"
     )
     return axes
+
+
+def plot_frame_order(reports, axes=None) -> np.ndarray:
+    """``frame_order.check_frame_order`` reports, one line each: per window of the stage,
+    where its best match in the acquired TIFF is relative to its own position (0 = in
+    place), and its correlation with its own position."""
+    if len(reports) > len(SERIES_COLORS):
+        raise ValueError(f"At most {len(SERIES_COLORS)} stage channels, got {len(reports)}")
+    axes = _axes_grid(axes, 2, 1, (13, 6)).ravel()
+    for report, color in zip(reports, SERIES_COLORS, strict=False):
+        match, label = report.match, f"{report.stage.title()} {report.channel.title()}"
+        axes[0].plot(match.start, match.best - match.start, "o-", ms=3, color=color, label=label)
+        axes[1].plot(match.start, match.r_own, "o-", ms=3, color=color, label=label)
+        moved = match.status == "moved"
+        axes[0].plot(match.start[moved], (match.best - match.start)[moved], "x", ms=9,
+                     color="black")  # fmt: skip
+    axes[0].axhline(0, color=OKABE_ITO["grey"], linestyle="--", linewidth=1)
+    axes[0].set(ylabel="Best Match − Own Position (Frames)")
+    axes[0].set_title("Where Each Window Of Frames Came From (0 = In Place, × = Moved)")
+    axes[1].set(xlabel="First Frame Of Window", ylabel="r At Own Position", ylim=(-0.1, 1.05))
+    axes[1].set_title("How Well Each Window Matches Its Own Position In The Acquired TIFF")
+    for ax in axes:
+        ax.legend(frameon=False, loc="upper left", bbox_to_anchor=(1.0, 1.0))
+        ax.spines[["top", "right"]].set_visible(False)
+    return axes
