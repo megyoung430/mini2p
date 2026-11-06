@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -189,3 +190,50 @@ def focus_qc(outputs: RegisteredOutputs, settings: PipelineSettings) -> FocusQC:
     return assess_focus(
         np.concatenate([m for m, _ in stats]), np.concatenate([b for _, b in stats]), focus
     )
+
+
+CROPPED_MEANS_RECORD = "meanImg_cropped.json"
+
+
+def cropped_mean_path(plane_dir: Path, channel: str, label: str = "") -> Path:
+    """``meanImg_<channel>[_<label>]_cropped.tif`` in the plane folder."""
+    return Path(plane_dir) / f"meanImg_{channel}{'_' + label if label else ''}_cropped.tif"
+
+
+def save_cropped_means(
+    plane_dir: Path,
+    means: dict[str, dict[str, np.ndarray]],
+    region: tuple[slice, slice],
+) -> list[Path]:
+    """Write each mean image cropped to *region* as a float32 TIFF, and the crop as JSON.
+
+    *means* maps a label ("" for the recording-wide mean, e.g. "first500" for another) to
+    ``{channel name: image}``. The crop is the region no frame's registration shifts wrap
+    into (``unwrapped_region``); the record keeps its rows and columns so a pixel of a
+    cropped image can be found in the full frame.
+    """
+    rows, cols = region
+    written, shapes = [], set()
+    for label, images in means.items():
+        for channel, image in images.items():
+            image = np.asarray(image)
+            if image.ndim != 2:
+                raise ValueError(f"{channel} {label or 'mean'} is not a 2-D image: {image.shape}")
+            shapes.add(image.shape)
+            cropped = image[rows, cols]
+            if cropped.size == 0:
+                raise ValueError(f"The crop {region} leaves nothing of a {image.shape} image")
+            path = cropped_mean_path(plane_dir, channel, label)
+            tifffile.imwrite(path, cropped.astype(np.float32))
+            written.append(path)
+    if len(shapes) > 1:
+        raise ValueError(f"The mean images differ in shape: {sorted(shapes)}")
+    record = {
+        "rows": [rows.start, rows.stop],
+        "columns": [cols.start, cols.stop],
+        "full_shape": list(shapes.pop()) if shapes else None,
+        "files": [path.name for path in written],
+        "note": "rows/columns: the crop of the full registered frame (Python slice, end excluded)",
+    }
+    (Path(plane_dir) / CROPPED_MEANS_RECORD).write_text(json.dumps(record, indent=2))
+    return written
