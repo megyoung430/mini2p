@@ -449,7 +449,8 @@ def plot_top_rois(
     xlabel: str = "Frames",
 ) -> np.ndarray:
     """The same ROIs' ΔF/F0 stacked (first ROI on top), one panel per version, on one
-    vertical scale; the scale bar is one *spacing* of ΔF/F0."""
+    vertical scale; the scale bar is one *spacing* of ΔF/F0. The vertical range covers the
+    stack, so values far outside it (spikes where F0 nears zero) are clipped."""
     rois = list(rois)
     axes = _axes_grid(axes, 1, len(dffs), (6 * len(dffs), 9)).ravel()
     shown = {name: np.asarray(dff)[rois][:, frames] for name, dff in dffs.items()}
@@ -475,6 +476,16 @@ def plot_top_rois(
                       xytext=(4, 0), textcoords="offset points", va="center")  # fmt: skip
     for ax in axes[1:]:
         ax.sharey(axes[0])
+    # A single spike (e.g. where F0 nears zero) would otherwise stretch the shared axis
+    # until every other trace looks flat; it is clipped instead, and each title says how
+    # many values were.
+    low, high = offsets.min() - spacing, offsets.max() + 1.5 * spacing
+    axes[0].set_ylim(low, high)
+    for ax, (name, values) in zip(axes, shown.items(), strict=True):
+        placed = values + offsets[:, None]
+        clipped = int(np.count_nonzero((placed < low) | (placed > high)))
+        if clipped:
+            ax.set_title(f"{name}\n({clipped} values off scale)")
     return axes
 
 
