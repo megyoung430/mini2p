@@ -34,8 +34,9 @@ How you rerun depends on the tool:
   TIFF, distortion correction and registration.
 - **The batch** skips every run that already finished, whatever the config says. To redo
   finished runs, set `[batch] rerun_completed_before` (with `overwrite = true`).
-- **Batch extraction** keys each run on the whole `[fluorescence]` section, so changing any
-  `[fluorescence]` setting, even a memory-only one, re-extracts every run there.
+- **Batch extraction** keys each run on the whole `[fluorescence]` section and
+  `[registration] diameter_px`, so changing any of them, even a memory-only setting,
+  re-extracts every run there.
 
 In the QC notebook:
 
@@ -53,7 +54,8 @@ In the QC notebook:
 | settings marked "memory only" | nothing: the result is the same |
 
 Preprocessing folders depend on two settings: destriping (`[destripe] enabled`, or
-`[batch] destripe` for the batch, which overrides it) and `[distortion] mode`. Each combination writes to its own variant folder inside `run-XX/`:
+`[batch] destripe` for the batch, which overrides it) and `[distortion] mode`. Each
+combination writes to its own variant folder inside `run-XX/`:
 `with_distortion_correction/` or `without_distortion_correction/`, then `with_destriping/`
 or `without_destriping/`. So changing either never overwrites the other variant.
 Suite2p's output sits one level further down, in `aligned_structural/` or
