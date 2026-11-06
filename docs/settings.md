@@ -13,31 +13,47 @@ Top-level keys must come before the first `[table]` header.
 | Section | Read by |
 |---|---|
 | top level, `[channels]`, `[phase]`, `[destripe]`, `[distortion]`, `[registration]` | the preprocessing: `mini2p-preprocess`, the batch notebook, the QC notebook |
-| `[fluorescence]` | extraction (`mini2p-extract`, QC notebook) and the QC notebook's fluorescence audit and background steps |
+| `[fluorescence]` | extraction (`mini2p-extract`, the QC notebook, the batch notebooks), the QC notebook's fluorescence audit and background steps, and `mini2p-natex` (its neuropil coefficient) |
 | `[focus]` | the QC notebook's "frames that still do not match" step |
 | `[qc]` | the QC notebook only: which recording to inspect |
 | `[batch]` | `batch_and_exports.ipynb` and `post_batch_sessions.ipynb` |
-| `[exports]` | the export part of those two notebooks |
+| `[exports]` | those two notebooks: which runs they export and extract (`subject_dir`, `run_subdir`, `expected_runs`, `alignment`) and how the exports look |
 | `[movies]` | `mini2p-movie` and the QC notebook's movie cell |
 | `[natex]` | `mini2p-natex` |
 
-Each preprocessed run saves the exact settings it used in `pipeline_settings.json`, so
-changing the file later never changes what an existing run means.
+Each run preprocessed by `mini2p-preprocess` or the batch saves the settings it used in
+`pipeline_settings.json`. The QC notebook does not write it, and the fluorescence, focus
+and QC steps always use the current config.
 
 ## What to rerun after changing a setting
+
+How you rerun depends on the tool:
+
+- **QC notebook:** you choose which cells to run, so you can start at the step that changed.
+- **`mini2p-preprocess`** (and each batch worker) always runs the whole preprocessing: corrected
+  TIFF, distortion correction and registration.
+- **The batch** skips every run that already finished, whatever the config says. To redo
+  finished runs, set `[batch] rerun_completed_before` (with `overwrite = true`).
+- **Batch extraction** keys each run on the whole `[fluorescence]` section, so changing any
+  `[fluorescence]` setting, even a memory-only one, re-extracts every run there.
+
+In the QC notebook:
 
 | You changed | Rerun from |
 |---|---|
 | `[phase]`, `[destripe]`, `[channels]`, `output_dtype`, `max_timepoints` | writing the corrected TIFF (everything after it too) |
-| `[distortion]` | distortion correction, then registration onwards |
-| `[registration]` | registration onwards (the corrected TIFFs are reused) |
-| `[fluorescence]` mask alignment (`mask_*`), `tau_s`, `batch_size`, `torch_device` | extraction onwards |
-| any other `[fluorescence]` setting, including the photon-free level | only the QC notebook's fluorescence audit and background cells |
+| `[distortion]` `mode` (on ↔ off) | writing the corrected TIFF: the run moves to the other variant folder |
+| other `[distortion]` settings except `batch_frames` | distortion correction, then registration onwards |
+| `[registration]` (except `batch_size`, `fast_disk`) | registration onwards (the corrected TIFFs are reused) |
+| `[fluorescence]` `neuropil_coefficient`, `baseline`, `win_baseline_s`, `sig_baseline_frames`, `prctile_baseline`, `tau_s`, `mask_*` | extraction onwards (`RUN_CELLPOSE_EXTRACTION = True`): these set `iscell`, `spks` and the stored ROIs; `neuropil_coefficient` also changes `mini2p-natex` |
+| other `[fluorescence]` settings, including the photon-free level | only the fluorescence audit and background cells |
 | `[focus]` | only the focus QC cell |
+| `[qc]` | the cells that use the changed path (e.g. extraction for `cellpose_seg`, the background cell for `background_seg`) |
 | `[movies]`, `[natex]`, `[exports]` | only that command or export |
+| settings marked "memory only" | nothing: the result is the same |
 
-Preprocessing folders depend on two settings: `[destripe] enabled` and
-`[distortion] mode`. Each combination writes to its own variant folder inside `run-XX/`:
+Preprocessing folders depend on two settings: destriping (`[destripe] enabled`, or
+`[batch] destripe` for the batch, which overrides it) and `[distortion] mode`. Each combination writes to its own variant folder inside `run-XX/`:
 `with_distortion_correction/` or `without_distortion_correction/`, then `with_destriping/`
 or `without_destriping/`. So changing either never overwrites the other variant.
 Suite2p's output sits one level further down, in `aligned_structural/` or
@@ -51,7 +67,7 @@ Suite2p's output sits one level further down, in `aligned_structural/` or
 |---|---|---|
 | `overwrite` | `true` | Replace outputs that already exist. With `false`, a stage whose output exists stops with an error instead. |
 | `max_timepoints` | none (all) | Process only the first N timepoints. For quick test runs; every later stage, including the photon-free level, uses the same N. |
-| `output_dtype` | `"int16"` | Data type of the TIFFs written for Suite2p. `"int16"` rounds and clips here and reports how much was clipped; `"float32"` leaves the conversion to Suite2p, which truncates and wraps values silently. |
+| `output_dtype` | `"int16"` | Data type of the TIFFs written for Suite2p. `"int16"` rounds and clips here and reports how much was clipped; `"float32"` leaves the conversion to Suite2p, which truncates and wraps out-of-range values (the pipeline warns). |
 | `max_clipped_fraction` | `1e-4` | If more than this fraction of values had to be clipped to fit `output_dtype`, the run stops instead of warning. |
 
 ## `[channels]`
@@ -73,14 +89,14 @@ shift.
 
 | Key | Default | What it does |
 |---|---|---|
-| `method` | `"per_frame"` | `"per_frame"`: every frame gets its own phase. `"chunked"`: one phase per chunk of `chunk_frames` timepoints (the original notebook's method). `motion_alignment_source = "auto"` needs `"per_frame"`. |
+| `method` | `"per_frame"` | `"per_frame"`: every frame gets its own phase. `"chunked"`: one phase per chunk of `chunk_frames` timepoints. `motion_alignment_source = "auto"` needs `"per_frame"`. |
 | `max_shift_px` | `40` | Largest phase searched, in pixels. Raise it only if phases reach this boundary (the QC notebook warns). |
 | `boundary_warning_px` | `2` | Flag frames or chunks whose phase is within this many pixels of ±`max_shift_px`. |
 
 **`per_frame` settings.** Each frame's phase is measured in both channels. The structural
 channel sets a frame's phase where it is consistent over time and the functional channel
 agrees; elsewhere the functional channel's phase, averaged over a longer window, is used.
-All windows are in frames and must be odd, so they are centred on the frame.
+All windows are in frames and must be odd, so they are centered on the frame.
 
 | Key | Default | What it does |
 |---|---|---|
@@ -96,7 +112,8 @@ All windows are in frames and must be odd, so they are centred on the frame.
 | `fallback_window_frames` | `101` | Where the structural channel is not trusted, the functional channel's phase is averaged over this many frames. Smaller follows fast changes better but is noisier. |
 | `frames_per_read` | `50` | Frames read at once. Memory only (~300 MB per channel at 512 × 512); the result is the same. |
 
-**`chunked` settings** (ignored with `per_frame`; setting the manual tables with
+**`chunked` settings** (ignored with `per_frame`, except `chunk_frames`, which also sets
+the length of the QC notebook's stage-by-stage stretch; setting the manual tables with
 `per_frame` is an error).
 
 | Key | Default | What it does |
@@ -137,14 +154,14 @@ All windows are in frames and must be odd, so they are centred on the frame.
 | Key | Default | What it does |
 |---|---|---|
 | `fs_hz` | `7.52` | Frame rate per channel (Hz). |
-| `diameter_px` | `12` | Expected cell diameter (Suite2p's `diameter`). |
+| `diameter_px` | `12` | Expected cell diameter in pixels: Suite2p's `diameter`, the size used for the ROI statistics at extraction, and the smoothing (2 × diameter) used when aligning masks drawn on another image. |
 | `nonrigid` | `true` | Non-rigid registration: each block of the frame gets its own shift. |
 | `norm_frames` | `false` | Suite2p's `norm_frames`: clip frames to the reference's intensity range before computing shifts. |
 | `nimg_init` | `1000` | Frames, spread over the recording, used to build the reference image. |
 | `th_badframes` | `0.7` | Suite2p's threshold for flagging frames whose registration failed. |
-| `two_step_registration` | `true` | Register twice, the second time to a reference built from the once-registered frames. |
+| `two_step_registration` | `true` | Register twice, the second time to a reference built from the once-registered frames. Suite2p only does this when the unregistered binary is kept, so with `keep_raw_binary = false` (the default) registration runs once (README, known issues). |
 | `batch_size` | `500` | Frames registered at once (memory only). |
-| `keep_raw_binary` | `false` | Keep Suite2p's unregistered binary as well (another ~4 GB per channel). |
+| `keep_raw_binary` | `false` | Keep Suite2p's unregistered binary as well (another ~4 GB per channel). Needed for `two_step_registration` to take effect. |
 | `save_folder` | `"suite2p"` | Name of Suite2p's output folder. It is cleared when re-registering. |
 | `fast_disk` | none | A local folder (e.g. on the laptop's SSD) for Suite2p's working binaries. Much faster and more reliable than a network share; results still go beside the run. |
 | `run_roi_detection` | `false` | Run Suite2p's own ROI detection. Off, because ROIs come from Cellpose masks. |
@@ -158,10 +175,10 @@ All windows are in frames and must be odd, so they are centred on the frame.
 | Key | Default | What it does |
 |---|---|---|
 | `neuropil_coefficient` | `0.7` | Fcorr = F − c · Fneu. |
-| `baseline` | `"maximin"` | How F0 is computed from Fcorr: `"maximin"` (Gaussian smoothing, then the maximum of running minima) or `"prctile"` (a running percentile). Suite2p's single-value `"constant"` is not offered, since it is not a per-cell F0. |
-| `win_baseline_s` | `60.0` | Window for the running minimum/maximum or percentile, in seconds. |
+| `baseline` | `"maximin"` | How F0 is computed from Fcorr: `"maximin"` (Gaussian smoothing, then the maximum of running minima over `win_baseline_s`), which follows slow drift, or `"prctile"`: one constant F0 per ROI, the `prctile_baseline` percentile of its whole trace, which does not. Suite2p's `"constant"` (one minimum over all ROIs together) is not offered, since it is not a per-cell F0. |
+| `win_baseline_s` | `60.0` | Window of the running minimum and maximum for `"maximin"`, in seconds (unused by `"prctile"`). |
 | `sig_baseline_frames` | `10.0` | Gaussian smoothing before `"maximin"`, in frames. |
-| `prctile_baseline` | `8.0` | Percentile used by `"prctile"`. |
+| `prctile_baseline` | `8.0` | The percentile of the whole trace that `"prctile"` uses as F0. |
 | `min_f0` | `0.0` | ΔF/F0 is NaN wherever F0 ≤ this, since the ratio means nothing there. |
 
 **Photon-free level.** A pixel that caught no photon should read 0, but the detector's
@@ -216,7 +233,7 @@ zero drifts during a recording (see the README, "Photon-free level").
 |---|---|---|
 | `input_tiff` | required | The raw ScanImage TIFF. Also where the photon-free level is measured. |
 | `run_dir` | required | The run folder outputs go into (the variant subfolders are added). Keep it outside `[batch] derivatives_subject_dir`: the batch planner would treat a folder there as a finished run and skip it. |
-| `qc_start_timepoint` | `0` | First timepoint of the stretch shown in the stage-by-stage QC figures. |
+| `qc_start_timepoint` | `0` | First timepoint of the stretch shown in the stage-by-stage QC figures (`[phase] chunk_frames` long). |
 | `qc_registration_frames` | `500` | Frames in the before/after-registration comparison. |
 | `qc_distortion_frames` | `100` | Frames in the before/after-distortion comparison. |
 | `cellpose_seg` | none | Cellpose `*_seg.npy` with the cell masks, for extraction. |
@@ -234,7 +251,7 @@ zero drifts during a recording (see the README, "Photon-free level").
 | `derivatives_subject_dir` | required | Where the subject's runs are written. |
 | `session_first`, `session_last` | required | Session numbers to process (inclusive). |
 | `source_substring` | required | Only TIFFs whose names contain this are processed (e.g. `"71rtask"`). |
-| `destripe` | `false` | Which destriping variant to write. |
+| `destripe` | `false` | Whether the batch destripes, and so which variant it writes. Overrides `[destripe] enabled` for batch runs. |
 | `stop_on_error` | `true` | Stop the batch at the first failed run. |
 | `retry_incomplete_runs` | `true` | Retry runs that failed or were interrupted. |
 | `rerun_completed_before` | none | Register again, replacing them, the runs that finished before this time (with a time zone, e.g. `2026-10-21T09:00:00+01:00`). Relaunching with the same time never redoes a run already replaced. Needs `overwrite = true`. |
@@ -251,7 +268,7 @@ zero drifts during a recording (see the README, "Photon-free level").
 | `run_subdir` | required | The variant to export, e.g. `"with_distortion_correction/without_destriping"`. |
 | `alignment` | `"auto"` | Which registration: the one `aligned_*` folder each run has, or `"structural"` / `"functional"`. |
 | `black_percentile`, `white_percentile`, `gamma` | `5.0`, `99.5`, `1.2` | Contrast of the exported images. |
-| `high_resolution_dpi` | `400` | Resolution of the high-resolution PNGs. |
+| `high_resolution_dpi` | `400` | Resolution of the high-resolution PDF. (The PNGs are written at the images' own pixel size.) |
 | `overwrite` | `false` | Replace existing per-run exports. |
 | `pdf_overwrite` | `false` | Replace existing PDFs. |
 
@@ -283,14 +300,12 @@ Command-line options override these.
 | `start_frame`, `end_frame` | none | 0-based, both included. |
 | `stage_raw` | `false` | The acquired TIFF. |
 | `stage_bidiphase` | `false` | After phase correction (and destriping). |
-| `stage_undistorted` | `false` | After distortion correction too. |
+| `stage_undistorted` | `false` | After distortion correction too (skipped when distortion correction was off). |
 | `stage_registered` | `true` | After Suite2p registration too. |
 | `stage_background_removed` | `false` | The registered movie with the background regressed out of every pixel (the QC notebook's `data_background_removed_<source>.tif`). |
 | `background_source` | `"vessel"` | That background: `"vessel"` or `"non_roi"`. |
 | `unaveraged_movie` | `true` | A movie of every frame. |
 | `averaged_movie` | `true` | A movie of frames averaged `average_frames` at a time. |
-| `behavior` | `false` | Also each movie with the behavior video on the left, in sync (added by the behavior-movies pull request). |
-| `behavior_video` | none | The behavior video, if not where `video_frame_times.npz` says (same pull request). |
 
 **Where to write, and how they look**
 
@@ -300,14 +315,14 @@ Command-line options override these.
 | `overwrite` | `false` | Replace existing movies. |
 | `channel` | `"side_by_side"` | Functional left and structural right, or `"green"` / `"red"` alone. |
 | `average_frames` | `5` | Frames per averaged movie frame (2–256). |
-| `average_mode` | `"bin"` | `"bin"` (non-overlapping) or `"rolling"`. |
+| `average_mode` | `"bin"` | `"bin"`: non-overlapping groups of `average_frames`. `"rolling"`: a running average, one movie frame per acquired frame, so at the same `speed` it needs a higher frame rate. |
 | `speed` | `4.0` | Playback speed, times real time. A movie must play at ≥ 1 fps, so large bins need higher speed. |
 | `black_percentile`, `white_percentile`, `gamma` | `1.0`, `99.8`, `1.0` | Contrast, per channel, as in the QC notebook. |
 | `contrast_sample_frames` | `200` | Frames sampled to set that contrast. |
 | `spatial_sigma_px` | `0.0` | Gaussian smoothing within each averaged frame (unaveraged movies never are). |
 | `upscale` | `1` | Each pixel drawn as upscale × upscale pixels (1–8). |
-| `label` | `true` | Stage, time, speed and channel written into each frame. |
-| `suite2p_crop` | `false` | Also a copy of each registered movie cropped to the region no frame's registration shifts wrap into. |
+| `label` | `true` | Stage, time, frame range, speed and channel written into each frame. |
+| `suite2p_crop` | `false` | Also a copy of each registered (and background-removed) movie cropped to the region no frame's registration shifts wrap into. |
 | `quality` | `8.0` | H.264 quality, 0–10. |
 
 ## `[natex]`: `mini2p-natex`

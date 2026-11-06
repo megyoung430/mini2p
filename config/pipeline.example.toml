@@ -187,7 +187,7 @@ averaged_movie = true         # average_frames frames per movie frame
 # Where to read and write
 derivatives_root = "/path/to/derivatives"   # cohort-XX/<subject>/ses-*/funcimg/run-XX (by name)
 # raw_tiff = "/path/to/71rtask_00039.tif"   # only if not where source_tiff.json says
-# output_dir = "/Users/you/movies"          # default: run-XX/<variant>/movies
+# output_dir = "/Users/you/movies"          # default: run-XX/<variant>/aligned_<channel>/movies
 overwrite = false
 # How they look (greyscale)
 channel = "side_by_side"      # functional left, structural right; or "green", "red" alone
