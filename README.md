@@ -298,17 +298,26 @@ meaning there. ΔF itself stays finite. The same applies to the green/red ratio,
 
 Every chunked step (bidiphase, destriping, distortion correction, registration) is checked
 against the acquired TIFF by content, in the QC notebook ("Frame order") or with
-`frame_order.check_frame_order(plane_dir, stages, run_settings)`: each frame's mean per
-channel, minus a ~4 s running mean, is a signature the corrections barely change, and every
-200 frames of a stage are matched against every position of the acquired TIFF. A window is
-*in place* (best match at its own position), *moved* (another position clearly better; the
-summary names it) or *unclear* (no position matches well). A stage matching the other
-acquired channel better is reported as swapped channels. On the good example session (MY_71_R, 7 Aug
-2026) every window of the bidiphase/destriped, undistorted and registered stages is in
-place (r = 0.99-1.00 with the acquired channel, 0.3 with the other); one dropped frame or two
-swapped 500-frame blocks are found. The background-removed TIFF is not checked (removing
-the background takes most of the signature out). The tests also run the chunked bidiphase
-and distortion writers with chunk sizes that do not divide the recording.
+`frame_order.check_frame_order(plane_dir, stages, run_settings)`. Each frame's mean per
+channel, minus a ~4 s running mean, is a signature the corrections barely change.
+
+- **Windows:** every 200 frames of a stage (the last window ending at the last frame) are
+  matched against every position of the acquired TIFF: *in place*, *moved* (another position
+  clearly better; the summary names it), *ambiguous* or *unclear* (no position matches, e.g.
+  frames never written).
+- **Frames:** each frame against the acquired frame at the same position, which finds blocks
+  shorter than a window (one of the pipeline's 50- or 100-frame chunks out of place).
+- A stage also fails if its file holds more frames than the run, or if it matches the other
+  acquired channel better (swapped channels).
+
+On the good example session (MY_71_R, 7 Aug 2026) every window of the bidiphase/destriped,
+undistorted and registered stages is in place (r = 0.99-1.00 with the acquired channel, 0.3
+with the other), with no mismatched frames; one dropped frame, two swapped 500-frame blocks
+or two swapped 50-frame blocks put into its registered signature are found. Not covered: the
+background-removed TIFF (removing the background takes most of the signature out), and a
+block moved in from beyond the frames the run processed shows as *unclear*, not *moved*.
+The tests also run the chunked bidiphase and distortion writers, with chunk sizes that do
+not divide the recording, through this check.
 
 ## Output data type
 

@@ -11,10 +11,13 @@ from mini2p_preprocessing.correction import preprocess_tiff
 from mini2p_preprocessing.distortion import write_distortion_corrected
 from mini2p_preprocessing.frame_order import (
     SIGNATURE_CACHE,
+    cached_frame_means,
     check_frame_order,
     fast_part,
     match_windows,
+    mismatched_stretches,
     order_report,
+    window_starts,
 )
 from mini2p_preprocessing.movies import load_run_settings
 from tests.conftest import fake_calibration, write_interleaved_tiff
@@ -75,6 +78,84 @@ def test_matching_refuses_a_stage_longer_than_the_acquisition_or_shorter_than_a_
         match_windows(flicker(0, 300), flicker(0, 100))
 
 
+def test_the_last_window_ends_at_the_last_frame():
+    np.testing.assert_array_equal(window_starts(1150, 200), [0, 200, 400, 600, 800, 950])
+    np.testing.assert_array_equal(window_starts(1000, 200), [0, 200, 400, 600, 800])
+    acquired = flicker(14, 1150)
+    stage = acquired.copy()
+    stage[1100:] = 0.0  # the remainder chunk never written
+    report = order_report("registered", "green", stage, {"green": acquired})
+    assert not report.passed  # the tail window is mostly good frames: the frame check finds it
+    assert report.mismatched and all(a >= 1100 - 20 for a, _ in report.mismatched)
+
+
+def test_frames_never_written_fail_the_stage():
+    acquired = flicker(15)
+    stage = acquired.copy()
+    stage[400:600] = 7.0  # constant: a preallocated chunk left as it was
+    report = order_report("registered", "green", stage, {"green": acquired})
+    assert not report.passed and report.count("unclear") >= 1
+    assert "frames never written?" in report.summary()
+
+
+@pytest.mark.parametrize("block", [50, 100])
+def test_a_chunk_shorter_than_a_window_out_of_place_is_found(block):
+    acquired = flicker(16)
+    swapped = acquired.copy()
+    swapped[300 : 300 + block] = acquired[300 + block : 300 + 2 * block]
+    swapped[300 + block : 300 + 2 * block] = acquired[300 : 300 + block]
+    duplicated = acquired.copy()
+    duplicated[700 : 700 + block] = acquired[700 - block : 700]  # a chunk written twice
+    for stage, (first, last) in (
+        (swapped, (300, 300 + 2 * block)),
+        (duplicated, (700, 700 + block)),
+    ):
+        report = order_report("registered", "green", stage, {"green": acquired})
+        assert not report.passed, report.summary()
+        flagged = np.zeros(N, bool)
+        for a, b in report.mismatched:
+            flagged[a:b] = True
+        assert flagged[first:last].mean() > 0.5
+        assert flagged[: first - 20].sum() == 0 and flagged[last + 20 :].sum() == 0
+
+
+def test_noise_in_a_stage_is_not_a_mismatch():
+    acquired = flicker(17)
+    stage = 3 * acquired + 0.2 * flicker(18)  # scaled, a little noisier
+    assert mismatched_stretches(fast_part(acquired), fast_part(stage)) == []
+
+
+def test_one_channel_runs_have_no_swap_check():
+    acquired = flicker(19)
+    report = order_report("registered", "green", acquired, {"green": acquired})
+    assert report.passed and np.isnan(report.r_other_channel)
+
+
+def test_a_file_with_more_frames_than_the_run_fails():
+    acquired = flicker(20)
+    report = order_report("bidiphase", "green", acquired, {"green": acquired}, frames_in_file=N + 3)
+    assert not report.passed and f"holds {N + 3} frames" in report.summary()
+
+
+def test_the_cache_keeps_pages_of_one_file_apart(tmp_path):
+    class Source:
+        def __init__(self, path, values):
+            self.path, self.n_frames, self.values = path, len(values), values
+
+        def read(self, start, stop):
+            return self.values[start:stop, None, None] * np.ones((1, 2, 2))
+
+    path = tmp_path / "stack.tif"
+    path.write_bytes(b"x")
+    cache = tmp_path / SIGNATURE_CACHE
+    first = cached_frame_means(Source(path, np.arange(5.0)), cache, "green:1/2")
+    other = cached_frame_means(Source(path, np.arange(5.0) * 2), cache, "green:0/2")
+    again = cached_frame_means(Source(path, np.zeros(5)), cache, "green:1/2")  # from the cache
+    np.testing.assert_array_equal(first, np.arange(5.0))
+    np.testing.assert_array_equal(other, np.arange(5.0) * 2)
+    np.testing.assert_array_equal(again, first)
+
+
 def test_swapped_channels_are_reported():
     green, red = 1000 + flicker(6), 500 + flicker(7)
     same = order_report("registered", "green", green, {"green": green, "red": red})
@@ -118,9 +199,10 @@ def test_bidiphase_correction_keeps_every_frame_in_place(tmp_path, method):
     )  # fmt: skip
     out = tmp_path / "corrected.tif"
     preprocess_tiff(raw, out, settings, run_name="run-01")
-    for channel, level in enumerate(levels):
-        np.testing.assert_allclose(page_means(out, channel), page_means(raw, channel), rtol=0.01)
-        assert np.corrcoef(page_means(out, channel), level)[0, 1] > 0.99
+    acquired = {"red": page_means(raw, 0), "green": page_means(raw, 1)}
+    for channel, name in enumerate(("red", "green")):
+        report = order_report("bidiphase", name, page_means(out, channel), acquired, window=10)
+        assert report.passed, report.summary()
 
 
 def test_distortion_correction_keeps_every_frame_in_place(tmp_path):
@@ -131,14 +213,16 @@ def test_distortion_correction_keeps_every_frame_in_place(tmp_path):
     )  # fmt: skip
     out = tmp_path / "undistorted.tif"
     write_distortion_corrected(raw, out, settings, calibration=fake_calibration())
-    for channel, level in enumerate(levels):
-        assert np.corrcoef(page_means(out, channel), level)[0, 1] > 0.99
+    acquired = {"red": page_means(raw, 0), "green": page_means(raw, 1)}
+    for channel, name in enumerate(("red", "green")):
+        report = order_report("undistorted", name, page_means(out, channel), acquired, window=10)
+        assert report.passed, report.summary()
 
 
 # ---------------------------------------------------------------- a whole run
 
 
-def run_with_flicker(tmp_path, move_registered_block: bool = False):
+def run_with_flicker(tmp_path, move_registered_block: bool = False, extra_bidiphase_frames=0):
     """A run (see test_movies.make_run) whose stages share each frame's brightness."""
     plane = make_run(tmp_path)
     variant = plane.parents[2]
@@ -157,8 +241,9 @@ def run_with_flicker(tmp_path, move_registered_block: bool = False):
     write_run_tiff(raw, green, red, green_page)
     for tif in variant.glob("71rtask_00039_*.tif"):
         shape = tifffile.TiffFile(tif).pages[0].shape
-        write_run_tiff(tif, green[:, : shape[0], : shape[1]], red[:, : shape[0], : shape[1]],
-                       green_page)  # fmt: skip
+        extra = extra_bidiphase_frames if "undistorted" not in tif.name else 0
+        g, r = (np.concatenate([s, s[:extra]])[:, : shape[0], : shape[1]] for s in (green, red))
+        write_run_tiff(tif, g, r, green_page)
     registered = green.copy()
     if move_registered_block:
         registered[10:20], registered[30:40] = green[30:40], green[10:20]
@@ -181,7 +266,7 @@ def test_a_run_processed_in_order_passes_every_stage(tmp_path):
 def test_a_block_moved_in_the_registered_binary_is_reported(tmp_path):
     plane, run = run_with_flicker(tmp_path, move_registered_block=True)
     green = check_frame_order(plane, ("registered",), run, window=10)[0]
-    assert not green.passed and green.moved == 2
+    assert not green.passed and green.count("moved") == 2
     assert "frames 10-19 match acquired frame 30" in green.summary()
 
 
@@ -192,6 +277,12 @@ def test_cached_signatures_are_read_again_when_a_file_changes(tmp_path):
     data[[*range(10, 20), *range(30, 40)]] = data[[*range(30, 40), *range(10, 20)]]
     data.tofile(plane / "data.bin")  # replaced: new modification time
     assert not check_frame_order(plane, ("registered",), run, window=10)[0].passed
+
+
+def test_a_stage_tiff_longer_than_the_run_is_reported(tmp_path):
+    plane, run = run_with_flicker(tmp_path, extra_bidiphase_frames=4)
+    reports = check_frame_order(plane, ("bidiphase",), run, window=10)
+    assert all(r.frames_in_file == N_FRAMES + 4 and not r.passed for r in reports)
 
 
 def test_stages_this_check_cannot_cover_are_refused(tmp_path):
