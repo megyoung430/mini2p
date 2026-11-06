@@ -4,6 +4,8 @@ Scan-phase (bidiphase) correction, optional destriping, distortion correction an
 Suite2p registration for two-channel Mini2P recordings, plus batch processing and
 mean-image review exports.
 
+Every setting, its default, and what to rerun after changing it: [`docs/settings.md`](docs/settings.md).
+
 ## Setup
 
 ```bash

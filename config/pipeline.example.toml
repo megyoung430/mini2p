@@ -100,6 +100,14 @@ subtract_photon_free_level = true  # subtract each frame's drifting zero (raw TI
 photon_free_pixel_percentile = 5.0 # dimmest % of pixels the level is measured on
 photon_free_mask_frames = 500      # first frames averaged to find those pixels
 
+[focus]                       # QC notebook: registered frames that still do not match the mean
+channel = "structural"        # its signal does not follow activity
+smooth_px = 2.0               # Gaussian sigma before comparing, against shot noise
+window_frames = 301           # odd; running-median baseline (~40 s at 7.52 Hz)
+drop_threshold = 4.0          # robust SDs below the baseline to flag
+merge_gap_frames = 8          # flagged runs this close count as one stretch
+chunk_frames = 100            # memory only
+
 # ---- used by the QC notebook ----
 # Keep run_dir outside derivatives_subject_dir: the batch planner treats a run
 # folder holding a .phase.json but no manifest as finished and skips it.
