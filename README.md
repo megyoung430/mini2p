@@ -290,24 +290,27 @@ its detection of one cell in several planes, and its GUI are not ported.
 
 **Photon-free level.** A pixel that caught no photon should read 0: ScanImage measures
 the detector's dark offset at the start of each acquisition and subtracts it. The offset
-then drifts. In the 7 Aug 2026 session (MY_71_R) the green zero wandered between about
-−105 and +14 counts (SD 25), on cells whose light is ~80 counts per pixel per frame, and
-red's rose by ~450 counts in the first 10 minutes. Arya's session on the same microscope
-drifts by as much, in the other direction. With `[fluorescence]
-subtract_photon_free_level = true`, the QC notebook measures each frame's level on the
-raw TIFF and subtracts it from F, Fneu and the background traces of each channel before
-ΔF/F0 (`photon_free.py`, `photon_free_io.py`). That frame's level is the centre of the
-peak of photon-free readings among the dimmest 5 % of pixels
-(`photon_free_pixel_percentile`) of the first 500 frames' mean
-(`photon_free_mask_frames`). It is measured on the raw TIFF because interpolation in
-distortion correction and registration lifts it by ~8 counts. The result is cached in
-`photon_free_levels.npz` in the plane folder.
+then drifts, on the Mini2P by tens of counts within a minute and up to ~100 in green and
+~450 in red over a session, while cells give ~80 counts per pixel per frame. With
+`[fluorescence] subtract_photon_free_level = true` (the default), the QC notebook
+measures each frame's level on the raw TIFF and subtracts it from F, Fneu and the
+background traces of each channel before ΔF/F0 (`photon_free.py`, `photon_free_io.py`).
 
-On that session, with the masks and traces of the background check, ROIs whose F0 is ≤ 0
-somewhere fell from 230 (13–20 after background regression) to 1, and the median F0 rose
-from 19 to 29 counts. The vessel background's coefficient in F fell from 0.98, which was
-mostly the drifting zero, to 0.60. Background regression is no longer needed to keep F0
-positive, so whether to use it is a separate question.
+- **How:** a frame's level is the centre of the peak of photon-free readings among each
+  channel's dimmest pixels (`photon_free_pixel_percentile`, 5 %), picked in the mean of
+  the first `photon_free_mask_frames` (500) raw frames with a 16 px border left out. A
+  level that looks like a photon peak, sits on clipped values, or jumps by more than
+  100 counts between frames stops the step with an error.
+- **Why the raw TIFF:** interpolation in distortion correction and registration lifts the
+  level measured on the binaries by ~8 counts. One level per frame suffices: bands of
+  columns or rows differ from it by a fixed 3–5 counts at most.
+- **Cached** in `photon_free_levels.npz` in the plane folder; the per-frame plot is saved
+  as `photon_free_levels.{png,pdf,svg}` with a caption.
+- **Refused settings:** destriping with `preserve_frame_mean = false` (it already removes
+  each column's mean) and distortion correction with `crop_black_borders = false` (its
+  zero-filled borders carry no offset).
+- **Scope:** only the QC notebook's traces use it. The extraction outputs (`iscell`,
+  `spks`) and NATEX still work on F and Fneu as extracted.
 
 **What ΔF/F0 means here.** Suite2p's `preprocess` returns ΔF = Fcorr − F0, where
 Fcorr = F − c·Fneu. The package recovers F0 explicitly and returns ΔF/F0, with ΔF and

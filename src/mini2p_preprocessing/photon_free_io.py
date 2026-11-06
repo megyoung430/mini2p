@@ -7,6 +7,14 @@ mode (by ~8 counts on the Mini2P). Each channel's level comes from its dimmest p
 the mean of the first frames, so a bright structural channel can be measured too. A
 per-frame offset is the same in every pixel, so it is unchanged by those later steps and
 can be subtracted from traces extracted from the registered binaries, frame for frame.
+
+Two settings change that offset before Suite2p and are refused: destriping without
+``preserve_frame_mean`` (it already drives every column to zero mean) and distortion
+correction without ``crop_black_borders`` (its zero-filled borders carry no offset, so
+the non-ROI background would hold only part of it).
+
+Only the QC notebook's traces use the level: the extraction outputs (``iscell``, ``spks``)
+and NATEX still work on F and Fneu as extracted.
 """
 
 from __future__ import annotations
@@ -20,14 +28,20 @@ import tifffile
 
 from .background_io import BackgroundTraces
 from .config import PipelineSettings
-from .photon_free import dim_pixel_mask, photon_free_levels, subtract_level
+from .photon_free import (
+    ESTIMATOR,
+    check_steps,
+    dim_pixel_mask,
+    photon_free_levels,
+    subtract_level,
+)
 from .plane import PlaneTraces
 from .tiff_io import chunk_bounds, count_timepoints, read_channel_chunk, replaced_when_complete
 
 LEVELS_FILE = "photon_free_levels.npz"
 # Raw-frame border left out of the dim-pixel masks (the resonant scan's turnarounds).
 RAW_MARGIN_PX = 16
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 _FIELDS = ("green", "red", "green_mask", "red_mask")  # PhotonFreeLevels order, as cached
 
 
@@ -54,6 +68,7 @@ def levels_key(input_tiff: Path, n_frames: int, settings: PipelineSettings) -> d
         "mask_frames": fl.photon_free_mask_frames,
         "margin_px": RAW_MARGIN_PX,
         "max_timepoints": settings.max_timepoints,
+        "estimator": ESTIMATOR,
     }
 
 
@@ -67,6 +82,7 @@ def raw_levels(
     TIFF takes minutes, so the levels are kept in ``photon_free_levels.npz`` in
     *plane_dir* and reused while the TIFF and settings are unchanged.
     """
+    check_offset_kept(settings)
     key = levels_key(input_tiff, n_frames, settings)
     cache = Path(plane_dir) / LEVELS_FILE
     if cache.is_file():
@@ -82,6 +98,20 @@ def raw_levels(
                 **dict(zip(_FIELDS, levels, strict=True)),
             )
     return PhotonFreeLevels(*levels, key)
+
+
+def check_offset_kept(settings: PipelineSettings) -> None:
+    """Refuse settings under which the Suite2p input no longer carries the raw offset."""
+    if settings.destripe.enabled and not settings.destripe.preserve_frame_mean:
+        raise ValueError(
+            "destripe.preserve_frame_mean = false already removes each column's mean, offset "
+            "included; subtracting the photon-free level as well would remove it twice"
+        )
+    if settings.distortion.mode != "off" and not settings.distortion.crop_black_borders:
+        raise ValueError(
+            "distortion.crop_black_borders = false leaves zero-filled borders that carry no "
+            "offset, so the level cannot be subtracted from every pixel alike"
+        )
 
 
 def _measure(input_tiff: Path, n_frames: int, settings: PipelineSettings) -> tuple:
@@ -112,7 +142,10 @@ def _measure(input_tiff: Path, n_frames: int, settings: PipelineSettings) -> tup
             for i, channel in enumerate(channels):
                 frames = read_channel_chunk(tif, start, end, channel, ch.n_channels)
                 levels[i].append(photon_free_levels(frames, masks[i]))
-    return np.concatenate(levels[0]), np.concatenate(levels[1]), masks[0], masks[1]
+    green, red = np.concatenate(levels[0]), np.concatenate(levels[1])
+    check_steps(green)  # chunks were checked inside; this covers their boundaries
+    check_steps(red)
+    return green, red, masks[0], masks[1]
 
 
 def traces_without_level(traces: PlaneTraces, levels: PhotonFreeLevels) -> PlaneTraces:

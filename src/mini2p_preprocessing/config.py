@@ -224,7 +224,7 @@ class FluorescenceSettings(_Frozen):
     # once per acquisition but drifts, so photon-free pixels do not read 0. When on, each
     # frame's level, measured on the raw TIFF, is subtracted from F, Fneu and the
     # background traces before ΔF/F0.
-    subtract_photon_free_level: bool = False
+    subtract_photon_free_level: bool = True
     photon_free_pixel_percentile: float = Field(5.0, gt=0, le=100)  # dimmest pixels used
     photon_free_mask_frames: int = Field(500, ge=1)  # raw frames averaged to find them
 
