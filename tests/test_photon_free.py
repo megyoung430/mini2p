@@ -181,6 +181,7 @@ def settings(fluorescence=None, **top):
 
 @pytest.fixture
 def raw_tiff(tmp_path):
+    # steps of ~11 (green) and 20 (red) counts per frame: a fast real drift
     green_levels, red_levels = np.linspace(-90, 10, 10), np.linspace(40, 220, 10)
     red_rate = np.full((96, 96), 2.0)
     red_rate[:, :30] = 0.1  # wide enough to stay dim inside the 16 px margin
@@ -304,3 +305,14 @@ def test_traces_and_background_lose_the_level_frame_for_frame(raw_tiff, tmp_path
     np.testing.assert_allclose(cleaned_bg.red, 1 - levels.red)
     with pytest.raises(ValueError, match="cover 10 frames"):
         photon_free_io.traces_without_level(plane_traces(ones[:, :9], ones[:, :9]), levels)
+
+
+def test_errors_name_the_recording_frame(raw_tiff, tmp_path):
+    """A jump inside a later chunk is reported at its frame in the recording."""
+    tiff, *_ = raw_tiff
+    with tifffile.TiffFile(tiff) as tif:
+        pages = tif.asarray()
+    pages[2 * 6 + 1] += 350  # green, frame 6: a level one photon too high
+    tifffile.imwrite(tiff, pages)
+    with pytest.raises(ValueError, match="at frame 6"):
+        photon_free_io.raw_levels(tiff, tmp_path, n_frames=10, settings=settings())

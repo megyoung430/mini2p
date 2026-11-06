@@ -141,7 +141,7 @@ def _measure(input_tiff: Path, n_frames: int, settings: PipelineSettings) -> tup
         for start, end in chunk_bounds(n_timepoints, fl.background_chunk_frames):
             for i, channel in enumerate(channels):
                 frames = read_channel_chunk(tif, start, end, channel, ch.n_channels)
-                levels[i].append(photon_free_levels(frames, masks[i]))
+                levels[i].append(photon_free_levels(frames, masks[i], first_frame=start))
     green, red = np.concatenate(levels[0]), np.concatenate(levels[1])
     check_steps(green)  # chunks were checked inside; this covers their boundaries
     check_steps(red)

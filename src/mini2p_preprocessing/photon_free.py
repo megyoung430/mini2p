@@ -10,9 +10,10 @@ frame puts F, Fneu and the background traces on a true zero, which a ΔF/F0 need
 removes no light. For a bright channel (a dense structural label) the level is taken over
 its dimmest pixels, where photon-free readings still dominate.
 
-One level per frame is enough: on the Mini2P (7 Aug 2026 session) bands of columns or
-rows differ from the frame's level by a fixed 3-5 counts at most and follow it to within
-1-2 counts over time, while the level itself moves by over 100 counts.
+One level per frame removes the drift: on the Mini2P (7 Aug 2026 session) bands of columns
+or rows differ from the frame's level by a fixed 3-5 counts at most and follow it to within
+1-2 counts over time, while the level itself moves by over 100 counts. That fixed band
+offset stays in F; for a dim ROI in the worst band it is ~15% of a 30-count F0.
 
 Traces must be weighted means of pixels with weights summing to 1 (Suite2p's F with its
 normalized lam, Fneu, the background traces) for the level to subtract exactly.
@@ -118,7 +119,8 @@ def _check_photon_free(values: np.ndarray, level: float, sd: float) -> None:
     if near < MIN_PHOTON_FREE_FRACTION:
         raise ValueError(
             f"Only {near:.0%} of the readings lie near their most common value, so it is "
-            "not a photon-free level (too much light); measure it over dimmer pixels"
+            "not a photon-free level: too much light (measure it over dimmer pixels) or "
+            "readings disturbed by a glitch in this frame"
         )
     far = _fraction_far_below(values, level, sd)
     if far > MAX_FAR_BELOW:
@@ -130,8 +132,13 @@ def _check_photon_free(values: np.ndarray, level: float, sd: float) -> None:
         raise ValueError(f"The level {level:.0f} is at the int16 limit: the values are clipped")
 
 
-def photon_free_levels(frames: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
-    """Photon-free level of every frame of a (frames, Ly, Lx) stack, over *mask* pixels."""
+def photon_free_levels(
+    frames: np.ndarray, mask: np.ndarray | None = None, first_frame: int = 0
+) -> np.ndarray:
+    """Photon-free level of every frame of a (frames, Ly, Lx) stack, over *mask* pixels.
+
+    *first_frame* is the recording frame number of ``frames[0]``, for error messages.
+    """
     frames = np.asarray(frames)
     if mask is not None:
         mask = np.asarray(mask)
@@ -143,16 +150,23 @@ def photon_free_levels(frames: np.ndarray, mask: np.ndarray | None = None) -> np
     n_pixels = int(mask.sum()) if mask is not None else int(np.prod(frames.shape[1:]))
     if n_pixels < MIN_PIXELS:
         raise ValueError(f"{n_pixels} pixels are too few for a level (need {MIN_PIXELS})")
-    levels = np.array([photon_free_level(f[mask] if mask is not None else f) for f in frames])
-    check_steps(levels)
+    levels = []
+    for i, frame in enumerate(frames):
+        try:
+            levels.append(photon_free_level(frame[mask] if mask is not None else frame))
+        except ValueError as error:
+            raise ValueError(f"Frame {first_frame + i}: {error}") from error
+    levels = np.array(levels)
+    check_steps(levels, first_frame)
     return levels
 
 
-def check_steps(levels: np.ndarray) -> None:
-    """Refuse a level series that jumps by about a photon between frames."""
+def check_steps(levels: np.ndarray, first_frame: int = 0) -> None:
+    """Refuse a level series that jumps by about a photon between frames (*first_frame* is
+    the recording frame number of ``levels[0]``, for the message)."""
     steps = np.abs(np.diff(levels))
     if steps.size and steps.max() > MAX_STEP_COUNTS:
-        frame = int(np.argmax(steps)) + 1
+        frame = first_frame + int(np.argmax(steps)) + 1
         raise ValueError(
             f"The photon-free level jumps by {steps.max():.0f} counts at frame {frame}; "
             "one of the two estimates is probably a photon peak"
