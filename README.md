@@ -311,6 +311,33 @@ F0 kept alongside. ΔF/F0 is NaN wherever F0 ≤ `min_f0`, since the ratio has n
 meaning there. ΔF itself stays finite. The same applies to the green/red ratio,
 Δ(G/R)/(G/R)0.
 
+## Frame order
+
+Every chunked step (bidiphase, destriping, distortion correction, registration) is checked
+against the acquired TIFF by content, in the QC notebook ("Frame order") or with
+`frame_order.check_frame_order(plane_dir, stages, run_settings)`. Each frame's mean per
+channel, minus a ~4 s running mean, is a signature the corrections barely change.
+
+- **Windows:** every 200 frames of a stage (the last window ending at the last frame) are
+  matched against every position of the acquired TIFF: *in place*, *moved* (another position
+  clearly better; the summary names it), *ambiguous* or *unclear* (no position matches, e.g.
+  frames never written).
+- **Frames:** each frame against the acquired frame at the same position, which finds blocks
+  shorter than a window (one of the pipeline's 50- or 100-frame chunks out of place). The
+  threshold follows each stage's own noise, so a stage that matches the acquired signature
+  less closely (r below about 0.9) relies on the window check alone.
+- A stage also fails if its file holds more frames than the run, or if it matches the other
+  acquired channel better (swapped channels).
+
+On the good example session (MY_71_R, 7 Aug 2026) every window of the bidiphase/destriped,
+undistorted and registered stages is in place (r = 0.99-1.00 with the acquired channel, 0.3
+with the other), with no mismatched frames; one dropped frame, two swapped 500-frame blocks
+or two swapped 50-frame blocks put into its registered signature are found. Not covered: the
+background-removed TIFF (removing the background takes most of the signature out), and a
+block moved in from beyond the frames the run processed shows as *unclear*, not *moved*.
+The tests also run the chunked bidiphase and distortion writers, with chunk sizes that do
+not divide the recording, through this check.
+
 ## Output data type
 
 Suite2p registers int16 frames: given any other type, its TIFF reader converts each frame
