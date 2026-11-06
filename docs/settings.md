@@ -308,6 +308,8 @@ Command-line options override these.
 | `background_source` | `"vessel"` | That background: `"vessel"` or `"non_roi"`. |
 | `unaveraged_movie` | `true` | A movie of every frame. |
 | `averaged_movie` | `true` | A movie of frames averaged `average_frames` at a time. |
+| `behavior` | `false` | Also each movie with the behavior video on the left, in sync. Needs `run-XX/frame_times.npz` and `video_frame_times.npz` from magnitude-bandit-analysis's reward-responses notebook. |
+| `behavior_video` | none | The behavior video, if not where `video_frame_times.npz` says. |
 
 **Where to write, and how they look**
 
