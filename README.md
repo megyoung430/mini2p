@@ -30,6 +30,13 @@ CLI and the batch workers all read it, so they cannot drift apart.
 - **Sessions the batch has finished, while it runs:** `notebooks/post_batch_sessions.ipynb`,
   in a second kernel. Exports, Cellpose extraction and an alignment review for the chosen
   sessions, only for runs the batch completed since `rerun_completed_before`.
+- **Which correction before ΔF/F0, for one run:** `notebooks/extraction_comparison.ipynb`,
+  after the QC notebook has registered and extracted the run. Compares, on the same ROIs,
+  the fixed neuropil correction, a per-ROI fitted coefficient, no neuropil subtraction, and
+  background regression (vessel or non-ROI) with and without neuropil subtraction (for
+  soma-targeted indicators, whose neuropil holds little indicator), with two diagnostics:
+  how far ROIs stand above their neuropil, and whether the field-wide fluctuation moves green
+  and red by the same fraction (hardware) or green more (blood volume, indicator signal).
 
 ### With and without destriping
 
@@ -144,6 +151,16 @@ Everything is set in the `[movies]` section of the config (see
   0-based and both included (with the whole recording these two are ignored, with a warning);
 - **which stages**: the five switches above (only `stage_registered` is on unless the
   config says otherwise), and **versions**: `unaveraged_movie`, `averaged_movie`;
+- **behavior**: with `behavior = true`, every movie also gets a twin (`..._behavior_...`)
+  with the run's behavior video on the left of the imaging, scaled to its height and in
+  sync: each movie frame shows the video frame on screen at the middle of its imaging
+  window, by pyControl time. It reads `run-XX/frame_times.npz` (imaging frames) and
+  `run-XX/video_frame_times.npz` (video frames, and the video's path), which
+  magnitude-bandit-analysis's `scripts/funcimg/reward_responses.ipynb` writes (steps 1 and
+  1b); `behavior_video` gives the video if it has moved. Where a movie frame or the video
+  has no time (outside the sync pulses, or after the video ends), the panel is black and
+  labelled "behavior (no video)". The video is decoded from its start for every movie, so
+  a frame range late in a long run waits for the video to reach it;
 - **where to read and write**: `derivatives_root`, `raw_tiff`, `output_dir` (default
   `run-XX/<variant>/aligned_<channel>/movies/`; `~` works in all of them);
 - **how they look**.
@@ -317,6 +334,33 @@ Fcorr = F − c·Fneu. The package recovers F0 explicitly and returns ΔF/F0, wi
 F0 kept alongside. ΔF/F0 is NaN wherever F0 ≤ `min_f0`, since the ratio has no
 meaning there. ΔF itself stays finite. The same applies to the green/red ratio,
 Δ(G/R)/(G/R)0.
+
+## Frame order
+
+Every chunked step (bidiphase, destriping, distortion correction, registration) is checked
+against the acquired TIFF by content, in the QC notebook ("Frame order") or with
+`frame_order.check_frame_order(plane_dir, stages, run_settings)`. Each frame's mean per
+channel, minus a ~4 s running mean, is a signature the corrections barely change.
+
+- **Windows:** every 200 frames of a stage (the last window ending at the last frame) are
+  matched against every position of the acquired TIFF: *in place*, *moved* (another position
+  clearly better; the summary names it), *ambiguous* or *unclear* (no position matches, e.g.
+  frames never written).
+- **Frames:** each frame against the acquired frame at the same position, which finds blocks
+  shorter than a window (one of the pipeline's 50- or 100-frame chunks out of place). The
+  threshold follows each stage's own noise, so a stage that matches the acquired signature
+  less closely (r below about 0.9) relies on the window check alone.
+- A stage also fails if its file holds more frames than the run, or if it matches the other
+  acquired channel better (swapped channels).
+
+On the good example session (MY_71_R, 7 Aug 2026) every window of the bidiphase/destriped,
+undistorted and registered stages is in place (r = 0.99-1.00 with the acquired channel, 0.3
+with the other), with no mismatched frames; one dropped frame, two swapped 500-frame blocks
+or two swapped 50-frame blocks put into its registered signature are found. Not covered: the
+background-removed TIFF (removing the background takes most of the signature out), and a
+block moved in from beyond the frames the run processed shows as *unclear*, not *moved*.
+The tests also run the chunked bidiphase and distortion writers, with chunk sizes that do
+not divide the recording, through this check.
 
 ## Output data type
 
