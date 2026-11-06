@@ -306,7 +306,9 @@ channel, minus a ~4 s running mean, is a signature the corrections barely change
   clearly better; the summary names it), *ambiguous* or *unclear* (no position matches, e.g.
   frames never written).
 - **Frames:** each frame against the acquired frame at the same position, which finds blocks
-  shorter than a window (one of the pipeline's 50- or 100-frame chunks out of place).
+  shorter than a window (one of the pipeline's 50- or 100-frame chunks out of place). The
+  threshold follows each stage's own noise, so a stage that matches the acquired signature
+  less closely (r below about 0.9) relies on the window check alone.
 - A stage also fails if its file holds more frames than the run, or if it matches the other
   acquired channel better (swapped channels).
 

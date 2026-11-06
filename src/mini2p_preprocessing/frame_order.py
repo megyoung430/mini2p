@@ -16,12 +16,17 @@ frame. Two checks use it:
   (best elsewhere, but not clearly; its own position still matches at least ``min_r``) or
   *unclear* (no position matches well: e.g. frames never written, or from beyond the
   frames compared);
-- **frames**: each frame of the stage against the acquired frame at the same position. The
-  stage's signature is scaled to the acquired one (least squares); a frame whose difference
-  exceeds ``MISMATCH_SD`` x the acquired signature's SD is out of place, and stretches where
-  at least half of ``MISMATCH_RUN`` frames are is reported. This finds blocks shorter than a
-  window (e.g. one of the pipeline's 50- or 100-frame chunks written over its neighbour),
-  which a window match can still place at its own position.
+- **frames**: each frame of the stage against the acquired frame at the same position. This
+  finds blocks shorter than a window (e.g. one of the pipeline's 50- or 100-frame chunks
+  written over its neighbour), which a window match can still place at its own position.
+  The stage's signature is scaled to the acquired one (least squares); a frame is out of
+  place when its difference exceeds both ``MISMATCH_SD`` x the acquired signature's SD and
+  ``NOISE_SDS`` x the noise of the differences (from their lower quartile), so a noisier
+  stage is judged against its own noise; scale and noise are refitted without the frames
+  found out of place. Stretches where at least half of ``MISMATCH_RUN`` frames are out of
+  place are reported. A frame from elsewhere differs by about 1.4 acquired SDs, so in a
+  stage whose differences are about that noisy (r with the acquired signature below about
+  0.9) only the window check remains.
 
 A stage passes with no moved or unclear window, no mismatched stretch, the same frame count
 as the run, and a better match with the acquired same channel than with the other one.
@@ -50,7 +55,10 @@ MARGIN = 0.1  # how much better another position must match to call a window mov
 # On a good session (7 Aug 2026) every stage's per-frame difference stayed below 1.0 x the
 # acquired signature's SD (99.9th percentile 0.1-0.5); a frame from elsewhere differs by ~1.4
 MISMATCH_SD = 0.75
+NOISE_SDS = 4.0  # robust SDs of the stage's own differences: chance exceedances ~1 in 10^4
 MISMATCH_RUN = 9  # frames: single noisy frames are not a misplaced block
+FIT_ROUNDS = 3
+LOWER_QUARTILE_SD = 0.3186  # 25th percentile of |x| for normal x, in SDs
 READ_FRAMES = 256  # frames read at a time when taking frame means
 SIGNATURE_CACHE = "frame_signatures.npz"
 CHECKED_STAGES = ("bidiphase", "undistorted", "registered")
@@ -132,6 +140,7 @@ def mismatched_stretches(
     reference: np.ndarray,
     checked: np.ndarray,
     threshold_sd: float = MISMATCH_SD,
+    noise_sds: float = NOISE_SDS,
     run: int = MISMATCH_RUN,
 ) -> list[tuple[int, int]]:
     """Half-open frame ranges of *checked* (fast signature) that differ from *reference* at
@@ -145,9 +154,16 @@ def mismatched_stretches(
     power = reference @ reference
     if power == 0:
         raise ValueError("The acquired signature has no frame-to-frame fluctuation")
-    scale = (reference @ checked) / power
-    spread = abs(scale) * reference.std()
-    off = np.abs(checked - scale * reference) > threshold_sd * spread
+    off = np.zeros(len(checked), bool)
+    for _ in range(FIT_ROUNDS):  # refit without the frames found off, so they do not set it
+        kept = ~off
+        scale = (reference[kept] @ checked[kept]) / (reference[kept] @ reference[kept])
+        difference = checked - scale * reference
+        # the lower quartile of |difference| (0.3186 SD for normal noise) stays an estimate
+        # of the noise even when many frames (blocks of misplaced ones) are far off
+        noise = np.percentile(np.abs(difference[kept]), 25) / LOWER_QUARTILE_SD
+        limit = max(threshold_sd * abs(scale) * reference.std(), noise_sds * noise)
+        off = np.abs(difference) > limit
     flagged = uniform_filter1d(off.astype(float), run, mode="constant") >= 0.5
     edges = np.flatnonzero(np.diff(np.r_[0, flagged.astype(int), 0]))
     return [(int(a), int(b)) for a, b in zip(edges[::2], edges[1::2], strict=True)]
@@ -191,8 +207,12 @@ class OrderReport:
             f"{'OK' if self.passed else 'PROBLEM'}: {self.stage} {self.channel}, "
             f"{self.n_frames} frames: {self.count('in place')} of {windows} windows in place"
             + (f" ({counts})" if counts else "")
-            + f"; r with acquired {self.channel} {self.r_same_channel:.2f}, other channel "
-            f"{self.r_other_channel:.2f}"
+            + f"; r with acquired {self.channel} {self.r_same_channel:.2f}"
+            + (
+                f", other channel {self.r_other_channel:.2f}"
+                if np.isfinite(self.r_other_channel)
+                else ""
+            )
         )
         if self.count("moved"):
             first = int(np.flatnonzero(self.match.status == "moved")[0])
@@ -257,35 +277,53 @@ def frame_means(source, read_frames: int = READ_FRAMES) -> np.ndarray:
     )
 
 
-def cached_frame_means(source, cache: Path, key: str) -> np.ndarray:
-    """``frame_means`` of *source*, kept in *cache* (one npz for every file checked from a
-    plane) under its path, size, modification time, frame count and *key* (which page of
-    the file: channel index and channel count): reading a 14 GB TIFF takes tens of seconds,
-    and a replaced file is read again."""
-    stat = Path(source.path).stat()
-    full_key = json.dumps(
-        [str(Path(source.path).resolve()), stat.st_size, stat.st_mtime_ns, source.n_frames, key]
-    )
+def _cached(cache: Path, path: Path, key: str, compute) -> np.ndarray:
+    """*compute()* for *path*, kept in *cache* (one npz for every file checked from a plane)
+    under the file's path, size and modification time and *key*: a replaced file is
+    computed again."""
+    stat = Path(path).stat()
+    full_key = json.dumps([str(Path(path).resolve()), stat.st_size, stat.st_mtime_ns, key])
     saved = {}
     if Path(cache).is_file():
         with np.load(cache) as npz:
             saved = {name: npz[name] for name in npz.files}
     keys = [str(k) for k in saved.get("keys", np.array([], str))]
     if full_key in keys:
-        return saved[f"means_{keys.index(full_key)}"]
-    means = frame_means(source)
-    saved[f"means_{len(keys)}"] = means
+        return saved[f"value_{keys.index(full_key)}"]
+    value = np.asarray(compute())
+    saved[f"value_{len(keys)}"] = value
     saved["keys"] = np.array([*keys, full_key])
     partial = Path(cache).with_suffix(".partial.npz")
     np.savez(partial, **saved)
     partial.replace(cache)
-    return means
+    return value
+
+
+def cached_frame_means(source, cache: Path, key: str) -> np.ndarray:
+    """``frame_means`` of *source* (its first ``n_frames``; *key* says which page of the file:
+    channel index and channel count), cached: reading a 14 GB TIFF takes tens of seconds."""
+    return _cached(cache, source.path, f"means:{source.n_frames}:{key}",
+                   lambda: frame_means(source))  # fmt: skip
 
 
 def tiff_frames(path: Path, n_channels: int) -> int:
-    """Frames in a channel-interleaved TIFF (pages / channels)."""
+    """Frames in a channel-interleaved TIFF (pages / channels).
+
+    Raises:
+        ValueError: If the pages are not whole frames (a last frame half written).
+    """
     with tifffile.TiffFile(path) as tif:
-        return len(tif.pages) // n_channels
+        pages = len(tif.pages)
+    if pages % n_channels:
+        raise ValueError(
+            f"{path} has {pages} pages, not a whole number of {n_channels}-channel frames"
+        )
+    return pages // n_channels
+
+
+def cached_tiff_frames(path: Path, cache: Path, n_channels: int) -> int:
+    """``tiff_frames``, cached: counting the pages walks the whole file."""
+    return int(_cached(cache, path, f"frames:{n_channels}", lambda: tiff_frames(path, n_channels)))
 
 
 def check_frame_order(
@@ -326,7 +364,10 @@ def check_frame_order(
                 for name, src in sources.items()
             }
             path = next(iter(sources.values())).path
-            in_file = None if stage == "registered" else tiff_frames(path, channels.n_channels)
+            in_file = (
+                None if stage == "registered"
+                else cached_tiff_frames(path, cache, channels.n_channels)
+            )  # fmt: skip
             return means, in_file
 
         acquired, _ = signatures("raw")

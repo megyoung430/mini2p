@@ -119,16 +119,30 @@ def test_a_chunk_shorter_than_a_window_out_of_place_is_found(block):
         assert flagged[: first - 20].sum() == 0 and flagged[last + 20 :].sum() == 0
 
 
-def test_noise_in_a_stage_is_not_a_mismatch():
-    acquired = flicker(17)
-    stage = 3 * acquired + 0.2 * flicker(18)  # scaled, a little noisier
+@pytest.mark.parametrize("noise", [0.2, 0.5, 1.0])
+def test_noise_in_a_stage_is_not_a_mismatch(noise):
+    rng = np.random.default_rng(18)
+    acquired = np.convolve(rng.normal(0, 1, 50_000), [1, 0.9, 0.8], "same")  # smooth, as motion
+    stage = 3 * acquired + 3 * noise * acquired.std() * rng.normal(0, 1, 50_000)
     assert mismatched_stretches(fast_part(acquired), fast_part(stage)) == []
+
+
+def test_a_half_written_last_frame_is_refused(tmp_path):
+    from mini2p_preprocessing.frame_order import tiff_frames
+
+    path = tmp_path / "odd.tif"
+    with tifffile.TiffWriter(path) as writer:  # 5 pages: 2.5 two-channel frames
+        for _ in range(5):
+            writer.write(np.zeros((4, 4), np.int16), contiguous=False)
+    with pytest.raises(ValueError, match="5 pages"):
+        tiff_frames(path, 2)
 
 
 def test_one_channel_runs_have_no_swap_check():
     acquired = flicker(19)
     report = order_report("registered", "green", acquired, {"green": acquired})
     assert report.passed and np.isnan(report.r_other_channel)
+    assert "other channel" not in report.summary()
 
 
 def test_a_file_with_more_frames_than_the_run_fails():
