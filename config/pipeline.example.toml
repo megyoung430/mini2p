@@ -96,6 +96,9 @@ mask_shift_tolerance_px = 1     # allowed disagreement between image quadrants
 mask_min_correlation = 0.5      # rank correlation required after the shift
 mask_min_retained_fraction = 0.5  # masks keeping less of their pixels are dropped
 background_chunk_frames = 100   # frames read at once for the vessel background (QC notebook)
+subtract_photon_free_level = true  # subtract each frame's drifting zero (raw TIFF) before ΔF/F0
+photon_free_pixel_percentile = 5.0 # dimmest % of pixels the level is measured on
+photon_free_mask_frames = 500      # first frames averaged to find those pixels
 
 # ---- used by the QC notebook ----
 # Keep run_dir outside derivatives_subject_dir: the batch planner treats a run

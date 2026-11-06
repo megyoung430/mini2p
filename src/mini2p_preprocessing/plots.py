@@ -711,3 +711,17 @@ def plot_focus_qc(
         f"Frames Not Matching The Mean After Registration: {flagged_pct:.1f}% Flagged (Shaded)"
     )
     return axes
+
+
+def plot_photon_free_levels(green: np.ndarray, red: np.ndarray, fs_hz: float, ax=None):
+    """Per-frame photon-free level of each channel (0 is where ScanImage put zero)."""
+    if ax is None:
+        _, ax = plt.subplots(figsize=(10, 3))
+    minutes = np.arange(len(green)) / fs_hz / 60
+    ax.plot(minutes, green, color=ROLE_COLORS["functional"], linewidth=0.6, label="Green")
+    ax.plot(minutes, red, color=ROLE_COLORS["structural"], linewidth=0.6, label="Red")
+    ax.axhline(0, color="0.5", linestyle="--", linewidth=0.8)
+    ax.set(xlabel="Time (Min)", ylabel="Photon-Free Level (Counts)", title="Photon-Free Level")
+    ax.legend(frameon=False, loc="upper left", bbox_to_anchor=(1.0, 1.0))
+    ax.spines[["top", "right"]].set_visible(False)
+    return ax
