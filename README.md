@@ -40,11 +40,15 @@ CLI and the batch workers all read it, so they cannot drift apart.
   how far ROIs stand above their neuropil, and whether the field-wide fluctuation moves green
   and red by the same fraction (hardware) or green more (blood volume, indicator signal).
 
+### A recording stopped mid-frame
+
 A recording stopped in the middle of a frame can end with only that frame's first
 channel(s) saved, so its page count is not a multiple of the channel count. The unfinished
 last frame is then left out, with a warning, when ScanImage's frame numbers in the page
-headers show the leftover pages to be one new frame. Any other mismatch (e.g. a page
-missing earlier, which would swap the channels of every later frame) is refused.
+headers are in step with the page positions (counted from the first page) and the leftover
+pages are the next frame. Otherwise the TIFF is refused: a page lost earlier would swap the
+channels of every later frame, and a gap in the numbering means frames were lost. These
+headers are checked only when the page count is not a multiple of the channel count.
 
 ### With and without destriping
 

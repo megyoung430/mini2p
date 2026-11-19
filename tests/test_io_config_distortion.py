@@ -18,6 +18,7 @@ from mini2p_preprocessing.tiff_io import (
     chunk_bounds,
     count_timepoints,
     read_all_channels,
+    unfinished_frame,
     write_interleaved,
 )
 from tests.conftest import write_interleaved_tiff
@@ -86,6 +87,9 @@ def test_count_timepoints_drops_a_partial_frame_of_three_channels(tmp_path):
         ([1, 1, 2, 3, 3], 2),  # a page of frame 2 missing: every later page has shifted channel
         ([1, 1, 1, 2, 3], 3),  # the leftover pages are from two different frames
         ([1, 1, 2, 2, 2], 2),  # the leftover page repeats the last complete frame
+        ([1, 1, 2, 2, 9], 2),  # a gap in the numbering: frames were lost
+        ([1, 2, 3, 3, 4, 4, 5], 2),  # pages missing from frames 1 and 2, then a stop
+        ([1], 2),  # not even one whole timepoint
     ],
 )
 def test_count_timepoints_refuses_leftover_pages_that_are_not_one_new_frame(
@@ -94,6 +98,21 @@ def test_count_timepoints_refuses_leftover_pages_that_are_not_one_new_frame(
     path = scanimage_tiff(tmp_path / "bad.tif", frame_numbers)
     with tifffile.TiffFile(path) as tif, pytest.raises(ValueError, match="not divisible"):
         count_timepoints(tif, n_channels)
+
+
+def test_count_timepoints_counts_frames_of_a_later_file_from_its_first_page(tmp_path, caplog):
+    # the second file of a split acquisition starts at frame 1001
+    path = scanimage_tiff(tmp_path / "part2.tif", [1001, 1001, 1002, 1002, 1003])
+    with tifffile.TiffFile(path) as tif, caplog.at_level("WARNING"):
+        assert count_timepoints(tif, 2) == 2
+    assert "frame 1003" in caplog.text
+
+
+def test_unfinished_frame_needs_numbers_in_step_with_page_positions():
+    assert unfinished_frame(1, {3}, {4}, 3) == 4
+    for first, last_whole, leftover in [(None, {3}, {4}), (1, {3}, {None}), (1, {3}, {5})]:
+        with pytest.raises(ValueError, match="frame numbers"):
+            unfinished_frame(first, last_whole, leftover, 3)
 
 
 def test_settings_reject_unknown_source_and_typos():

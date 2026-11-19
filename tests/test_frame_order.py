@@ -138,6 +138,16 @@ def test_a_half_written_last_frame_is_refused(tmp_path):
         tiff_frames(path, 2)
 
 
+def test_an_unfinished_last_frame_of_a_stopped_recording_is_left_out(tmp_path):
+    from mini2p_preprocessing.frame_order import tiff_frames
+
+    path = tmp_path / "stopped.tif"
+    with tifffile.TiffWriter(path) as writer:  # stopped after channel 1 of frame 3
+        for number in (1, 1, 2, 2, 3):
+            writer.write(np.zeros((4, 4), np.int16), description=f"frameNumbers = {number}\n")
+    assert tiff_frames(path, 2) == 2
+
+
 def test_one_channel_runs_have_no_swap_check():
     acquired = flicker(19)
     report = order_report("registered", "green", acquired, {"green": acquired})

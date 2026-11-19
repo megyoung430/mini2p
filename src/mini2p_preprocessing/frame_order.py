@@ -47,6 +47,7 @@ from numpy.lib.stride_tricks import sliding_window_view
 from scipy.ndimage import uniform_filter1d
 
 from .movies import open_stage
+from .tiff_io import count_timepoints
 
 FAST_WINDOW = 31  # frames (about 4 s at 7.5 Hz): slower changes (bleaching, drift) removed
 WINDOW = 200  # frames per matched window: long enough that chance matches stay well below MIN_R
@@ -307,18 +308,14 @@ def cached_frame_means(source, cache: Path, key: str) -> np.ndarray:
 
 
 def tiff_frames(path: Path, n_channels: int) -> int:
-    """Frames in a channel-interleaved TIFF (pages / channels).
+    """Whole frames in a channel-interleaved TIFF (``tiff_io.count_timepoints``: an
+    unfinished last frame of a stopped ScanImage recording is left out).
 
     Raises:
-        ValueError: If the pages are not whole frames (a last frame half written).
+        ValueError: If the pages are not whole frames and are not that.
     """
     with tifffile.TiffFile(path) as tif:
-        pages = len(tif.pages)
-    if pages % n_channels:
-        raise ValueError(
-            f"{path} has {pages} pages, not a whole number of {n_channels}-channel frames"
-        )
-    return pages // n_channels
+        return count_timepoints(tif, n_channels)
 
 
 def cached_tiff_frames(path: Path, cache: Path, n_channels: int) -> int:

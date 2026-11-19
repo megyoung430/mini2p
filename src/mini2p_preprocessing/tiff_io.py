@@ -13,6 +13,9 @@ import tifffile
 
 log = logging.getLogger(__name__)
 
+# ScanImage writes this line in every page's header; a frame's channel pages share it.
+FRAME_NUMBER = re.compile(r"^frameNumbers = (\d+)\s*$", re.MULTILINE)
+
 
 def chunk_bounds(n_timepoints: int, chunk_frames: int) -> list[tuple[int, int]]:
     """Half-open (start, end) timepoint ranges covering the recording."""
@@ -30,24 +33,32 @@ def count_timepoints(
     """Whole timepoints in a channel-interleaved TIFF (at most *max_timepoints*).
 
     A ScanImage acquisition stopped during a frame can leave that frame with only its first
-    channels saved. Those leftover pages are left out (with a warning) when ScanImage's
-    frame numbers show they are exactly that; any other page count that is not a multiple
-    of *n_channels* (a page missing earlier shifts the channel of every later page) is
+    channels saved. When the page count is not a multiple of *n_channels*, the leftover
+    pages are left out (with a warning) only if ScanImage's frame numbers in the page
+    headers show them to be that frame (``unfinished_frame``); otherwise the TIFF is
     refused.
     """
     n_pages = len(tif.pages)
     n_timepoints, leftover = divmod(n_pages, n_channels)
     if leftover:
-        _check_unfinished_last_frame(tif, n_timepoints, n_channels)
+        last_whole = range(max(n_timepoints - 1, 0) * n_channels, n_timepoints * n_channels)
+        try:
+            unfinished = unfinished_frame(
+                frame_number(tif, 0),
+                {frame_number(tif, page) for page in last_whole},
+                {frame_number(tif, page) for page in range(n_timepoints * n_channels, n_pages)},
+                n_timepoints,
+            )
+        except ValueError as error:
+            raise ValueError(
+                f"{n_pages} pages is not divisible by {n_channels} channels: {error}"
+            ) from error
         log.warning(
             "%s: %d pages is not divisible by %d channels; leaving out the unfinished last "
-            "frame (%d page(s) of frame %d), so %d timepoints remain",
-            tif.filename, n_pages, n_channels, leftover, n_timepoints + 1, n_timepoints,
+            "frame (frame %d, %d of its pages saved), so %d timepoints remain",
+            tif.filename, n_pages, n_channels, unfinished, leftover, n_timepoints,
         )  # fmt: skip
     return n_timepoints if max_timepoints is None else min(n_timepoints, int(max_timepoints))
-
-
-FRAME_NUMBER = re.compile(r"^frameNumbers = (\d+)\s*$", re.MULTILINE)
 
 
 def frame_number(tif: tifffile.TiffFile, page: int) -> int | None:
@@ -56,26 +67,39 @@ def frame_number(tif: tifffile.TiffFile, page: int) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _check_unfinished_last_frame(tif: tifffile.TiffFile, n_timepoints: int, n_channels: int):
-    """Raise unless the pages after the last whole timepoint are one later, unfinished frame:
-    the last whole timepoint's pages share a frame number, and the leftover pages share a
-    higher one."""
-    n_pages = len(tif.pages)
-    whole = range(max(n_timepoints - 1, 0) * n_channels, n_timepoints * n_channels)
-    numbers_whole = {frame_number(tif, page) for page in whole}
-    numbers_left = {frame_number(tif, page) for page in range(n_timepoints * n_channels, n_pages)}
-    if not (
-        len(numbers_whole) == 1
-        and len(numbers_left) == 1
-        and None not in numbers_whole | numbers_left
-        and min(numbers_left) > min(numbers_whole)
+def unfinished_frame(
+    first: int | None, last_whole: set[int | None], leftover: set[int | None], n_timepoints: int
+) -> int:
+    """The frame number of the leftover pages after *n_timepoints* whole timepoints.
+
+    Every page of a timepoint carries the same frame number, one higher than the timepoint
+    before (counted from *first*, the first page's number, which is not 1 in the later files
+    of a split acquisition). So the pages of the last whole timepoint (*last_whole*) must
+    all read ``first + n_timepoints - 1`` and the leftover pages ``first + n_timepoints``.
+    A page lost anywhere before them shifts every later page out of step, and a gap in the
+    numbering means frames were lost; both are refused.
+
+    Raises:
+        ValueError: If the frame numbers are missing or not in step with the page positions.
+    """
+    expected_last = None if first is None else first + n_timepoints - 1
+    if (
+        first is None
+        or n_timepoints < 1
+        or last_whole != {expected_last}
+        or leftover != {expected_last + 1}
     ):
         raise ValueError(
-            f"{n_pages} pages is not divisible by {n_channels} channels, and ScanImage's frame "
-            "numbers do not show the leftover pages to be one unfinished last frame "
-            f"(last whole timepoint: frame(s) {sorted(numbers_whole, key=str)}, leftover "
-            f"pages: frame(s) {sorted(numbers_left, key=str)}); a page may be missing"
+            "ScanImage's frame numbers do not show the leftover pages to be one unfinished "
+            f"last frame (first page: {first}; last whole timepoint: {_listed(last_whole)}, "
+            f"expected {expected_last}; leftover pages: {_listed(leftover)}); a page may be "
+            "missing, or the pages have no ScanImage header"
         )
+    return expected_last + 1
+
+
+def _listed(numbers: set[int | None]) -> list[int | None]:
+    return sorted(numbers, key=lambda n: (n is None, n or 0))
 
 
 def read_channel_chunk(
