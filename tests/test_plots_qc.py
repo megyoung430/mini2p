@@ -10,7 +10,7 @@ from mini2p_preprocessing import plots, qc  # noqa: E402
 from mini2p_preprocessing.bidiphase import estimate_phase  # noqa: E402
 from mini2p_preprocessing.config import PipelineSettings  # noqa: E402
 from mini2p_preprocessing.correction import correction_stages  # noqa: E402
-from tests.conftest import write_interleaved_tiff  # noqa: E402
+from tests.conftest import scanimage_tiff, write_interleaved_tiff  # noqa: E402
 
 SETTINGS = PipelineSettings.model_validate(
     {
@@ -317,3 +317,18 @@ def test_raw_mean_images_use_every_frame_of_a_shorter_recording(tmp_path, rng):
     means, n_used = qc.raw_mean_images(tiff, 500, 2)
     assert n_used == 8
     np.testing.assert_allclose(means[1], stacks[1].mean(axis=0), rtol=1e-6)
+
+
+def test_raw_mean_images_leave_out_an_unfinished_last_frame(tmp_path):
+    # pages hold their frame number as value: channel 1 of frame 3 was saved, channel 2 not
+    tiff = scanimage_tiff(tmp_path / "stopped.tif", [1, 1, 2, 2, 3])
+    means, n_used = qc.raw_mean_images(tiff, 500, 2)
+    assert n_used == 2
+    np.testing.assert_allclose(means[0], 1.5)
+
+
+def test_raw_mean_images_refuse_zero_frames(tmp_path, rng):
+    stacks = [rng.integers(0, 100, (4, 4, 4)).astype(np.int16) for _ in range(2)]
+    tiff = write_interleaved_tiff(tmp_path / "raw.tif", stacks)
+    with pytest.raises(ValueError, match="No frames"):
+        qc.raw_mean_images(tiff, 0, 2)
