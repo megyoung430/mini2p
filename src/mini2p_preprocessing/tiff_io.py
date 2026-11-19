@@ -63,7 +63,9 @@ def count_timepoints(
 
 def frame_number(tif: tifffile.TiffFile, page: int) -> int | None:
     """ScanImage's frame number in a page's header, or None for a page without one."""
-    match = FRAME_NUMBER.search(tif.pages[page].description or "")
+    # For classic (non-BigTIFF) ScanImage files tifffile serves later pages as TiffFrames,
+    # which carry no description; aspage() reads the page's own header.
+    match = FRAME_NUMBER.search(tif.pages[page].aspage().description or "")
     return int(match.group(1)) if match else None
 
 
@@ -82,13 +84,8 @@ def unfinished_frame(
     Raises:
         ValueError: If the frame numbers are missing or not in step with the page positions.
     """
-    expected_last = None if first is None else first + n_timepoints - 1
-    if (
-        first is None
-        or n_timepoints < 1
-        or last_whole != {expected_last}
-        or leftover != {expected_last + 1}
-    ):
+    expected_last = None if first is None or n_timepoints < 1 else first + n_timepoints - 1
+    if expected_last is None or last_whole != {expected_last} or leftover != {expected_last + 1}:
         raise ValueError(
             "ScanImage's frame numbers do not show the leftover pages to be one unfinished "
             f"last frame (first page: {first}; last whole timepoint: {_listed(last_whole)}, "

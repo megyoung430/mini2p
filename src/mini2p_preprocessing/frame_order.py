@@ -312,7 +312,8 @@ def tiff_frames(path: Path, n_channels: int) -> int:
     unfinished last frame of a stopped ScanImage recording is left out).
 
     Raises:
-        ValueError: If the pages are not whole frames and are not that.
+        ValueError: If the pages are not whole frames and the leftover pages are not one
+            unfinished last frame.
     """
     with tifffile.TiffFile(path) as tif:
         return count_timepoints(tif, n_channels)

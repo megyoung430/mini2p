@@ -17,11 +17,12 @@ from mini2p_preprocessing.distortion import DistortionMaps, apply_distortion_to_
 from mini2p_preprocessing.tiff_io import (
     chunk_bounds,
     count_timepoints,
+    frame_number,
     read_all_channels,
     unfinished_frame,
     write_interleaved,
 )
-from tests.conftest import write_interleaved_tiff
+from tests.conftest import scanimage_tiff, write_interleaved_tiff
 
 
 def test_chunk_bounds_cover_recording_with_short_tail():
@@ -54,18 +55,6 @@ def test_count_timepoints_rejects_partial_channel(tmp_path, rng):
         count_timepoints(tif, 2)
 
 
-def scanimage_tiff(path, frame_numbers, shape=(4, 4)):
-    """Pages with ScanImage's per-page header: one frame number per page, in page order."""
-    with tifffile.TiffWriter(path) as writer:
-        for number in frame_numbers:
-            writer.write(
-                np.full(shape, number, np.int16),
-                photometric="minisblack",
-                description=f"frameNumbers = {number}\nacquisitionNumbers = 1\n",
-            )
-    return path
-
-
 def test_count_timepoints_drops_an_unfinished_last_frame(tmp_path, caplog):
     # stopped during frame 3: channel 1 was saved, channel 2 never was
     path = scanimage_tiff(tmp_path / "stopped.tif", [1, 1, 2, 2, 3])
@@ -88,6 +77,7 @@ def test_count_timepoints_drops_a_partial_frame_of_three_channels(tmp_path):
         ([1, 1, 1, 2, 3], 3),  # the leftover pages are from two different frames
         ([1, 1, 2, 2, 2], 2),  # the leftover page repeats the last complete frame
         ([1, 1, 2, 2, 9], 2),  # a gap in the numbering: frames were lost
+        ([1, 1, 3, 3, 4], 2),  # a whole frame lost earlier, pages still in step
         ([1, 2, 3, 3, 4, 4, 5], 2),  # pages missing from frames 1 and 2, then a stop
         ([1], 2),  # not even one whole timepoint
     ],
@@ -106,6 +96,15 @@ def test_count_timepoints_counts_frames_of_a_later_file_from_its_first_page(tmp_
     with tifffile.TiffFile(path) as tif, caplog.at_level("WARNING"):
         assert count_timepoints(tif, 2) == 2
     assert "frame 1003" in caplog.text
+
+
+def test_frame_number_reads_the_header_of_a_page_served_as_a_tiffframe(tmp_path):
+    # classic (non-BigTIFF) ScanImage files: tifffile serves later pages as TiffFrames,
+    # which carry no description of their own
+    path = scanimage_tiff(tmp_path / "classic.tif", [1, 1, 2, 2, 3, 3], software="SI.LINE")
+    with tifffile.TiffFile(path) as tif:
+        assert isinstance(tif.pages[3], tifffile.TiffFrame)
+        assert frame_number(tif, 3) == 2
 
 
 def test_unfinished_frame_needs_numbers_in_step_with_page_positions():

@@ -148,3 +148,17 @@ def fake_calibration(shape=(48, 96)):
     return SimpleNamespace(
         load_transform=load_transform, make_maps=make_maps, crop_bounds=crop_bounds
     )
+
+
+def scanimage_tiff(path, frame_numbers, shape=(4, 4), software=None):
+    """Pages with ScanImage's per-page header: one frame number per page, in page order."""
+    with tifffile.TiffWriter(path) as writer:
+        for number in frame_numbers:
+            writer.write(
+                np.full(shape, number, np.int16),
+                photometric="minisblack",
+                contiguous=False,
+                software=software,
+                description=f"frameNumbers = {number}\nacquisitionNumbers = 1\n",
+            )
+    return path
