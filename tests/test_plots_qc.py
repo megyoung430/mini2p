@@ -10,6 +10,7 @@ from mini2p_preprocessing import plots, qc  # noqa: E402
 from mini2p_preprocessing.bidiphase import estimate_phase  # noqa: E402
 from mini2p_preprocessing.config import PipelineSettings  # noqa: E402
 from mini2p_preprocessing.correction import correction_stages  # noqa: E402
+from tests.conftest import write_interleaved_tiff  # noqa: E402
 
 SETTINGS = PipelineSettings.model_validate(
     {
@@ -299,3 +300,20 @@ def test_channel_pairs_still_refuse_mismatched_channels():
     image = np.zeros((4, 4))
     with pytest.raises(ValueError, match="channels"):
         plots.plot_channel_pairs([image], [image, image], ("a", "b"), {1: "r", 2: "g"})
+
+
+def test_raw_mean_images_average_the_first_frames_in_chunks(tmp_path, rng):
+    stacks = [rng.integers(-50, 400, (23, 6, 5)).astype(np.int16) for _ in range(2)]
+    tiff = write_interleaved_tiff(tmp_path / "raw.tif", stacks)
+    means, n_used = qc.raw_mean_images(tiff, 17, 2, chunk_frames=5)  # 17 is not a multiple of 5
+    assert n_used == 17
+    for mean, stack in zip(means, stacks, strict=True):
+        np.testing.assert_allclose(mean, stack[:17].mean(axis=0), rtol=1e-6)
+
+
+def test_raw_mean_images_use_every_frame_of_a_shorter_recording(tmp_path, rng):
+    stacks = [rng.integers(0, 100, (8, 4, 4)).astype(np.int16) for _ in range(2)]
+    tiff = write_interleaved_tiff(tmp_path / "short.tif", stacks)
+    means, n_used = qc.raw_mean_images(tiff, 500, 2)
+    assert n_used == 8
+    np.testing.assert_allclose(means[1], stacks[1].mean(axis=0), rtol=1e-6)
