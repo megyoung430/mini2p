@@ -53,6 +53,49 @@ def test_count_timepoints_rejects_partial_channel(tmp_path, rng):
         count_timepoints(tif, 2)
 
 
+def scanimage_tiff(path, frame_numbers, shape=(4, 4)):
+    """Pages with ScanImage's per-page header: one frame number per page, in page order."""
+    with tifffile.TiffWriter(path) as writer:
+        for number in frame_numbers:
+            writer.write(
+                np.full(shape, number, np.int16),
+                photometric="minisblack",
+                description=f"frameNumbers = {number}\nacquisitionNumbers = 1\n",
+            )
+    return path
+
+
+def test_count_timepoints_drops_an_unfinished_last_frame(tmp_path, caplog):
+    # stopped during frame 3: channel 1 was saved, channel 2 never was
+    path = scanimage_tiff(tmp_path / "stopped.tif", [1, 1, 2, 2, 3])
+    with tifffile.TiffFile(path) as tif, caplog.at_level("WARNING"):
+        assert count_timepoints(tif, 2) == 2
+        assert count_timepoints(tif, 2, max_timepoints=1) == 1
+    assert "unfinished last frame" in caplog.text
+
+
+def test_count_timepoints_drops_a_partial_frame_of_three_channels(tmp_path):
+    path = scanimage_tiff(tmp_path / "stopped3.tif", [1, 1, 1, 2, 2])
+    with tifffile.TiffFile(path) as tif:
+        assert count_timepoints(tif, 3) == 1
+
+
+@pytest.mark.parametrize(
+    ("frame_numbers", "n_channels"),
+    [
+        ([1, 1, 2, 3, 3], 2),  # a page of frame 2 missing: every later page has shifted channel
+        ([1, 1, 1, 2, 3], 3),  # the leftover pages are from two different frames
+        ([1, 1, 2, 2, 2], 2),  # the leftover page repeats the last complete frame
+    ],
+)
+def test_count_timepoints_refuses_leftover_pages_that_are_not_one_new_frame(
+    tmp_path, frame_numbers, n_channels
+):
+    path = scanimage_tiff(tmp_path / "bad.tif", frame_numbers)
+    with tifffile.TiffFile(path) as tif, pytest.raises(ValueError, match="not divisible"):
+        count_timepoints(tif, n_channels)
+
+
 def test_settings_reject_unknown_source_and_typos():
     with pytest.raises(ValidationError):
         PipelineSettings.model_validate({"phase": {"alignment_source": "functinal"}})

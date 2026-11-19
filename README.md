@@ -40,6 +40,12 @@ CLI and the batch workers all read it, so they cannot drift apart.
   how far ROIs stand above their neuropil, and whether the field-wide fluctuation moves green
   and red by the same fraction (hardware) or green more (blood volume, indicator signal).
 
+A recording stopped in the middle of a frame can end with only that frame's first
+channel(s) saved, so its page count is not a multiple of the channel count. The unfinished
+last frame is then left out, with a warning, when ScanImage's frame numbers in the page
+headers show the leftover pages to be one new frame. Any other mismatch (e.g. a page
+missing earlier, which would swap the channels of every later frame) is refused.
+
 ### With and without destriping
 
 Each variant has its own subfolder of `run-XX/`: `with_distortion_correction/` or
