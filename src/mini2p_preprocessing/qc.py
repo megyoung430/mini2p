@@ -76,6 +76,34 @@ def mean_images(stacks: list[np.ndarray]) -> list[np.ndarray]:
     return [np.mean(stack, axis=0) for stack in stacks]
 
 
+def raw_mean_images(
+    tiff: Path, n_frames: int, n_channels: int, chunk_frames: int = 100
+) -> tuple[list[np.ndarray], int]:
+    """Mean of the first ``n_frames`` frames of each channel of the acquired TIFF, before any
+    correction, read ``chunk_frames`` at a time so memory stays small.
+
+    Returns:
+        One mean image per 0-based channel, and the number of frames averaged (fewer than
+        ``n_frames`` for a shorter recording).
+
+    Raises:
+        ValueError: If there is no frame to average.
+    """
+    with tifffile.TiffFile(tiff) as tif:
+        n_used = min(n_frames, count_timepoints(tif, n_channels))
+        if n_used < 1:
+            raise ValueError(f"No frames to average in {tiff} (asked for {n_frames})")
+        chunk_sums = [
+            [
+                stack.sum(axis=0, dtype=np.float64)
+                for stack in read_all_channels(tif, *bounds, n_channels)
+            ]
+            for bounds in chunk_bounds(n_used, chunk_frames)
+        ]
+    sums = [np.sum(per_channel, axis=0) for per_channel in zip(*chunk_sums, strict=True)]
+    return [total / n_used for total in sums], n_used
+
+
 def registered_first_n_means(
     outputs: RegisteredOutputs, n_frames: int, settings: PipelineSettings
 ) -> list[np.ndarray]:
