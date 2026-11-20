@@ -42,6 +42,7 @@ PREVIEW_SUFFIX = "_raw_meanImg_first"
 SUMMARY_PREFIX = "raw_mean_previews_first"  # + <frames>.json
 DISPLAY_PERCENTILES = (1, 99.8)
 FIGURE_SUFFIXES = (".png", ".pdf", ".svg")
+OUTCOMES = {"written": "written", "exists": "already there, skipped", "failed": "FAILED"}
 # ScanImage writes the acquisition's start time in every page header:
 # "epoch = [2026  8 13 15 27 33.497]" (year month day hour minute seconds)
 EPOCH = re.compile(r"^epoch = \[\s*([\d.\s]+?)\s*\]\s*$", re.MULTILINE)
@@ -371,9 +372,15 @@ def preview_subject(
     rows, complete = [], False
     try:
         for raw in raws:
+            progress.report(
+                f"[{progress.done + 1}/{progress.total}] {Path(derivatives_dir).name} "
+                f"{raw.session} {raw.path.name}"
+            )
             row = preview_one(
                 raw, preview_folder(derivatives_dir, raw), n_frames, n_channels, names
             )
+            error = f": {row['error']}" if "error" in row else ""
+            progress.report(f"    {OUTCOMES[row['status']]}{error}")
             rows.append(row)
             progress.step_done(succeeded=row["status"] in ("written", "exists"))
         write_overview(rows, derivatives_dir / f"{PREVIEW_FOLDER}{PREVIEW_SUFFIX}{n_frames}.pdf")

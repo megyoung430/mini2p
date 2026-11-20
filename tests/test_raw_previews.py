@@ -293,3 +293,15 @@ def test_raw_means_command_reports_failures_with_exit_code_1(tmp_path, rng, caps
         raw_means_main(args)
     assert stopped.value.code == 1
     assert "FAILED" in capsys.readouterr().out
+
+
+def test_each_tiff_is_announced_with_its_place_and_its_outcome(tmp_path, rng):
+    subject = raw_subject(tmp_path)
+    funcimg = subject / "ses-1_date-20260101" / "funcimg"
+    acquired_tiff(funcimg / "a.tif", [2026, 1, 1, 9, 0, 0], rng)
+    acquired_tiff(funcimg / "b.tif", [2026, 1, 1, 9, 5, 0], rng)
+    lines = []
+    raw_previews.write_raw_previews([subject], None, 4, 2, NAMES, report=lines.append)
+    assert f"[1/2] {subject.name} ses-1_date-20260101 a.tif" in lines
+    assert f"[2/2] {subject.name} ses-1_date-20260101 b.tif" in lines
+    assert lines.count("    written") == 2
