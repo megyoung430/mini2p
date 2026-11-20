@@ -330,5 +330,5 @@ def test_raw_mean_images_leave_out_an_unfinished_last_frame(tmp_path):
 def test_raw_mean_images_refuse_zero_frames(tmp_path, rng):
     stacks = [rng.integers(0, 100, (4, 4, 4)).astype(np.int16) for _ in range(2)]
     tiff = write_interleaved_tiff(tmp_path / "raw.tif", stacks)
-    with pytest.raises(ValueError, match="No frames"):
+    with pytest.raises(ValueError, match="at least one frame"):
         qc.raw_mean_images(tiff, 0, 2)

@@ -16,6 +16,7 @@ from .extraction_comparison import channel_fraction
 from .focus import FocusQC, flagged_stretches
 from .frame_phase import FramePhases, fallback_stretches
 
+QC_FONTS = ["Arial", "Liberation Sans", "DejaVu Sans"]  # Arial where installed
 ROLE_COLORS = {"structural": "tab:red", "functional": "tab:green"}
 # Okabe-Ito, readable with colour-vision deficiencies.
 OKABE_ITO = {

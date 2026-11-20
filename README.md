@@ -40,6 +40,39 @@ CLI and the batch workers all read it, so they cannot drift apart.
   how far ROIs stand above their neuropil, and whether the field-wide fluctuation moves green
   and red by the same fraction (hardware) or green more (blood volume, indicator signal).
 
+### Raw mean previews: is a recording worth preprocessing?
+
+`mini2p-raw-means` plots the mean of the first frames of each channel of every raw TIFF of
+one or more subjects, read straight from the acquired TIFFs before any preprocessing:
+
+```bash
+uv run mini2p-raw-means --config config/pipeline.toml --frames 500 --subject-dir \
+    /Volumes/behrens/meg/3x3_field_magnitude_bandit/rawdata/cohort-01/sub-03_id-MY_71_R \
+    /Volumes/behrens/meg/3x3_field_magnitude_bandit/rawdata/cohort-01/sub-05_id-MY_72_L
+```
+
+- **Where the figures go:** every `ses-*/funcimg/*.tif` gets
+  `<tiff stem>_raw_meanImg_first500.{png,pdf,svg}` with a caption, titled by the TIFF's
+  name, in `derivatives/<cohort>/<subject>/<session>/funcimg/preview-all-tifs/`. That
+  folder holds only previews, so nothing in the run folders is touched. The derivatives
+  folder is the raw folder with `rawdata` replaced by `derivatives`; give it with
+  `--derivatives-subject-dir` otherwise.
+- **Nothing is redone:** a TIFF whose preview is already in that folder (a caption naming
+  it, with its file size and frame count, and the figure files) is not read again; a TIFF
+  whose size has changed since is previewed again.
+- **To flip through:** each subject gets `preview-all-tifs_raw_meanImg_first500.pdf`, one
+  page per TIFF in session order and, within a session, in order of acquisition start
+  (ScanImage's `epoch` in the TIFF header, or the file time for a TIFF without one, with a
+  warning), and `raw_mean_previews_first500.json`, a summary of every TIFF; both in the
+  derivatives subject folder.
+- **Failures:** a TIFF that cannot be read is reported (the command then exits with
+  status 1) and the others still go ahead.
+
+Only the first frames of each TIFF are read: about 0.5 GB per 512 x 512, 2-channel TIFF for
+500 frames, so many TIFFs on a network share take a while; on the cluster, run it next to
+the data. The QC notebook's first section shows the same figure for its one recording, in
+its run folder.
+
 ### A recording stopped mid-frame
 
 A recording stopped in the middle of a frame can end with only that frame's first

@@ -18,6 +18,7 @@ from mini2p_preprocessing.tiff_io import (
     chunk_bounds,
     count_timepoints,
     frame_number,
+    leading_timepoints,
     read_all_channels,
     unfinished_frame,
     write_interleaved,
@@ -205,3 +206,29 @@ def test_export_run_subdir_is_a_variant_folder():
     common = {"subject_dir": "/d", "session_first": 1, "session_last": 2, "expected_runs": 3}
     with pytest.raises(ValidationError, match="run_subdir"):
         ExportSettings(**common, run_subdir="with_destripping")
+
+
+def test_leading_timepoints_stops_at_the_frames_asked_for(tmp_path, rng):
+    stacks = [rng.integers(0, 9, (6, 4, 4)).astype(np.int16) for _ in range(2)]
+    path = write_interleaved_tiff(tmp_path / "long.tif", stacks)
+    with tifffile.TiffFile(path) as tif:
+        assert leading_timepoints(tif, 4, 2) == 4
+        assert leading_timepoints(tif, 6, 2) == 6
+        assert leading_timepoints(tif, 500, 2) == 6  # a shorter recording: all of it
+
+
+def test_leading_timepoints_of_a_short_stopped_recording_leaves_out_its_last_frame(tmp_path):
+    path = scanimage_tiff(tmp_path / "stopped.tif", [1, 1, 2, 2, 3])
+    with tifffile.TiffFile(path) as tif:
+        assert leading_timepoints(tif, 500, 2) == 2
+        with pytest.raises(ValueError, match="at least one"):
+            leading_timepoints(tif, 0, 2)
+
+
+def test_leading_timepoints_leaves_the_rest_of_a_bigtiff_unindexed(tmp_path):
+    path = tmp_path / "long.tif"
+    tifffile.imwrite(path, np.zeros((400, 4, 4), np.int16), bigtiff=True, photometric="minisblack",
+                     metadata=None, contiguous=False)  # fmt: skip
+    with tifffile.TiffFile(path) as tif:
+        assert leading_timepoints(tif, 10, 2) == 10
+        assert not tif.pages._indexed  # tifffile has not read every page header

@@ -14,7 +14,7 @@ from .correction import frame_phases_from_curves, measure_line_curves
 from .focus import FocusQC, assess_focus, frame_match, smooth_frames
 from .frame_phase import FramePhases
 from .registration import RegisteredOutputs
-from .tiff_io import chunk_bounds, count_timepoints, read_all_channels
+from .tiff_io import chunk_bounds, count_timepoints, leading_timepoints, read_all_channels
 
 
 def load_chunk(tiff: Path, start: int, end: int, n_channels: int) -> list[np.ndarray]:
@@ -80,7 +80,8 @@ def raw_mean_images(
     tiff: Path, n_frames: int, n_channels: int, chunk_frames: int = 100
 ) -> tuple[list[np.ndarray], int]:
     """Mean of the first ``n_frames`` frames of each channel of the acquired TIFF, before any
-    correction, read ``chunk_frames`` at a time so memory stays small.
+    correction, read ``chunk_frames`` at a time so memory stays small. Only those frames'
+    pages are read (``leading_timepoints``), so the file is checked only up to them.
 
     Returns:
         One mean image per 0-based channel, and the number of frames averaged (fewer than
@@ -90,9 +91,9 @@ def raw_mean_images(
         ValueError: If there is no frame to average.
     """
     with tifffile.TiffFile(tiff) as tif:
-        n_used = min(n_frames, count_timepoints(tif, n_channels))
+        n_used = leading_timepoints(tif, n_frames, n_channels)
         if n_used < 1:
-            raise ValueError(f"No frames to average in {tiff} (asked for {n_frames})")
+            raise ValueError(f"No whole frames to average in {tiff}")
         chunk_sums = [
             [
                 stack.sum(axis=0, dtype=np.float64)
