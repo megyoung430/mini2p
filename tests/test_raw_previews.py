@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -58,12 +59,71 @@ def test_tiffs_of_a_session_are_ordered_by_acquisition_start_not_by_name(tmp_pat
     assert {r.started_from for r in raws} == {"ScanImage epoch"}
 
 
-def test_a_tiff_without_an_epoch_is_ordered_by_its_file_time(tmp_path):
-    path = raw_subject(tmp_path) / "ses-1_date-20260101" / "funcimg" / "plain.tif"
-    path.parent.mkdir(parents=True)
-    tifffile.imwrite(path, np.zeros((4, 8, 8), np.int16), photometric="minisblack")
-    (raw,) = raw_previews.find_raw_tiffs(raw_subject(tmp_path))
-    assert raw.started_from == "file modification time"
+def test_tiffs_without_an_epoch_are_ordered_by_file_time_with_a_warning(tmp_path, caplog):
+    funcimg = raw_subject(tmp_path) / "ses-1_date-20260101" / "funcimg"
+    funcimg.mkdir(parents=True)
+    for name, mtime in [("late.tif", 2_000_000_000), ("early.tif", 1_000_000_000)]:
+        tifffile.imwrite(funcimg / name, np.zeros((4, 8, 8), np.int16), photometric="minisblack")
+        os.utime(funcimg / name, (mtime, mtime))
+    with caplog.at_level("WARNING"):
+        raws = raw_previews.find_raw_tiffs(raw_subject(tmp_path))
+    assert [r.path.name for r in raws] == ["early.tif", "late.tif"]
+    assert {r.started_from for r in raws} == {"file modification time"}
+    assert "early.tif, late.tif have no ScanImage start time" in caplog.text
+
+
+def test_a_malformed_epoch_is_refused_not_replaced_by_the_file_time():
+    with pytest.raises(ValueError, match="6 values"):
+        raw_previews.parse_epoch("epoch = [2026 1 1 9 0]\n")
+    assert raw_previews.parse_epoch("frameNumbers = 1\n") is None
+
+
+def test_two_tiffs_differing_only_in_extension_case_are_refused(tmp_path, rng):
+    funcimg = raw_subject(tmp_path) / "ses-1_date-20260101" / "funcimg"
+    acquired_tiff(funcimg / "a.tif", [2026, 1, 1, 9, 0, 0], rng)
+    acquired_tiff(funcimg / "a.TIF", [2026, 1, 1, 9, 5, 0], rng)
+    if len(list(funcimg.iterdir())) < 2:
+        pytest.skip("case-insensitive file system")
+    with pytest.raises(ValueError, match="share a name"):
+        raw_previews.find_raw_tiffs(raw_subject(tmp_path))
+
+
+def test_names_with_wildcard_characters_are_found_again(tmp_path, rng, monkeypatch):
+    subject = raw_subject(tmp_path)
+    funcimg = subject / "ses-1_date-20260101" / "funcimg"
+    acquired_tiff(funcimg / "fov[1]_00001.tif", [2026, 1, 1, 9, 0, 0], rng)
+    raw_previews.write_raw_previews([subject], None, 4, 2, NAMES)
+    monkeypatch.setattr(raw_previews, "raw_mean_images", _must_not_read)
+    (row,) = raw_previews.write_raw_previews([subject], None, 4, 2, NAMES)
+    assert row["status"] == "exists"
+
+
+def test_a_missing_figure_file_makes_the_preview_again(tmp_path, rng):
+    subject = raw_subject(tmp_path)
+    acquired_tiff(subject / "ses-1_date-20260101" / "funcimg" / "a.tif", [2026, 1, 1, 9, 0, 0], rng)
+    raw_previews.write_raw_previews([subject], None, 4, 2, NAMES)
+    (preview_dir(tmp_path) / "a_raw_meanImg_first4.svg").unlink()
+    (row,) = raw_previews.write_raw_previews([subject], None, 4, 2, NAMES)
+    assert row["status"] == "written"
+
+
+def test_derivatives_folders_given_explicitly_are_checked(tmp_path, rng):
+    subject = raw_subject(tmp_path)
+    acquired_tiff(subject / "ses-1_date-20260101" / "funcimg" / "a.tif", [2026, 1, 1, 9, 0, 0], rng)
+    for wrong in (subject, tmp_path / "derivatives" / "cohort-01" / "sub-05_id-MY_72_L"):
+        with pytest.raises(ValueError, match="not the derivatives folder"):
+            raw_previews.plan_previews([subject], [wrong], 4, 2, NAMES)
+    with pytest.raises(ValueError, match="one derivatives folder per"):
+        raw_previews.plan_previews([subject], [], 4, 2, NAMES)
+    custom = tmp_path / "elsewhere" / subject.name
+    (row,) = raw_previews.write_raw_previews([subject], [custom], 4, 2, NAMES)
+    assert row["figure"].startswith(
+        str(custom / "ses-1_date-20260101" / "funcimg" / "preview-all-tifs")
+    )
+
+
+def _must_not_read(*_):
+    raise AssertionError("the TIFF was read again")
 
 
 def test_find_raw_tiffs_skips_non_sessions_and_refuses_an_empty_subject(tmp_path, rng):
@@ -102,10 +162,12 @@ def test_previews_go_in_the_preview_folder_and_are_not_redone(tmp_path, rng):
     assert sorted(p.name for p in run_folder.iterdir()) == ["source_tiff.json"]
     derived = derived_subject(tmp_path)
     assert (derived / "preview-all-tifs_raw_meanImg_first4.pdf").exists()
-    summary = json.loads((derived / "raw_mean_previews.json").read_text())
+    summary = json.loads((derived / "raw_mean_previews_first4.json").read_text())
     assert summary["complete"] and len(summary["tiffs"]) == 2
 
-    rows = raw_previews.write_raw_previews([subject], None, 4, 2, NAMES)  # nothing read again
+    with pytest.MonkeyPatch.context() as patch:  # nothing is read again
+        patch.setattr(raw_previews, "raw_mean_images", _must_not_read)
+        rows = raw_previews.write_raw_previews([subject], None, 4, 2, NAMES)
     assert [r["status"] for r in rows] == ["exists", "exists"]
     rows = raw_previews.write_raw_previews([subject], None, 5, 2, NAMES)  # other frame count
     assert [r["status"] for r in rows] == ["written", "written"]
@@ -178,7 +240,7 @@ def test_a_plotting_error_stops_the_run_and_leaves_a_partial_summary(tmp_path, r
     monkeypatch.setattr(raw_previews, "draw_preview", broken)
     with pytest.raises(RuntimeError, match="plot bug"):
         raw_previews.write_raw_previews([subject], None, 4, 2, NAMES)
-    summary = json.loads((derived_subject(tmp_path) / "raw_mean_previews.json").read_text())
+    summary = json.loads((derived_subject(tmp_path) / "raw_mean_previews_first4.json").read_text())
     assert summary["complete"] is False
 
 

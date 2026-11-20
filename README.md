@@ -63,8 +63,8 @@ uv run mini2p-raw-means --config config/pipeline.toml --frames 500 --subject-dir
 - **To flip through:** each subject gets `preview-all-tifs_raw_meanImg_first500.pdf`, one
   page per TIFF in session order and, within a session, in order of acquisition start
   (ScanImage's `epoch` in the TIFF header, or the file time for a TIFF without one, with a
-  warning), and `raw_mean_previews.json`, a summary of every TIFF; both in the derivatives
-  subject folder.
+  warning), and `raw_mean_previews_first500.json`, a summary of every TIFF; both in the
+  derivatives subject folder.
 - **Failures:** a TIFF that cannot be read is reported (the command then exits with
   status 1) and the others still go ahead.
 

@@ -16,6 +16,7 @@ size and frame count, and the figure files beside it) is not read again.
 
 from __future__ import annotations
 
+import glob
 import json
 import logging
 import re
@@ -38,7 +39,7 @@ log = logging.getLogger(__name__)
 
 PREVIEW_FOLDER = "preview-all-tifs"
 PREVIEW_SUFFIX = "_raw_meanImg_first"
-SUMMARY_NAME = "raw_mean_previews.json"
+SUMMARY_PREFIX = "raw_mean_previews_first"  # + <frames>.json
 DISPLAY_PERCENTILES = (1, 99.8)
 FIGURE_SUFFIXES = (".png", ".pdf", ".svg")
 # ScanImage writes the acquisition's start time in every page header:
@@ -56,26 +57,45 @@ class RawTiff:
     started_from: str  # "ScanImage epoch" or "file modification time"
 
 
+def parse_epoch(header: str) -> datetime | None:
+    """ScanImage's acquisition start from a page header, or None when it has no ``epoch``.
+
+    Raises:
+        ValueError: If the ``epoch`` line does not hold year, month, day, hour, minute and
+            seconds.
+    """
+    match = EPOCH.search(header)
+    if not match:
+        return None
+    values = match.group(1).split()
+    if len(values) != 6:
+        raise ValueError(f"ScanImage epoch {values} does not hold 6 values")
+    year, month, day, hour, minute, seconds = (float(v) for v in values)
+    return datetime(int(year), int(month), int(day), int(hour), int(minute)) + timedelta(
+        seconds=seconds
+    )
+
+
+def first_header(path: Path) -> str | None:
+    """The first page's header, or None for a file tifffile cannot read (its preview then
+    fails and is reported)."""
+    try:
+        with tifffile.TiffFile(path) as tif:
+            return tif.pages[0].aspage().description or ""
+    except Exception as error:  # a corrupt TIFF makes tifffile raise many different types
+        log.warning("%s: header unreadable (%s)", path, error)
+        return None
+
+
 def acquisition_start(path: Path) -> tuple[datetime, str]:
     """When the acquisition started: ScanImage's ``epoch`` in the first page header, or the
-    file's modification time for a TIFF without one (noted in the second value)."""
-    with tifffile.TiffFile(path) as tif:
-        match = EPOCH.search(tif.pages[0].aspage().description or "")
-    if match:
-        year, month, day, hour, minute, seconds = (float(v) for v in match.group(1).split())
-        start = datetime(int(year), int(month), int(day), int(hour), int(minute))
-        return start + timedelta(seconds=seconds), "ScanImage epoch"
+    file's modification time for a TIFF without one or with an unreadable header (noted in
+    the second value)."""
+    header = first_header(path)
+    started = parse_epoch(header) if header is not None else None
+    if started is not None:
+        return started, "ScanImage epoch"
     return datetime.fromtimestamp(path.stat().st_mtime), "file modification time"
-
-
-def _start_or_file_time(path: Path) -> tuple[datetime, str]:
-    """``acquisition_start``, or the file time for a TIFF whose header cannot be read (its
-    preview then fails and is reported)."""
-    try:
-        return acquisition_start(path)
-    except Exception as error:  # a corrupt TIFF makes tifffile raise many different types
-        log.warning("%s: header unreadable (%s); ordering it by its file time", path, error)
-        return datetime.fromtimestamp(path.stat().st_mtime), "file modification time"
 
 
 def _tiffs_in(folder: Path) -> list[Path]:
@@ -92,14 +112,18 @@ def _tiffs_in(folder: Path) -> list[Path]:
 
 def session_tiffs(session_dir: Path) -> list[RawTiff]:
     """The TIFFs in ``<session>/funcimg``, in order of acquisition start (ties by name)."""
-    started = [(_start_or_file_time(path), path) for path in _tiffs_in(session_dir / "funcimg")]
+    started = [(acquisition_start(path), path) for path in _tiffs_in(session_dir / "funcimg")]
     ordered = sorted(started, key=lambda item: (item[0][0], item[1].name))
-    if len({source for (_, source), _ in ordered}) > 1:
+    by_file_time = [path.name for (_, source), path in ordered if source != "ScanImage epoch"]
+    if by_file_time:
         log.warning(
-            "%s: some TIFFs have no ScanImage start time and are ordered by their file time, "
-            "which on a share may be when they were copied",
-            session_dir,
-        )
+            "%s: %s have no ScanImage start time and are ordered by their file time, which "
+            "on a share may be when they were copied",
+            session_dir, ", ".join(by_file_time),
+        )  # fmt: skip
+    stems = [path.stem for _, path in ordered]
+    if len(set(stems)) != len(stems):
+        raise ValueError(f"{session_dir}: two TIFFs share a name apart from the extension's case")
     return [RawTiff(session_dir.name, path, when, source) for (when, source), path in ordered]
 
 
@@ -156,7 +180,8 @@ def existing_preview(folder: Path, path: Path, n_frames: int) -> Path | None:
     file name) with its current file size, averaged over ``n_frames`` frames or all of a
     shorter recording, with every figure file beside it. Returns its stem, or None."""
     path = Path(path)
-    for caption in sorted(Path(folder).glob(f"{path.stem}{PREVIEW_SUFFIX}*.caption.txt")):
+    pattern = f"{glob.escape(path.stem)}{PREVIEW_SUFFIX}*.caption.txt"
+    for caption in sorted(Path(folder).glob(pattern)):
         text = caption.read_text()
         frames, size = FRAMES_IN_CAPTION.search(text), SIZE_IN_CAPTION.search(text)
         if not frames or not size or tiff_label(path) not in text:
@@ -173,9 +198,11 @@ def existing_preview(folder: Path, path: Path, n_frames: int) -> Path | None:
     return None
 
 
-def preview_caption(path: Path, n_used: int, n_asked: int) -> str:
+def preview_caption(path: Path, n_used: int, n_asked: int, size: int | None = None) -> str:
     """The caption of a preview; it names the TIFF, how many frames were averaged and the
-    file's size, which is how ``existing_preview`` recognizes it."""
+    file's *size* (taken before reading, so a file still being copied is previewed again;
+    default: its size now), which is how ``existing_preview`` recognizes it."""
+    size = Path(path).stat().st_size if size is None else size
     low, high = DISPLAY_PERCENTILES
     shorter = f" The recording has only {n_used} whole frames." if n_used < n_asked else ""
     return (
@@ -184,7 +211,7 @@ def preview_caption(path: Path, n_used: int, n_asked: int) -> str:
         f"registration.{shorter} Each channel is shown from its percentile {low} to its "
         f"percentile {high}. Values are ScanImage counts after its start-of-acquisition "
         "offset subtraction, so the dark level is not zero and drifts during the recording; "
-        f"they are not photon counts. Source file size: {Path(path).stat().st_size} bytes.\n"
+        f"they are not photon counts. Source file size: {size} bytes.\n"
     )
 
 
@@ -208,12 +235,12 @@ def with_extension(stem: Path, extension: str) -> Path:
     return stem.parent / f"{stem.name}{extension}"
 
 
-def save_preview(figure: plt.Figure, stem: Path, caption: str) -> None:
+def save_preview(figure: plt.Figure, stem: Path, caption: str, dpi: int = 150) -> None:
     """The figure as png, pdf and svg, then its caption (written last: an interrupted save
     has no caption and is made again)."""
     stem.parent.mkdir(parents=True, exist_ok=True)
     for extension in FIGURE_SUFFIXES:
-        figure.savefig(with_extension(stem, extension), dpi=150, bbox_inches="tight")
+        figure.savefig(with_extension(stem, extension), dpi=dpi, bbox_inches="tight")
     with_extension(stem, ".caption.txt").write_text(caption)
 
 
@@ -228,6 +255,7 @@ def preview_one(
     if stem is not None:
         return {**row, "status": "exists", "figure": str(with_extension(stem, ".png"))}
     try:
+        size = raw.path.stat().st_size
         means, n_used = raw_mean_images(raw.path, n_frames, n_channels)
     except Exception as error:  # a corrupt TIFF makes tifffile raise many different types
         log.error("%s: %s: %s", raw.path, type(error).__name__, error)
@@ -235,7 +263,7 @@ def preview_one(
     stem = preview_stem(folder, raw.path, n_used)
     figure = draw_preview(means, n_used, raw.path.name, names)
     try:
-        save_preview(figure, stem, preview_caption(raw.path, n_used, n_frames))
+        save_preview(figure, stem, preview_caption(raw.path, n_used, n_frames, size))
     finally:
         plt.close(figure)
     return {**row, "status": "written", "figure": str(with_extension(stem, ".png"))}
@@ -284,6 +312,12 @@ def plan_previews(
         derivatives_dirs = [derivatives_subject_dir(d) for d in subject_dirs]
     if len(derivatives_dirs) != len(subject_dirs):
         raise ValueError("Give one derivatives folder per raw subject folder")
+    for raw, derived in zip(subject_dirs, derivatives_dirs, strict=True):
+        if "rawdata" in Path(derived).parts or Path(derived).name != Path(raw).name:
+            raise ValueError(
+                f"{derived} is not the derivatives folder of {raw}: it must be outside "
+                "rawdata and end in the same subject folder"
+            )
     return [
         (Path(d), find_raw_tiffs(r)) for r, d in zip(subject_dirs, derivatives_dirs, strict=True)
     ]
@@ -347,5 +381,6 @@ def preview_subject(
     finally:
         derivatives_dir.mkdir(parents=True, exist_ok=True)
         summary = {"n_frames": n_frames, "complete": complete, "tiffs": rows}
-        (derivatives_dir / SUMMARY_NAME).write_text(json.dumps(summary, indent=2))
+        summary_path = derivatives_dir / f"{SUMMARY_PREFIX}{n_frames}.json"
+        summary_path.write_text(json.dumps(summary, indent=2))
     return rows
