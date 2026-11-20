@@ -21,7 +21,7 @@ from .config import (
 )
 from .correction import CorrectionSummary, preprocess_tiff
 from .distortion import write_distortion_corrected
-from .plots import plot_frame_phases
+from .plots import QC_FONTS, plot_frame_phases  # QC_FONTS: the notebooks import it from here
 from .progress import format_duration
 from .registration import run_registration
 
@@ -48,8 +48,6 @@ def _log_stage(stage: str, started: float) -> float:
     log.info("%s took %s", stage, format_duration(now - started))
     return now
 
-
-QC_FONTS = ["Arial", "Liberation Sans", "DejaVu Sans"]  # Arial where installed
 
 FRAME_PHASE_CAPTION = """Per-frame bidiphase correction of {run_name}; the structural channel
 set the phase for {structural_pct:.0f}% of {n_frames} frames.

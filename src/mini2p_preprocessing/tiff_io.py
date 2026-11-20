@@ -61,6 +61,24 @@ def count_timepoints(
     return n_timepoints if max_timepoints is None else min(n_timepoints, int(max_timepoints))
 
 
+def leading_timepoints(tif: tifffile.TiffFile, n_frames: int, n_channels: int) -> int:
+    """Whole timepoints among the first *n_frames*, without indexing the rest of the file.
+
+    For a BigTIFF, tifffile reads page headers one after another up to the page asked for,
+    so counting every page (``count_timepoints``) of a long recording on a network share
+    takes minutes; here only the first frames' pages are read when the file has at least
+    *n_frames* timepoints. The page-count check of ``count_timepoints`` then covers only
+    those frames. A shorter file is counted whole, by ``count_timepoints``.
+    """
+    if n_frames < 1:
+        raise ValueError(f"Ask for at least one frame, got {n_frames}")
+    try:
+        tif.pages[n_frames * n_channels - 1]
+    except IndexError:
+        return count_timepoints(tif, n_channels)
+    return n_frames
+
+
 def frame_number(tif: tifffile.TiffFile, page: int) -> int | None:
     """ScanImage's frame number in a page's header, or None for a page without one."""
     # For classic (non-BigTIFF) ScanImage files tifffile serves later pages as TiffFrames,

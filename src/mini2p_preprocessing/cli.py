@@ -21,6 +21,7 @@ from .extraction import run_cellpose_extraction
 from .movies import MovieSettings, load_movie_settings, make_movies
 from .natex import load_natex_settings, run_natex
 from .pipeline import run_pipeline
+from .raw_previews import plan_previews, run_previews
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -180,6 +181,46 @@ def natex_main(argv: list[str] | None = None) -> None:
             print(run_natex(plane_dir, settings, coefficient, args.output_dir, args.overwrite))
     except (ValueError, FileNotFoundError, FileExistsError) as error:  # incl. ValidationError
         parser.error(str(error))
+
+
+def raw_means_main(argv: list[str] | None = None) -> None:
+    """Raw mean images of the first frames of every raw TIFF of one or more subjects."""
+    parser = argparse.ArgumentParser(
+        description="Mean image of the first frames of each channel of every "
+        "<subject>/ses-*/funcimg/*.tif, before any preprocessing, saved in "
+        "<derivatives subject>/<session>/funcimg/preview-all-tifs/ with one overview PDF per "
+        "subject; TIFFs already previewed there are not read again"
+    )
+    parser.add_argument("--config", type=Path, required=True, help="pipeline TOML ([channels])")
+    parser.add_argument(
+        "--subject-dir", type=_named_path, required=True, nargs="+", help="raw subject folder(s)"
+    )
+    parser.add_argument(
+        "--derivatives-subject-dir", type=_named_path, nargs="+",
+        help="derivatives folder of each subject (default: 'rawdata' replaced by 'derivatives')",
+    )  # fmt: skip
+    parser.add_argument("--frames", type=int, default=500, help="first frames to average")
+    args = parser.parse_args(argv)
+    if args.frames < 1:
+        parser.error(f"--frames must be at least 1, got {args.frames}")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
+    try:  # only the request is checked here; errors during the run raise as they are
+        channels = load_settings(args.config).channels
+        plan = plan_previews(
+            args.subject_dir, args.derivatives_subject_dir, args.frames,
+            channels.n_channels, channels.names,
+        )  # fmt: skip
+    except (ValueError, FileNotFoundError) as error:  # incl. ValidationError
+        parser.error(str(error))
+    rows = run_previews(plan, args.frames, channels.n_channels, channels.names)
+    failed = [row for row in rows if row["status"] == "failed"]
+    counts = {s: sum(r["status"] == s for r in rows) for s in ("written", "exists")}
+    print(f"{len(rows) - len(failed)} of {len(rows)} TIFFs previewed "
+          f"({counts['written']} new, {counts['exists']} already there)")  # fmt: skip
+    for row in failed:
+        print(f"FAILED {row['tiff']}: {row['error']}")
+    if failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
