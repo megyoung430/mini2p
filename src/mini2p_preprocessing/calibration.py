@@ -51,7 +51,10 @@ def anchor_pairs(mat: dict, z_um: float) -> tuple[np.ndarray, np.ndarray, float 
 def fit_transform(fixed: np.ndarray, moving: np.ndarray) -> PiecewiseAffineTransform:
     """Piecewise-affine map from distorted (moving) to undistorted (fixed) points."""
     if fixed.shape != moving.shape or fixed.ndim != 2 or fixed.shape[1] != 2:
-        raise ValueError(f"Unexpected anchor shapes: {moving.shape}, {fixed.shape}")
+        raise ValueError(
+            f"Unexpected anchor shapes: with distortion {moving.shape}, "
+            f"without distortion {fixed.shape}; expected two equal (points, 2) arrays"
+        )
     transform = PiecewiseAffineTransform.from_estimate(moving, fixed)
     if not transform:
         raise RuntimeError(f"Piecewise-affine transform estimation failed: {transform}")
@@ -61,7 +64,11 @@ def fit_transform(fixed: np.ndarray, moving: np.ndarray) -> PiecewiseAffineTrans
 def make_maps(
     transform: PiecewiseAffineTransform, shape: tuple[int, int]
 ) -> tuple[np.ndarray, np.ndarray]:
-    """(map_y, map_x): the raw pixel each output pixel samples; NaN outside the anchors."""
+    """(map_y, map_x): the raw pixel each output pixel samples.
+
+    Outside the convex hull of the anchors scikit-image gives -1 in both maps, which
+    ``crop_bounds`` treats as outside the frame.
+    """
     height, width = shape
     row, column = np.meshgrid(np.arange(height), np.arange(width), indexing="ij")
     source = transform.inverse(np.column_stack([column.ravel(), row.ravel()]))

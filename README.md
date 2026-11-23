@@ -524,6 +524,10 @@ of mini2p-preprocessing's `scripts/distortion_correct_full_recording.py`;
 `.mat` layouts. Older configs may still set `distortion.calibration_script_dir`: it is
 ignored, with a warning to delete it.
 
+`distortion.mode = "cluster_full"` still reads a TIFF that mini2p-preprocessing's SLURM
+worker (`run_distortion_correction.slurm`) wrote with its own copy of the script, so a
+change to that script is not reflected in `local_batched` runs, nor the other way round.
+
 ## Relation to the original notebook
 
 `tests/test_equivalence.py` runs verbatim copies of the original notebook functions

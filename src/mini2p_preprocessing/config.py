@@ -159,15 +159,16 @@ class DistortionSettings(_Frozen):
     @model_validator(mode="before")
     @classmethod
     def _ignore_script_folder(cls, data):
-        # Configs written for the external calibration script name its folder. The maths is
-        # now in the package, so the setting has no effect: dropping it with a warning
-        # keeps those configs loading.
+        # Configs may name the folder of the external calibration script. The calibration
+        # ships with the package, so the setting has no effect: it is dropped, with a
+        # warning to delete it when a config sets it.
         if isinstance(data, dict) and "calibration_script_dir" in data:
-            data = {k: v for k, v in data.items() if k != "calibration_script_dir"}
-            log.warning(
-                "distortion.calibration_script_dir is no longer used (the calibration is "
-                "part of mini2p); delete it from the config"
-            )
+            data = dict(data)
+            if data.pop("calibration_script_dir") is not None:
+                log.warning(
+                    "distortion.calibration_script_dir is ignored: the distortion calibration "
+                    "is part of mini2p. Delete it from the config"
+                )
         return data
 
     @model_validator(mode="after")
@@ -325,6 +326,9 @@ def settings_from_record(text: str) -> PipelineSettings:
     record.setdefault("phase", {}).setdefault("method", "chunked")
     # Records from before "auto" existed aligned on the then-default functional channel.
     record.setdefault("registration", {}).setdefault("motion_alignment_source", "functional")
+    # Records name the calibration script's folder, which no longer has any effect; a
+    # record is not edited, so this is no reason to warn.
+    record.get("distortion", {}).pop("calibration_script_dir", None)
     return PipelineSettings.model_validate(record)
 
 
