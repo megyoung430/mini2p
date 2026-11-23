@@ -52,7 +52,6 @@ preserve_frame_mean = true
 [distortion]
 mode = "local_batched"        # "local_batched", "cluster_full" or "off"
 transform_mat = "/path/to/transform_matrix312_A049.mat"
-calibration_script_dir = "/path/to/folder/with/distortion_correct_full_recording.py"
 z_um = 0
 interpolation_order = 1
 crop_black_borders = true

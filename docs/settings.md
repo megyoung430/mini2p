@@ -144,7 +144,6 @@ the length of the QC notebook's stage-by-stage stretch; setting the manual table
 |---|---|---|
 | `mode` | required | `"local_batched"`: correct here, in batches. `"cluster_full"`: use a file corrected on the cluster (it must already exist). `"off"`: no correction (output goes to `without_distortion_correction/`). No default, so registering uncorrected data never happens by accident. |
 | `transform_mat` | none | The calibration `.mat` file. Required for `"local_batched"`. |
-| `calibration_script_dir` | none | Folder holding `distortion_correct_full_recording.py`; none searches `./scripts`, then `./`. |
 | `z_um` | `0` | Imaging depth used to pick the calibration, in µm. |
 | `interpolation_order` | `1` | Spline order used to resample the frames (0–5; 1 = bilinear). |
 | `crop_black_borders` | `true` | Crop the zero-filled borders the correction leaves. Must stay `true` with the photon-free level, whose offset those borders do not carry. |

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import tomllib
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+log = logging.getLogger(__name__)
 
 ChannelRole = Literal["structural", "functional"]
 # "auto": structural where the bidiphase step trusted it often enough, else functional.
@@ -147,13 +150,26 @@ class DistortionSettings(_Frozen):
     # Required: registering undistorted data by accident must not be a silent default.
     mode: Literal["local_batched", "cluster_full", "off"]
     transform_mat: Path | None = None
-    # Folder holding distortion_correct_full_recording.py; None searches ./scripts then ./
-    calibration_script_dir: Path | None = None
     z_um: float = 0.0
     interpolation_order: int = Field(1, ge=0, le=5)
     crop_black_borders: bool = True
     crop_padding_px: int = Field(1, ge=0)
     batch_frames: int = Field(500, ge=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _ignore_script_folder(cls, data):
+        # Configs may name the folder of the external calibration script. The calibration
+        # ships with the package, so the setting has no effect: it is dropped, with a
+        # warning to delete it when a config sets it.
+        if isinstance(data, dict) and "calibration_script_dir" in data:
+            data = dict(data)
+            if data.pop("calibration_script_dir") is not None:
+                log.warning(
+                    "distortion.calibration_script_dir is ignored: the distortion calibration "
+                    "is part of mini2p. Delete it from the config"
+                )
+        return data
 
     @model_validator(mode="after")
     def _local_mode_needs_transform(self) -> DistortionSettings:
@@ -304,12 +320,16 @@ def settings_from_record(text: str) -> PipelineSettings:
     """Settings from a run's ``pipeline_settings.json``.
 
     Records written before ``phase.method`` existed describe chunked runs, so a record
-    without it is read as ``method = "chunked"`` rather than today's default.
+    without it is read as ``method = "chunked"`` rather than today's default, and a
+    ``distortion.calibration_script_dir`` is dropped.
     """
     record = json.loads(text)
     record.setdefault("phase", {}).setdefault("method", "chunked")
     # Records from before "auto" existed aligned on the then-default functional channel.
     record.setdefault("registration", {}).setdefault("motion_alignment_source", "functional")
+    # Records written by earlier versions name a calibration_script_dir: it has no effect,
+    # and a record is not edited, so it is dropped without a warning.
+    record.get("distortion", {}).pop("calibration_script_dir", None)
     return PipelineSettings.model_validate(record)
 
 

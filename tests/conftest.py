@@ -125,7 +125,7 @@ def as_contrast_png(image: np.ndarray, path: Path, black=5.0, white=99.5, gamma=
 
 
 def fake_calibration(shape=(48, 96)):
-    """Stand-in for distortion_correct_full_recording: a gentle barrel-like warp."""
+    """Stand-in for mini2p_preprocessing.calibration: a gentle barrel-like warp."""
 
     def load_transform(path, z_um):
         return {"k": 0.05}, 0.0, "fake-schema", 12

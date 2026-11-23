@@ -501,6 +501,7 @@ the manual overrides apply only to it). A run's `pipeline_settings.json` without
 | `frame_phase.py` | analysis | per-frame line correlation, consistency, channel choice, per-frame shifts |
 | `destripe.py` | analysis | even/odd line-profile removal |
 | `correction.py` | analysis + I/O | per-frame (two-pass) and per-chunk correction; TIFF, `.phase.json`, `.phase_frames.npz` writers |
+| `calibration.py` | analysis + I/O | calibration `.mat` → anchor pairs, piecewise-affine warp map, valid crop |
 | `distortion.py` | analysis + I/O | fixed-map warp; TIFF + `.distortion.json` writer |
 | `registration.py` | I/O | Suite2p settings/db, run, output loaders |
 | `pipeline.py`, `cli.py` | I/O | one recording end to end |
@@ -515,9 +516,17 @@ the manual overrides apply only to it). A run's `pipeline_settings.json` without
 | `natex.py` | analysis + I/O | NATEX port: ΔF/F, transients, SNR, cleaned events; results and QC PDF |
 | `movies.py` | analysis + I/O | movies of each stage: frames, contrast, names (pure `plan_movie`); stage readers; MP4 writing |
 
-Distortion calibration still comes from your `distortion_correct_full_recording.py`,
-which is shared with the SLURM worker. Set `distortion.calibration_script_dir` to
-the folder that contains it.
+Distortion calibration is part of the package (`calibration.py`): set
+`distortion.transform_mat` to the calibration `.mat` and nothing else is needed. It is a port
+of mini2p-preprocessing's `scripts/distortion_correct_full_recording.py`;
+`tests/test_calibration.py` checks it against a verbatim copy
+(`tests/reference/distortion_correct_full_recording.py`) on synthetic calibrations of both
+`.mat` layouts. Older configs may still set `distortion.calibration_script_dir`: it is
+ignored, with a warning to delete it.
+
+`distortion.mode = "cluster_full"` still reads a TIFF that mini2p-preprocessing's SLURM
+worker (`run_distortion_correction.slurm`) wrote with its own copy of the script, so a
+change to that script is not reflected in `local_batched` runs, nor the other way round.
 
 ## Relation to the original notebook
 
