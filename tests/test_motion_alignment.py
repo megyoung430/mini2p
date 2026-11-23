@@ -4,6 +4,7 @@ folder its output goes in."""
 
 import importlib
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -312,3 +313,23 @@ def test_a_record_left_by_earlier_versions_beside_the_registrations_still_counts
     (aligned / "suite2p" / MOTION_ALIGNMENT_RECORD).replace(aligned / MOTION_ALIGNMENT_RECORD)
     run_registration(tiff, out, settings(motion_alignment_source="functional"))
     assert (aligned / "suite2p").is_dir()  # recognised as a registration of the same TIFF
+
+
+def test_the_record_gives_the_binaries_suite2p_wrote(tmp_path, monkeypatch):
+    out, tiff = variant_with_phase_record(tmp_path, 0.8)
+    module = importlib.import_module("suite2p.run_s2p")
+
+    def fake_suite2p(settings, db):
+        plane = Path(db["save_path0"]) / db["save_folder"] / "plane0"
+        binaries = Path(db.get("fast_disk", db["save_path0"])) / "suite2p" / "plane0"
+        plane.mkdir(parents=True)
+        binaries.mkdir(parents=True, exist_ok=True)
+        (binaries / "data.bin").write_bytes(b"frames")
+        np.save(plane / "ops.npy", {"reg_file": str(binaries / "data.bin")})
+
+    monkeypatch.setattr(module, "run_s2p", fake_suite2p)
+    plane = run_registration(tiff, out, settings(save_folder="suite2p_sigma3"))
+    record = json.loads((plane.parent / MOTION_ALIGNMENT_RECORD).read_text())
+    binary = plane.parent / "suite2p" / "plane0" / "data.bin"
+    assert record["binaries"]["reg_file"]["suite2p_input"] == str(binary)
+    assert record["binaries"]["reg_file"]["size_bytes"] == binary.stat().st_size

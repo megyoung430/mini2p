@@ -145,8 +145,8 @@ Suite2p writes each run's registered movie (`data.bin`, `data_chan2.bin`, about 
 for a 7,000-frame two-channel run) and rereads it several times while registering. Over a
 network share this is slow and can fail with `OSError: [Errno 5] Input/output error`. Set
 `[registration] fast_disk` to a local folder: the binaries go to
-`<fast_disk>/<session>_funcimg_<run>_<variant>_aligned_<channel>/` (with `_<save_folder>` added
-for a `save_folder` other than `suite2p`), everything else still goes beside the run, and
+`<fast_disk>/<cohort>_<subject>_<session>_funcimg_<run>_<variant>_aligned_<channel>/` (with
+`_<save_folder>` added for a `save_folder` other than `suite2p`), everything else still goes beside the run, and
 `ops["reg_file"]` records where the binary is. Cellpose extraction reads the binary, so keep a
 run's folder until it has been extracted. Re-registering does not clear these local folders.
 
@@ -162,7 +162,9 @@ over those of the variant's `suite2p` registration. So in any `aligned_<channel>
 has held a registration in another `save_folder`, register the `suite2p` registration again, and
 the other save_folders too. Until then, a registration made by those versions whose binary was
 written after its `ops.npy` stops with an error when loaded; `F.npy` or background TIFFs already
-extracted from such a binary are not checked.
+extracted from such a binary are not checked. Update mini2p everywhere that registers into the
+same folders (laptop, cluster): an older version would still write a second registration's
+binaries over the first one's.
 
 ### Re-running, extraction and outputs
 

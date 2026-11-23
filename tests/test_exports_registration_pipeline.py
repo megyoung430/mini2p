@@ -314,7 +314,8 @@ def test_suite2p_save_folder_must_be_a_plain_name(folder):
 def test_fast_disk_gives_each_run_its_own_local_binary_folder(tmp_path):
     from mini2p_preprocessing.registration import build_suite2p_db
 
-    run_dir = tmp_path / "share" / "ses-224_date-20260809" / "funcimg" / "run-01"
+    subject = tmp_path / "share" / "cohort-01" / "sub-03_id-MY_71_R"
+    run_dir = subject / "ses-224_date-20260809" / "funcimg" / "run-01"
     output_dir = run_dir / "with_distortion_correction" / "with_destriping"
     tiff = output_dir / "a_undistorted.tif"
     plain = PipelineSettings.model_validate(STRUCTURAL)
@@ -330,8 +331,8 @@ def test_fast_disk_gives_each_run_its_own_local_binary_folder(tmp_path):
     )
     db = build_suite2p_db(output_dir, tiff, local)
     assert db["fast_disk"] == str(
-        tmp_path / "local" / "ses-224_date-20260809_funcimg_run-01_with_distortion_correction_"
-        "with_destriping_aligned_functional"
+        tmp_path / "local" / "cohort-01_sub-03_id-MY_71_R_ses-224_date-20260809_funcimg_run-01_"
+        "with_distortion_correction_with_destriping_aligned_functional"
     )
     assert db["save_path0"] == str(output_dir / "aligned_functional")  # results beside the run
     with pytest.raises(ValueError, match="resolved"):
@@ -421,7 +422,8 @@ def test_each_save_folder_keeps_its_binaries_inside_it(tmp_path, keep_raw):
 def test_fast_disk_binaries_are_kept_apart_per_save_folder(tmp_path):
     from mini2p_preprocessing.registration import build_suite2p_db
 
-    output_dir = tmp_path / "ses-223_date-20260807" / "funcimg" / "run-02" / "with_destriping"
+    subject = tmp_path / "cohort-01" / "sub-03_id-MY_71_R"
+    output_dir = subject / "ses-223_date-20260807" / "funcimg" / "run-02" / "with_destriping"
     tiff = output_dir / "a_destriped.tif"
 
     def db(save_folder):
@@ -438,7 +440,10 @@ def test_fast_disk_binaries_are_kept_apart_per_save_folder(tmp_path):
         return build_suite2p_db(output_dir, tiff, settings)
 
     default, other = db("suite2p"), db("suite2p_rigid_sigma3")
-    name = "ses-223_date-20260807_funcimg_run-02_with_destriping_aligned_structural"
+    name = (
+        "cohort-01_sub-03_id-MY_71_R_ses-223_date-20260807_funcimg_run-02_with_destriping_"
+        "aligned_structural"
+    )
     assert default["fast_disk"] == str(tmp_path / "local" / name)  # the default's name is kept
     assert other["fast_disk"] == str(tmp_path / "local" / f"{name}_suite2p_rigid_sigma3")
     assert suite2p_binary_dir(default) != suite2p_binary_dir(other)
@@ -530,25 +535,62 @@ def test_the_tolerance_allows_coarse_file_times(tmp_path, lag, refused):
         assert resolve_registered_binary({}, default, "reg_file", "data.bin") == binary
 
 
-@pytest.mark.parametrize("on_fast_disk", [False, True])
-def test_registrations_with_their_own_record_are_read_whatever_their_file_times(
-    tmp_path, on_fast_disk
-):
-    # e.g. copied without keeping file times, or binaries on a fast_disk whose clock differs
+def record_binary(save_folder_dir, key, binary):
+    """The binary's identity in the registration's record, as run_registration writes it."""
+    import json
+
+    from mini2p_preprocessing.registration import MOTION_ALIGNMENT_RECORD, input_identity
+
+    path = save_folder_dir / MOTION_ALIGNMENT_RECORD
+    record = json.loads(path.read_text())
+    record.setdefault("binaries", {})[key] = input_identity(binary)
+    path.write_text(json.dumps(record))
+
+
+def test_registrations_with_their_own_record_are_read_whatever_their_file_times(tmp_path):
+    # e.g. copied without keeping file times
     from mini2p_preprocessing.registration import resolve_registered_binary
 
     aligned = tmp_path / "with_destriping" / "aligned_structural"
     default, binary = registration(aligned, "suite2p")
     sweep, sweep_binary = registration(aligned, "suite2p_sigma3")
-    if on_fast_disk:
-        sweep_binary = tmp_path / "local" / "run_suite2p_sigma3" / "suite2p" / "plane0" / "data.bin"
-        sweep_binary.parent.mkdir(parents=True)
-        sweep_binary.write_bytes(b"frames")
     age(default / "ops.npy", 60, binary)
     age(sweep / "ops.npy", 60, sweep_binary)
     assert resolve_registered_binary({}, default, "reg_file", "data.bin") == binary
-    ops = {"reg_file": str(sweep_binary)}
-    assert resolve_registered_binary(ops, sweep, "reg_file", "data.bin") == sweep_binary
+    assert resolve_registered_binary({}, sweep, "reg_file", "data.bin") == sweep_binary
+
+
+def test_a_fast_disk_binary_must_be_the_one_its_registration_recorded(tmp_path):
+    import os
+
+    from mini2p_preprocessing.registration import resolve_registered_binary
+
+    aligned = tmp_path / "with_destriping" / "aligned_structural"
+    sweep, _ = registration(aligned, "suite2p_sigma3")
+    (aligned / "suite2p_sigma3" / "suite2p").rename(tmp_path / "unused")  # binaries elsewhere
+    local = tmp_path / "local" / "run_suite2p_sigma3" / "suite2p" / "plane0" / "data.bin"
+    local.parent.mkdir(parents=True)
+    local.write_bytes(b"frames")
+    record_binary(aligned / "suite2p_sigma3", "reg_file", local)
+    ops = {"reg_file": str(local)}
+    age(sweep / "ops.npy", 60, local)  # the laptop's clock differs: no matter
+    assert resolve_registered_binary(ops, sweep, "reg_file", "data.bin") == local
+    local.write_bytes(b"another registration's frames")
+    later = local.stat().st_mtime + 100
+    os.utime(local, (later, later))
+    with pytest.raises(RuntimeError, match="not the reg_file binary"):
+        resolve_registered_binary(ops, sweep, "reg_file", "data.bin")
+
+
+def test_a_copy_reads_its_own_binary_not_the_one_its_ops_names(tmp_path):
+    # a laptop copy whose ops still names the share's binary, which is still there
+    from mini2p_preprocessing.registration import resolve_registered_binary
+
+    share, laptop = tmp_path / "share", tmp_path / "laptop"
+    _, share_binary = registration(share / "aligned_structural", "suite2p_sigma3")
+    plane, own = registration(laptop / "aligned_structural", "suite2p_sigma3")
+    ops = {"reg_file": str(share_binary)}
+    assert resolve_registered_binary(ops, plane, "reg_file", "data.bin") == own
 
 
 def test_registrations_outside_an_aligned_folder_are_not_checked(tmp_path):
