@@ -187,7 +187,8 @@ class RegistrationSettings(_Frozen):
     th_badframes: float = Field(0.7, gt=0)
     # Gaussian sigma (px) Suite2p smooths the frames and reference with before registering:
     # ~1 suits 2P recordings; larger (e.g. 3) can help very noisy ones, 3-5 for 1P.
-    smooth_sigma: float = Field(1.15, gt=0)
+    # 0.25 is the smallest Suite2p's own settings list allows.
+    smooth_sigma: float = Field(1.15, ge=0.25)
     two_step_registration: bool = True
     batch_size: int = Field(500, ge=1)
     keep_raw_binary: bool = False
