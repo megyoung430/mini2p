@@ -39,8 +39,8 @@
 <text x="30" y="299" class="cm-m cm-q" font-size="11.5" text-anchor="start">registration</text>
 <text x="30" y="317" class="cm-t cm-q" font-size="11.5" text-anchor="start">mini2p-preprocess</text>
 <rect x="516" y="258" width="448" height="70" rx="8" class="cm-out"/>
-<text x="530" y="286" class="cm-m" font-size="12" text-anchor="start">aligned_&lt;channel&gt;/&lt;save_folder&gt;/plane0/</text>
-<text x="530" y="307" class="cm-t cm-q" font-size="11.5" text-anchor="start">ops.npy · data.bin · data_chan2.bin · motion_alignment.json</text>
+<text x="530" y="286" class="cm-m" font-size="12" text-anchor="start">aligned_&lt;channel&gt;/&lt;save_folder&gt;/</text>
+<text x="530" y="307" class="cm-t cm-q" font-size="11.5" text-anchor="start">plane0/ (ops.npy · data.bin · data_chan2.bin) · motion_alignment.json</text>
 <path d="M456 293.0H514" class="cm-ln" marker-end="url(#cm-arr)"/>
 <path d="M236.0 328V348" class="cm-ln" marker-end="url(#cm-arr)"/>
 <rect x="16" y="350" width="440" height="70" rx="8" class="cm-box cm-man"/>

@@ -2,6 +2,7 @@ name: code map
 
 # Rebuilds the searchable code map (scripts/build_code_map.py) on every push to main and
 # publishes it with GitHub Pages: https://megyoung430.github.io/mini2p/
+# Needs Pages on, with "GitHub Actions" as the source (repository Settings → Pages).
 
 on:
   push:

@@ -18,6 +18,10 @@ cp config/pipeline.example.toml config/pipeline.toml   # git-ignored; fill in yo
 uv run pytest                # synthetic-data tests, no lab data needed
 ```
 
+Wherever you use the notebooks, update with `uv sync --extra notebook` every time: a plain
+`uv sync` removes the extra's packages, JupyterLab included (a running JupyterLab then cannot
+start kernels).
+
 `config/pipeline.toml` holds every setting and machine path. The notebooks, the
 CLI and the batch workers all read it, so they cannot drift apart.
 
@@ -735,7 +739,8 @@ schematics, and the module groups live in `docs/code_map/` (`descriptions.tsv`,
 sections for readers new to the methods. The script lists anything undescribed, and files a
 group names that no longer exist (`--strict` makes an undescribed definition an error). On
 every push to `main`, `.github/workflows/code-map.yml` rebuilds the page and publishes it at
-<https://megyoung430.github.io/mini2p/>.
+<https://megyoung430.github.io/mini2p/> (GitHub Pages must be on, with GitHub Actions as its
+source: repository Settings → Pages).
 
 ## Known issues, deliberately left for the follow-up fix step
 

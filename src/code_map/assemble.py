@@ -6,6 +6,7 @@ say the text was written from the code rather than by its author.
 """
 
 from collections.abc import Iterable, Mapping
+from types import MappingProxyType
 from typing import NamedTuple
 
 from src.code_map.docstrings import one_line, structure
@@ -30,7 +31,8 @@ class Overviews(NamedTuple):
         topics: Overview sections shown before the repo layout, each a dict with "title",
             "text" (HTML) and optionally "svg" (a schematic's markup) and "caption".
         groups: File path → the group it is listed under instead of its folder (a group's
-            name and summary are in ``packages``, in the group's order).
+            name and summary are in ``packages``); a group's files keep the order they are
+            listed in.
     """
 
     intro: str
@@ -39,15 +41,17 @@ class Overviews(NamedTuple):
     modules: dict[str, str]
     notebooks: dict[str, str]
     topics: tuple[dict, ...] = ()
-    groups: dict[str, str] = {}
+    groups: Mapping[str, str] = MappingProxyType({})
 
 
 def overviews_from_toml(parsed: Mapping) -> Overviews:
     """Overviews from the parsed TOML file.
 
     Raises:
-        ValueError: If the file has no ``intro``, a topic has no title or an unknown key, or a
-            group has no name or lists a file another group lists too.
+        ValueError: If the file has no ``intro``; a topic has no title, an unknown key, a
+            caption without a schematic, or a schematic that is not ``<svg>`` markup (read it
+            with ``files.load_overviews``); or a group has no name, shares its name with a
+            ``[package]`` entry, or lists a file another group lists too.
     """
     if "intro" not in parsed:
         raise ValueError("overviews.toml needs an 'intro' string")
@@ -58,10 +62,20 @@ def overviews_from_toml(parsed: Mapping) -> Overviews:
                 f"overviews.toml topic {number} needs a title and only {sorted(TOPIC_KEYS)}: "
                 f"{sorted(topic)}"
             )
+        if "caption" in topic and "svg" not in topic:
+            raise ValueError(f"overviews.toml topic {number} has a caption but no schematic")
+        if "svg" in topic and not str(topic["svg"]).lstrip().startswith("<svg"):
+            raise ValueError(
+                f"overviews.toml topic {number}: 'svg' must be the schematic's markup, read from "
+                "its file by files.load_overviews"
+            )
     packages, groups = {}, {}  # groups first, then the folders, in file order
+    folders = dict(parsed.get("package", {}))
     for group in parsed.get("group", []):
         if "name" not in group:
             raise ValueError(f"overviews.toml group needs a name: {sorted(group)}")
+        if group["name"] in folders or group["name"] in packages:
+            raise ValueError(f"overviews.toml has two sections named {group['name']!r}")
         packages[group["name"]] = group.get("about", "")
         for path in group.get("files", []):
             if path in groups:
@@ -70,7 +84,7 @@ def overviews_from_toml(parsed: Mapping) -> Overviews:
     return Overviews(
         parsed["intro"],
         tuple((s["name"], s["text"]) for s in parsed.get("section", [])),
-        packages | {k: v for k, v in parsed.get("package", {}).items() if k not in packages},
+        packages | folders,
         dict(parsed.get("module", {})),
         dict(parsed.get("notebook", {})),
         topics,
@@ -251,11 +265,14 @@ def build_map(
         pkgs.setdefault(name, {"name": name, "about": "", "mods": []})
         pkgs[name]["mods"].append(module_entry(m, overviews, descriptions))
     for nb in notebooks:
-        name = package_of(nb.path)
+        name = overviews.groups.get(nb.path) or package_of(nb.path)
         pkgs.setdefault(name, {"name": name, "about": "", "mods": []})
         pkgs[name]["mods"].append(notebook_entry(nb, overviews))
+    listed = {path: i for i, path in enumerate(overviews.groups)}
     for p in pkgs.values():
-        p["mods"].sort(key=lambda e: (not e.get("nb"), e["p"]))
+        # a group keeps its files' listed order; a folder lists notebooks, then files by path
+        p["mods"].sort(key=lambda e: (e["p"] not in listed, listed.get(e["p"], 0),
+                                      not e.get("nb"), e["p"]))  # fmt: skip
     attach_explanations(pkgs.values(), explanations or {})
     return {
         "intro": overviews.intro,

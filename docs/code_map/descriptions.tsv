@@ -13,7 +13,7 @@ src/mini2p_preprocessing/background_io.py::background_tiff	File name of the back
 src/mini2p_preprocessing/background_io.py::background_record	File name of the JSON record that goes with the background-removed movie of one source.
 src/mini2p_preprocessing/background_io.py::BackgroundTraces	Mean green and red background fluorescence per frame for one source, with the background mask, its alignment onto this plane and the cache key they depend on.
 src/mini2p_preprocessing/background_io.py::mask_sha256	SHA-256 of a boolean mask (bit-packed), so a cache knows when the mask changed.
-src/mini2p_preprocessing/batch.py::BatchSettings	The [batch] settings, validated: raw and derivatives subject folders, the session range, the substring that picks source TIFFs, whether to destripe, and whether to stop at the first error.
+src/mini2p_preprocessing/batch.py::BatchSettings	The [batch] settings, validated: among them the raw and derivatives subject folders, the session range, the substring that picks source TIFFs, destriping, error handling, reruns, and the Cellpose masks and image for the post-batch extraction.
 src/mini2p_preprocessing/batch.py::load_batch_settings	Reads and validates the [batch] table of a TOML file.
 src/mini2p_preprocessing/batch.py::PlannedRun	One row of the batch plan: session, source TIFF, run name and folder, the source's identity, and the action (run, skip or conflict) with its reason.
 src/mini2p_preprocessing/batch.py::_newest_snapshot	The latest batch_config_*.toml snapshot in the derivatives folder; raises if the batch was never launched.
@@ -57,10 +57,10 @@ src/mini2p_preprocessing/config.py::DestripeSettings	[destripe]: whether to remo
 src/mini2p_preprocessing/config.py::DistortionSettings	[distortion]: the mode (local_batched, cluster_full or off; required), the calibration .mat, depth, interpolation order, border crop and batch size.
 src/mini2p_preprocessing/config.py::DistortionSettings._ignore_script_folder	Validator: drops the obsolete calibration_script_dir key, warning when a config sets it.
 src/mini2p_preprocessing/config.py::DistortionSettings._local_mode_needs_transform	Validator: local_batched mode needs a transform_mat.
-src/mini2p_preprocessing/config.py::RegistrationSettings	[registration]: frame rate, cell diameter, nonrigid, norm_frames, smooth_sigma, reference frames, bad-frame threshold, which channel motion is estimated on, and the save_folder.
+src/mini2p_preprocessing/config.py::RegistrationSettings	[registration]: among them frame rate, cell diameter, nonrigid, norm_frames, smooth_sigma, reference frames, bad-frame threshold, which channel motion is estimated on, the save_folder and an optional local fast_disk.
 src/mini2p_preprocessing/config.py::RegistrationSettings._plain_folder_name	Validator: save_folder must name a folder inside the output folder, not "." or "..".
 src/mini2p_preprocessing/config.py::FocusSettings._odd_window	Validator: the focus window must be odd so it is centred on each frame.
-src/mini2p_preprocessing/config.py::PipelineSettings	The whole pipeline config: channels, phase, destripe, distortion, registration, fluorescence and focus settings, and the dtype of TIFFs written for Suite2p.
+src/mini2p_preprocessing/config.py::PipelineSettings	The whole pipeline config: the channels, phase, destripe, distortion, registration, fluorescence and focus sections, plus top-level settings such as overwrite, max_timepoints (test runs) and the dtype of TIFFs written for Suite2p.
 src/mini2p_preprocessing/config.py::PipelineSettings._auto_alignment_needs_per_frame_phase	Validator: motion_alignment_source = "auto" needs the per-frame phase method, which it reads.
 src/mini2p_preprocessing/config.py::PipelineSettings.dtype	The numpy dtype of the TIFFs written for Suite2p.
 src/mini2p_preprocessing/config.py::PipelineSettings.correction_suffix	The file-name suffix of the phase-corrected TIFF: dynamic_bidiphase, plus _destriped when destriping.
@@ -154,7 +154,7 @@ src/mini2p_preprocessing/plots.py::plot_nonrigid_offsets	The median nonrigid blo
 src/mini2p_preprocessing/plots.py::_method_colors	One Okabe–Ito color per method; raises if there are more methods than colors.
 src/mini2p_preprocessing/progress.py::format_duration	A duration as short text: "1h05m", "3m20s" or "45s".
 src/mini2p_preprocessing/progress.py::ProgressLog.__init__	A progress reporter for *total* items that reports through *report*, at most every min_interval_s (clocks injectable for tests).
-src/mini2p_preprocessing/qc.py::load_chunk	Every channel of timepoints start to end of a TIFF; raises if the range is outside the recording.
+src/mini2p_preprocessing/qc.py::load_chunk	Every channel of timepoints start to end of a TIFF; raises if start is outside the recording, and an end past it is clipped to the last timepoint.
 src/mini2p_preprocessing/qc.py::FramePhasePreview	Per-frame line-similarity curves of a stretch of frames and the phases chosen from them, for previewing the per-frame bidiphase step.
 src/mini2p_preprocessing/qc.py::lowest_score_chunk	The chunk whose phase estimate scored lowest (the least certain one); raises if no score is finite.
 src/mini2p_preprocessing/qc.py::mean_images	The mean image of each stack.

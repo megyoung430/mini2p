@@ -113,7 +113,7 @@ figure.schem figcaption{color:var(--muted);font-size:13px;margin-top:8px;max-wid
 .badge{font:600 10.5px/1 var(--f-head);letter-spacing:.06em;text-transform:uppercase;padding:3px 6px;border-radius:3px;background:var(--accent-soft);color:var(--accent);margin-left:8px}
 .fn,details.mod,.pkg,section.block{scroll-margin-top:130px}
 .hit{outline:2px solid var(--accent);outline-offset:4px;border-radius:2px}
-@media (max-width:860px){.wrap{grid-template-columns:minmax(0,1fr)} nav{position:static;max-height:none}
+@media (max-width:860px){.wrap{grid-template-columns:minmax(0,1fr)} nav{position:static;max-height:none} .search .hint{display:none}
   .secgrid{grid-template-columns:minmax(0,1fr)} .io{grid-template-columns:minmax(0,1fr)}}
 @media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
 </style>
@@ -170,12 +170,12 @@ function walk(list, mod, depth){ for (const e of list){ nFn++; if (e.u) nUndoc++
 for (const p of D.pkgs) for (const m of p.mods){ if (m.nb) nNb++; else { nMods++; walk(m.fn, m, 0); } }
 document.getElementById("lede").innerHTML = D.intro;
 document.getElementById("meta").innerHTML =
-  `<span><b>${D.pkgs.length}</b> folders</span><span><b>${nMods}</b> Python files</span><span><b>${nNb}</b> notebooks</span>` +
+  `<span><b>${D.pkgs.length}</b> sections</span><span><b>${nMods}</b> Python files</span><span><b>${nNb}</b> notebooks</span>` +
   `<span><b>${nFn.toLocaleString()}</b> functions, classes and methods</span><span>Built from <span class="mono">${esc(D.meta)}</span></span>`;
 
-const topicSlug = (t, i) => "topic-" + i;
+const topicSlug = i => "topic-" + i;
 document.getElementById("topics").innerHTML = (D.topics || []).map((t, i) =>
-  `<section class="block topic" id="${topicSlug(t, i)}"><h2>${esc(t.title)}</h2>` +
+  `<section class="block topic" id="${topicSlug(i)}"><h2>${esc(t.title)}</h2>` +
   (t.svg ? `<figure class="schem">${t.svg}${t.caption ? `<figcaption>${t.caption}</figcaption>` : ""}</figure>` : "") +
   (t.text ? `<div class="prose">${t.text}</div>` : "") + `</section>`).join("");
 document.getElementById("secgrid").innerHTML = D.sections.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("");
@@ -183,8 +183,8 @@ document.getElementById("secgrid").innerHTML = D.sections.map(([k, v]) => `<dt>$
 // Sidebar
 const nav = document.getElementById("nav");
 const navLink = (href, text) => `<li><a href="#${href}" style="font-family:var(--f-body);font-size:13.5px">${esc(text)}</a></li>`;
-let navHtml = `<h2>Overview</h2><ul style="border:0;padding:0">` + (D.topics || []).map((t, i) => navLink(topicSlug(t, i), t.title)).join("") +
-  navLink("layout", "How the repo is laid out") + `</ul><h2>Folders</h2>`;
+let navHtml = `<h2>Overview</h2><ul style="border:0;padding:0">` + (D.topics || []).map((t, i) => navLink(topicSlug(i), t.title)).join("") +
+  navLink("layout", "How the repo is laid out") + `</ul><h2>Code</h2>`;
 D.pkgs.forEach((p, i) => {
   navHtml += `<details><summary><a href="#${slug("pkg-" + p.name)}">${esc(p.name)}</a> <span class="count">${p.mods.length}</span></summary><ul>` +
     p.mods.map(m => `<li><a href="#${slug(m.p)}" data-open="${slug(m.p)}">${esc(m.p.split("/").pop())}</a></li>`).join("") + `</ul></details>`;
@@ -281,8 +281,9 @@ function search(){
     curMod = it.mod.p; const fn = slugFn(it.e);
     return `<div class="r"><a href="#${fid}" data-f="${fid}" data-fn="${fn}"><span class="q">${esc(it.e.n)}</span></a> <span class="w">${esc(it.mod.p)}</span><div class="t">${rich(it.e.d || "")}</div></div>`;
   }).join("") : `<div class="more">No matches.</div>`) + (hits.length > 60 ? `<div class="more">${hits.length - 60} more; add a word to narrow it.</div>` : "");
-  // results sit above the overview: bring them into view when the page is scrolled past them
-  if (res.getBoundingClientRect().top < 0) window.scrollTo({top: window.scrollY + res.getBoundingClientRect().top - 130});
+  // results sit above the overview: bring them into view below the sticky search bar
+  const barBottom = document.querySelector(".search").getBoundingClientRect().bottom;
+  if (res.getBoundingClientRect().top < barBottom) window.scrollTo({top: window.scrollY + res.getBoundingClientRect().top - barBottom - 8});
 }
 res.addEventListener("click", ev => { const a = ev.target.closest("a[data-f]"); if (!a) return; ev.preventDefault(); openTo(a.dataset.f, a.dataset.fn); history.replaceState(null, "", "#" + a.dataset.f); });
 })();

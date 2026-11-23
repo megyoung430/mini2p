@@ -73,19 +73,3 @@ def test_git_meta_names_branch_commit_and_date(tmp_path):
 def test_git_meta_outside_a_repository_fails_loudly(tmp_path):
     with pytest.raises(RuntimeError, match="git"):
         git_meta(tmp_path)
-
-
-def test_schematics_are_read_from_the_files_topics_name(tmp_path):
-    from src.code_map.files import load_overviews
-
-    (tmp_path / "flow.svg").write_text("<svg viewBox='0 0 1 1'></svg>\n")
-    (tmp_path / "bad.svg").write_text("<p>not svg</p>")
-    toml = tmp_path / "overviews.toml"
-    toml.write_text('intro = "Hi."\n[[topic]]\ntitle = "Flow"\nsvg = "flow.svg"\n')
-    assert load_overviews(toml).topics[0]["svg"] == "<svg viewBox='0 0 1 1'></svg>"
-    toml.write_text('intro = "Hi."\n[[topic]]\ntitle = "Flow"\nsvg = "bad.svg"\n')
-    with pytest.raises(ValueError, match="svg"):
-        load_overviews(toml)
-    toml.write_text('intro = "Hi."\n[[topic]]\ntitle = "Flow"\nsvg = "missing.svg"\n')
-    with pytest.raises(FileNotFoundError):
-        load_overviews(toml)

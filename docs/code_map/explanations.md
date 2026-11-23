@@ -102,8 +102,9 @@ From raw traces to ΔF/F0. **Neuropil correction** subtracts a fraction of the r
 (F − c × Fneu), because out-of-focus light from the surroundings also falls on the cell. **F0** is
 the cell's baseline, from Suite2p's baseline estimate over a sliding window (by default
 "maximin": the running maximum of the running minimum of the smoothed trace). **ΔF/F0** is
-how far the trace rises above that baseline, as a fraction of it. Where F0 is near zero or
-negative, ΔF/F0 would blow up, so those frames are set to NaN and flagged rather than divided.
+how far the trace rises above that baseline, as a fraction of it. Where F0 is at or below
+`min_f0` (zero by default), ΔF/F0 is meaningless, so those frames are set to NaN and flagged rather
+than divided. A small positive F0 still gives large ΔF/F0 values, so check the F0 overview.
 
 ## src/mini2p_preprocessing/background.py
 
@@ -159,8 +160,8 @@ changes them.
 
 ## src/mini2p_preprocessing/cell_snr.py
 
-A segmentation-free stand-in for cells. The brightest cell-sized spots of the mean image are taken
-as cells; each one's trace is the mean of a small disc on it minus the mean of a ring around it, so
+A segmentation-free stand-in for cells. The spots of the mean image that stand out most from their
+surroundings at the size of a cell (peaks of a difference of Gaussians) are taken as cells; each one's trace is the mean of a small disc on it minus the mean of a ring around it, so
 anything both share (the drifting dark level, field-wide light) cancels. **Resting SNR** is how far
 the disc sits above the ring, in units of the trace's noise: contrast, not activity. **Transients**
 are moments when the trace jumps more than 4.5 noise SDs above its slow baseline; the same count on
@@ -177,6 +178,6 @@ quickest way to see what a correction did.
 ## src/mini2p_preprocessing/batch.py
 
 Runs the pipeline over every raw TIFF in a range of sessions. Each TIFF becomes `run-01`, `run-02`,
-… in acquisition order, and each run folder's `source_tiff.json` records which TIFF it came from
-and whether it finished. Relaunching therefore skips finished runs, and a TIFF that would land on
+… in acquisition order, and each run's variant folder holds a `source_tiff.json` recording which
+TIFF it came from and whether it finished. Relaunching therefore skips finished runs, and a TIFF that would land on
 another TIFF's run folder stops the batch instead of overwriting it.

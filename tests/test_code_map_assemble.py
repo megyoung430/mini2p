@@ -159,25 +159,39 @@ def test_a_topic_without_a_title_or_with_an_unknown_key_fails_loudly():
 def test_groups_list_files_under_a_named_section_in_their_order():
     parsed = {
         "intro": "Hi.",
-        "group": [{"name": "Second", "about": "b", "files": ["src/pkg/b.py"]},
-                  {"name": "First", "about": "a", "files": ["src/pkg/a.py"]}],
+        "group": [{"name": "Second", "about": "b", "files": ["src/pkg/z.py", "src/pkg/b.py"]},
+                  {"name": "First", "about": "a", "files": ["src/pkg/a.py", "notebooks/n.ipynb"]}],
     }  # fmt: skip
     overviews = overviews_from_toml(parsed)
-    modules = [module_record(p, '"""Doc."""\n') for p in ("src/pkg/a.py", "src/pkg/b.py",
-                                                         "src/pkg/c.py")]  # fmt: skip
-    data = build_map(modules, [], overviews, {}, "main @ abc, 2026-11-23")
+    paths = ("src/pkg/a.py", "src/pkg/b.py", "src/pkg/c.py", "src/pkg/z.py")
+    modules = [module_record(p, '"""Doc."""\n') for p in paths]
+    notebooks = [notebook_record("notebooks/n.ipynb", {"cells": []})]
+    data = build_map(modules, notebooks, overviews, {}, "main @ abc, 2026-11-23")
     assert [(p["name"], [m["p"] for m in p["mods"]]) for p in data["pkgs"]] == [
-        ("Second", ["src/pkg/b.py"]), ("First", ["src/pkg/a.py"]), ("src/pkg", ["src/pkg/c.py"]),
-    ]  # fmt: skip
+        ("Second", ["src/pkg/z.py", "src/pkg/b.py"]),
+        ("First", ["src/pkg/a.py", "notebooks/n.ipynb"]),
+        ("src/pkg", ["src/pkg/c.py"]),
+    ]
 
 
-def test_a_file_in_two_groups_fails_loudly_and_stale_files_are_listed():
+def test_a_file_in_two_groups_or_a_group_named_like_a_folder_fails_loudly():
     from src.code_map.assemble import stale_groups
 
     with pytest.raises(ValueError, match="two groups"):
         overviews_from_toml({"intro": "Hi.", "group": [
             {"name": "A", "files": ["x.py"]}, {"name": "B", "files": ["x.py"]}]})  # fmt: skip
+    with pytest.raises(ValueError, match="two sections"):
+        overviews_from_toml(
+            {"intro": "Hi.", "package": {"A": "folder"}, "group": [{"name": "A", "files": []}]}
+        )
     overviews = overviews_from_toml(
         {"intro": "Hi.", "group": [{"name": "A", "files": ["gone.py"]}]}
     )
     assert stale_groups([], [], overviews) == ["gone.py"]
+
+
+def test_a_caption_without_a_schematic_or_a_schematic_path_fails_loudly():
+    with pytest.raises(ValueError, match="caption"):
+        overviews_from_toml({"intro": "Hi.", "topic": [{"title": "T", "caption": "c"}]})
+    with pytest.raises(ValueError, match="markup"):
+        overviews_from_toml({"intro": "Hi.", "topic": [{"title": "T", "svg": "flow.svg"}]})
