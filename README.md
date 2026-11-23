@@ -350,24 +350,28 @@ its detection of one cell in several planes, and its GUI are not ported.
 
 ## QC notebook outputs
 
-The QC notebook (`notebooks/qc_single_run.ipynb`) saves every plot it draws in the variant
-folder it works on (e.g. `run-01/with_distortion_correction/with_destriping/`), under
-`quality_control/<step>/`, as png, pdf and svg with a `.caption.txt` naming the recording and
-output folder:
+The QC notebook (`notebooks/qc_single_run.ipynb`) saves every plot it draws as png, pdf and
+svg with a `.caption.txt` naming the recording, output folder and (for registration plots) the
+registration. Plots of the preprocessing go in the variant folder it works on (e.g.
+`run-01/with_distortion_correction/with_destriping/`) under `quality_control/<step>/`; plots that
+depend on the registration go in that registration's Suite2p folder,
+`<variant>/aligned_<channel>/<save_folder>/quality_control/<step>/`:
 
-| Folder | Plots |
-|---|---|
-| `raw_mean/` | mean of the first frames of the raw TIFF |
-| `bidiphase/` | phase per frame (or per chunk and its score curve), before/after bidiphase |
-| `destriping/` | before/after destriping |
-| `distortion_correction/` | before/after distortion correction |
-| `motion_registration/` | before/after registration, shift traces, nonrigid offsets, registered means and their crops, focus QC, chosen contrast (full frame and cropped) |
-| `frame_order/` | every stage's frames against the acquired TIFF |
-| `fluorescence/` | photon-free levels, F0 overview, mask alignment, background, top ROIs |
+| Folder | In | Plots |
+|---|---|---|
+| `raw_mean/` | variant | mean of the first frames of the raw TIFF |
+| `bidiphase/` | variant | phase per frame (or per chunk and its score curve), before/after bidiphase |
+| `destriping/` | variant | before/after destriping |
+| `distortion_correction/` | variant | before/after distortion correction |
+| `motion_registration/` | registration | before/after registration, shift traces, nonrigid offsets, registered means and their crops, focus QC, chosen contrast (full frame and cropped) |
+| `frame_order/` | registration | every stage's frames against the acquired TIFF |
+| `fluorescence/` | registration | photon-free levels, F0 overview, mask alignment, background, top ROIs |
 
-Plots behind a slider (manual chunk offset, contrast preview, one ROI at a time) are not
-saved; the contrast you choose is. Registration-dependent plots are overwritten when the same
-variant is registered again; each caption names the plane folder it was drawn from.
+So registrations of one variant with different settings, each in its own
+`[registration] save_folder` (e.g. `suite2p_rigid_sigma3`), keep their own plots, and
+registering again, which replaces that folder, removes the old registration's plots with it.
+Plots behind a slider (manual chunk offset, contrast preview, one ROI at a time) are not saved;
+the contrast you choose is.
 
 The mean images stay beside `ops.npy`: `meanImg_{green,red}_contrast.png` and
 `meanImg_{green,red}_raw.tif` (the whole frame), and `meanImg_cropped_{green,red}_contrast.png`
@@ -419,7 +423,8 @@ background traces of each channel before ΔF/F0 (`photon_free.py`, `photon_free_
   level measured on the binaries by ~8 counts. One level per frame suffices: bands of
   columns or rows differ from it by a fixed 3–5 counts at most.
 - **Cached** in `photon_free_levels.npz` in the plane folder; the per-frame plot is saved
-  in `quality_control/fluorescence/` as `photon_free_levels.{png,pdf,svg}` with a caption.
+  in the registration's `quality_control/fluorescence/` as `photon_free_levels.{png,pdf,svg}`
+  with a caption.
 - **Refused settings:** destriping with `preserve_frame_mean = false` (it already removes
   each column's mean) and distortion correction with `crop_black_borders = false` (its
   zero-filled borders carry no offset).
@@ -559,7 +564,7 @@ the manual overrides apply only to it). A run's `pipeline_settings.json` without
 | `pipeline.py`, `cli.py` | I/O | one recording end to end |
 | `batch.py` | analysis + I/O | run planning (pure `decide_action`), manifests, workers |
 | `qc.py`, `contrast.py`, `plots.py` | analysis / plotting | QC computations; figures accept `ax` |
-| `qc_figures.py` | I/O | where the QC notebook saves its plots (`quality_control/<step>/`) |
+| `qc_figures.py` | I/O | where the QC notebook saves its plots (`quality_control/<step>/`, in the variant or the registration folder) |
 | `exports.py` | I/O | fixed-contrast exports and review PDFs |
 | `rois.py` | analysis | Cellpose labels ↔ Suite2p `stat`, ROI outlines |
 | `alignment.py` | analysis | rigid shift of Cellpose masks between two mean images |

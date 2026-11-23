@@ -11,8 +11,9 @@ import tifffile
 from mini2p_preprocessing.contrast import scale_contrast
 from mini2p_preprocessing.exports import Contrast, save_cropped_contrast_choice
 from mini2p_preprocessing.qc_figures import (
+    PREPROCESSING_STEPS,
     QC_FOLDER,
-    QC_STEPS,
+    REGISTRATION_STEPS,
     figure_of,
     qc_step_dir,
     save_qc_figure,
@@ -21,14 +22,42 @@ from mini2p_preprocessing.qc_figures import (
 REGION = (slice(2, 18), slice(3, 21))
 
 
-def test_each_step_has_its_own_folder_under_quality_control(tmp_path):
-    asked_for = {"bidiphase", "destriping", "distortion_correction", "motion_registration"}
-    assert asked_for <= set(QC_STEPS)
-    assert len({qc_step_dir(tmp_path, step) for step in QC_STEPS}) == len(QC_STEPS)
-    folder = qc_step_dir(tmp_path, "distortion_correction")
-    assert folder == tmp_path / QC_FOLDER / "distortion_correction"
+def test_preprocessing_plots_go_in_the_variant_folder(tmp_path):
+    for step in PREPROCESSING_STEPS:
+        assert qc_step_dir(tmp_path, step) == tmp_path / QC_FOLDER / step
+    assert {"bidiphase", "destriping", "distortion_correction"} <= set(PREPROCESSING_STEPS)
     with pytest.raises(ValueError, match="motion_registration"):
         qc_step_dir(tmp_path, "registration")
+
+
+def test_registration_plots_go_in_their_registration_folder(tmp_path):
+    variant = tmp_path / "run-02" / "without_distortion_correction" / "with_destriping"
+    one = variant / "aligned_structural" / "suite2p"
+    other = variant / "aligned_structural" / "suite2p_rigid_sigma3"
+    assert {"motion_registration", "frame_order", "fluorescence"} == set(REGISTRATION_STEPS)
+    for step in REGISTRATION_STEPS:
+        assert qc_step_dir(variant, step, one) == one / QC_FOLDER / step
+        assert qc_step_dir(variant, step, one) != qc_step_dir(variant, step, other)
+    with pytest.raises(ValueError, match="registration folder"):
+        qc_step_dir(variant, "motion_registration")
+
+
+def test_a_registration_folder_must_be_inside_the_variant(tmp_path):
+    variant = tmp_path / "run-02" / "with_destriping"
+    elsewhere = tmp_path / "run-03" / "with_destriping" / "aligned_structural" / "suite2p"
+    with pytest.raises(ValueError, match="inside"):
+        qc_step_dir(variant, "fluorescence", elsewhere)
+
+
+def test_a_registration_plot_is_saved_beside_its_registration(tmp_path):
+    variant = tmp_path / "with_destriping"
+    registration = variant / "aligned_functional" / "suite2p"
+    fig = plt.figure()
+    stem = save_qc_figure(fig, variant, "fluorescence", "f0_overview", "F0.\n",
+                          registration_dir=registration)  # fmt: skip
+    plt.close(fig)
+    assert stem == registration / QC_FOLDER / "fluorescence" / "f0_overview"
+    assert (stem.parent / "f0_overview.png").is_file()
 
 
 @pytest.mark.parametrize("drawn", ["figure", "axes", "axes array", "one-axes array"])
