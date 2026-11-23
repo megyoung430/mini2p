@@ -1,0 +1,177 @@
+# Descriptions of definitions that have no docstring: path::qualname<TAB>text.
+# Written from reading the code; a docstring, once written, takes precedence and
+# scripts/build_code_map.py lists lines that no longer match a definition.
+src/mini2p_preprocessing/alignment.py::check_shift_limit	Raises if the best mask shift (dy, dx) is larger than fluorescence.mask_max_shift_px in either direction.
+src/mini2p_preprocessing/alignment.py::_quadrants	The four quadrants of an image of the given shape, as (row slice, column slice) pairs.
+src/mini2p_preprocessing/alignment.py::_pearson	Pearson correlation of two images over the pixels where the second is finite; NaN if too few pixels or either is constant.
+src/mini2p_preprocessing/alignment.py::_detail	The image minus its Gaussian-blurred background (sigma background_sigma_px), leaving cell-scale detail for matching.
+src/mini2p_preprocessing/background.py::Regression	Result of regressing a background trace out of each ROI: the cleaned traces (each row's mean kept) and one coefficient per ROI.
+src/mini2p_preprocessing/background.py::DffVersions	The ΔF/F0 versions of one plane: neuropil correction only, with the vessel background regressed out first, and also with each ROI's red trace regressed out (None when red is not usable), with the coefficients used.
+src/mini2p_preprocessing/background.py::centred_regressor	Checks a regressor has the traces' frame count and finite values, and returns it minus its mean over frames.
+src/mini2p_preprocessing/background.py::_check_traces	Raises unless traces are a finite (n_rois, n_frames) array.
+src/mini2p_preprocessing/background_io.py::background_tiff	File name of the background-removed movie for one background source.
+src/mini2p_preprocessing/background_io.py::background_record	File name of the JSON record that goes with the background-removed movie of one source.
+src/mini2p_preprocessing/background_io.py::BackgroundTraces	Mean green and red background fluorescence per frame for one source, with the background mask, its alignment onto this plane and the cache key they depend on.
+src/mini2p_preprocessing/background_io.py::mask_sha256	SHA-256 of a boolean mask (bit-packed), so a cache knows when the mask changed.
+src/mini2p_preprocessing/batch.py::BatchSettings	The [batch] settings, validated: among them the raw and derivatives subject folders, the session range, the substring that picks source TIFFs, destriping, error handling, reruns, and the Cellpose masks and image for the post-batch extraction.
+src/mini2p_preprocessing/batch.py::load_batch_settings	Reads and validates the [batch] table of a TOML file.
+src/mini2p_preprocessing/batch.py::PlannedRun	One row of the batch plan: session, source TIFF, run name and folder, the source's identity, and the action (run, skip or conflict) with its reason.
+src/mini2p_preprocessing/batch.py::_newest_snapshot	The latest batch_config_*.toml snapshot in the derivatives folder; raises if the batch was never launched.
+src/mini2p_preprocessing/batch.py::source_identity	A raw TIFF's resolved path, size and modification time, used to tell whether a run's source changed.
+src/mini2p_preprocessing/batch.py::find_sessions	The (number, folder) of every ses-<n>_ folder in the session range; raises if any session in the range is missing.
+src/mini2p_preprocessing/batch.py::format_plan	The batch plan as a text table, one line per run, with a count of each action.
+src/mini2p_preprocessing/batch.py::_now	The current UTC time as an ISO string.
+src/mini2p_preprocessing/batch.py::worker_command	The command line that runs mini2p-preprocess on one planned run in a fresh Python process.
+src/mini2p_preprocessing/behavior_video.py::BehaviorSync	The pyControl time of each imaging frame and of each behavior-video frame, and the video file.
+src/mini2p_preprocessing/behavior_video.py::_load_times	Loads the named arrays from a timing .npz; raises if the file or a key is missing, saying which script writes it.
+src/mini2p_preprocessing/behavior_video.py::VideoFrames.__init__	Opens the video with ffmpeg as 8-bit gray frames, every decoded frame once, so frame k is row k of the camera's timing table.
+src/mini2p_preprocessing/behavior_video.py::VideoFrames.frame	Frame *index* of the video, reading forward only; raises for an earlier frame or one past the end.
+src/mini2p_preprocessing/behavior_video.py::VideoFrames.close	Closes the ffmpeg reader.
+src/mini2p_preprocessing/behavior_video.py::VideoFrames.__enter__	Returns the reader, for use in a with block.
+src/mini2p_preprocessing/behavior_video.py::VideoFrames.__exit__	Closes the reader at the end of a with block.
+src/mini2p_preprocessing/bidiphase.py::PhaseEstimate	One chunk's bidirectional phase estimate: the phase (px), its score, the margin over the next-best phase, whether it hit the search boundary, and the scores of every candidate.
+src/mini2p_preprocessing/bidiphase.py::AlignmentChoice.phase_px	The chosen phase in pixels.
+src/mini2p_preprocessing/bidiphase.py::AlignmentChoice.selected_channel_zero_based	The channel the phase was estimated on, counted from 0.
+src/mini2p_preprocessing/bidiphase.py::AlignmentChoice.score_by_source	The peak score of each channel's estimate, by role.
+src/mini2p_preprocessing/bidiphase.py::_score_shift	The adjacent-line similarity of the mean frame after correcting it by phase_px.
+src/mini2p_preprocessing/bidiphase.py::_estimate_suite2p	Suite2p's own bidiphase estimate for a chunk, scored the same way as the wide search; flagged at the boundary when it reaches Suite2p's search limit.
+src/mini2p_preprocessing/bidiphase.py::_estimate_wide	Scores every phase from -max_shift_px to +max_shift_px on the chunk's mean frame and keeps the best, with its margin over the second best.
+src/mini2p_preprocessing/bidiphase.py::_choose_source	Which channel's estimate to use: the configured one, or under best_score the structural channel unless green scores higher by more than score_switch_margin.
+src/mini2p_preprocessing/cell_snr.py::frames_per_bin	Frames in each bin of about 0.5 s at this frame rate (at least 1).
+src/mini2p_preprocessing/cellpose_batch.py::summary_row	A summary row for one run of the Cellpose batch, every field present (None until filled).
+src/mini2p_preprocessing/cellpose_batch.py::row_from_record	A summary row filled from a plane's extraction record: mask alignment fields, status and ROI count.
+src/mini2p_preprocessing/cellpose_batch.py::source_mismatch	A warning when the masks were drawn on a registration of a different TIFF from this plane's, else None.
+src/mini2p_preprocessing/cellpose_batch.py::_read_record	The plane's cellpose_extraction.json, or None if there is none.
+src/mini2p_preprocessing/cellpose_batch.py::write_extraction_summary	Writes the batch's rows and a count per status to a JSON file and returns its path.
+src/mini2p_preprocessing/cellpose_batch.py::format_summary	The batch summary as a text table: session, run, status, ROIs, mask shift, correlation after alignment, source check.
+src/mini2p_preprocessing/cellpose_batch.py::draw_review_page	One review-PDF page for a run: the masks on the plane after alignment beside the masks as drawn, or whatever images exist.
+src/mini2p_preprocessing/cli.py::parse_args	Command-line options of mini2p-preprocess: config, raw TIFF, output folder and overrides.
+src/mini2p_preprocessing/cli.py::main	mini2p-preprocess: loads the config, applies a --destripe override, and runs the pipeline on one raw TIFF.
+src/mini2p_preprocessing/cli.py::extract_main	mini2p-extract: extracts traces from Cellpose masks into a Suite2p plane folder, aligning the masks first when they were drawn on another registration's image.
+src/mini2p_preprocessing/config.py::_Frozen	Base for every settings model: immutable, and unknown keys are an error.
+src/mini2p_preprocessing/config.py::ChannelSettings._channels_exist	Validator: the structural and functional channel numbers must not exceed n_channels.
+src/mini2p_preprocessing/config.py::ChannelSettings.channel_by_role	The one-based channel number of each role (functional, structural).
+src/mini2p_preprocessing/config.py::ChannelSettings.names	Display name of each channel number, e.g. "Channel 1 — red / structural".
+src/mini2p_preprocessing/config.py::PhaseSettings._per_frame_settings_make_sense	Validator: the per-frame phase windows must be odd (centred on the frame), and manual per-chunk phases need the chunked method.
+src/mini2p_preprocessing/config.py::DestripeSettings	[destripe]: whether to remove stripes, and whether to keep each frame's mean brightness.
+src/mini2p_preprocessing/config.py::DistortionSettings	[distortion]: the mode (local_batched, cluster_full or off; required), the calibration .mat, depth, interpolation order, border crop and batch size.
+src/mini2p_preprocessing/config.py::DistortionSettings._ignore_script_folder	Validator: drops the obsolete calibration_script_dir key, warning when a config sets it.
+src/mini2p_preprocessing/config.py::DistortionSettings._local_mode_needs_transform	Validator: local_batched mode needs a transform_mat.
+src/mini2p_preprocessing/config.py::RegistrationSettings	[registration]: among them frame rate, cell diameter, nonrigid, norm_frames, smooth_sigma, reference frames, bad-frame threshold, which channel motion is estimated on, the save_folder and an optional local fast_disk.
+src/mini2p_preprocessing/config.py::RegistrationSettings._plain_folder_name	Validator: save_folder must name a folder inside the output folder, not "." or "..".
+src/mini2p_preprocessing/config.py::FocusSettings._odd_window	Validator: the focus window must be odd so it is centred on each frame.
+src/mini2p_preprocessing/config.py::PipelineSettings	The whole pipeline config: the channels, phase, destripe, distortion, registration, fluorescence and focus sections, plus top-level settings such as overwrite, max_timepoints (test runs) and the dtype of TIFFs written for Suite2p.
+src/mini2p_preprocessing/config.py::PipelineSettings._auto_alignment_needs_per_frame_phase	Validator: motion_alignment_source = "auto" needs the per-frame phase method, which it reads.
+src/mini2p_preprocessing/config.py::PipelineSettings.dtype	The numpy dtype of the TIFFs written for Suite2p.
+src/mini2p_preprocessing/config.py::PipelineSettings.correction_suffix	The file-name suffix of the phase-corrected TIFF: dynamic_bidiphase, plus _destriped when destriping.
+src/mini2p_preprocessing/config.py::with_destriping	A copy of the settings with destriping turned on or off.
+src/mini2p_preprocessing/config.py::plane_dir_of	The plane0 folder of a registration: <variant>/aligned_<channel>/<save_folder>/plane0.
+src/mini2p_preprocessing/config.py::run_name_from_output_dir	The run name (run-XX) of an output folder, whether it is the run folder or a variant inside it.
+src/mini2p_preprocessing/config.py::corrected_tiff_path	Path of the phase-corrected TIFF of a raw TIFF in an output folder.
+src/mini2p_preprocessing/config.py::undistorted_tiff_path	Path of the distortion-corrected TIFF of a raw TIFF in an output folder.
+src/mini2p_preprocessing/config.py::load_qc_run	Reads and validates the [qc] table that tells the QC notebook which run to look at.
+src/mini2p_preprocessing/contrast.py::red_green_overlay	An RGB image with the red display image in red and the green one in green.
+src/mini2p_preprocessing/correction.py::CorrectionSummary	What the bidiphase correction did: per-chunk records (chunked method), the global residual phase, per-frame phases (per-frame method) and how many values were clipped to the output dtype.
+src/mini2p_preprocessing/correction.py::CorrectionSummary.global_second_phase_px	The global residual phase applied after the first correction, or None.
+src/mini2p_preprocessing/correction.py::CorrectionSummary.global_second_phase_sample_count	How many samples the global residual phase was estimated from, or None.
+src/mini2p_preprocessing/correction.py::chunk_record	The JSON record of one chunk: its frames, first- and second-pass phases and the estimates behind them.
+src/mini2p_preprocessing/correction.py::_source_metadata	The part of the phase sidecar that says what was corrected: run, input and output TIFFs, channels.
+src/mini2p_preprocessing/distortion.py::distortion_metadata	The .distortion.json sidecar of a distortion-corrected TIFF: input, output, calibration, depth, interpolation, crop and shapes.
+src/mini2p_preprocessing/exports.py::Contrast	Display contrast of an exported mean image: black and white percentiles and gamma.
+src/mini2p_preprocessing/exports.py::Contrast.label	The contrast as text, e.g. "black 5%, white 99.5%, gamma 1.2".
+src/mini2p_preprocessing/exports.py::ExportSettings	[exports]: subject folder, session range, expected run count, the variant to export, and the default contrast.
+src/mini2p_preprocessing/exports.py::ExportSettings.contrast	The default contrast as a Contrast.
+src/mini2p_preprocessing/exports.py::load_export_settings	Reads and validates the [exports] table of a TOML file.
+src/mini2p_preprocessing/exports.py::RunPlane	One run's plane folder, with its session and run numbers and names.
+src/mini2p_preprocessing/exports.py::require_run_count	Raises unless exactly the expected number of runs was found.
+src/mini2p_preprocessing/exports.py::load_means	The green and red mean images of a plane from its ops.npy; raises if missing or of different shapes.
+src/mini2p_preprocessing/exports.py::_save_unless_present	Saves a file unless it exists and overwrite is off; returns "saved" or "existing".
+src/mini2p_preprocessing/exports.py::_saved_contrast_record	The contrast choice saved for a plane by the QC notebook; raises if none was saved.
+src/mini2p_preprocessing/exports.py::runs_with_both_settings_files	The runs that have both a chosen and a fixed contrast settings file.
+src/mini2p_preprocessing/exports.py::_refuse_overwrite	Raises if the file exists and overwrite is off.
+src/mini2p_preprocessing/extraction.py::ExtractionResult	Traces extracted from masks: Suite2p stat, F and Fneu (and red F_chan2, Fneu_chan2), iscell and spks.
+src/mini2p_preprocessing/extraction.py::file_sha256	SHA-256 of a file's bytes, recorded so a later run knows which masks were used.
+src/mini2p_preprocessing/extraction.py::_check_plane	Raises if the masks' shape differs from the registered movie or ops' frame rate differs from the config.
+src/mini2p_preprocessing/extraction.py::write_extraction	Writes the extraction into the plane folder in Suite2p's file names, with cellpose_extraction.json recording the masks, settings and alignment.
+src/mini2p_preprocessing/extraction_comparison.py::_check_finite	Raises if an array has values that are not finite.
+src/mini2p_preprocessing/extraction_comparison.py::_robust_sd	Robust standard deviation: 1.4826 × the median absolute deviation from the median.
+src/mini2p_preprocessing/extraction_comparison.py::_skew	Skewness of each ROI's ΔF/F0 (NaN for a constant trace).
+src/mini2p_preprocessing/extraction_comparison.py::_mean_pairwise_r	Mean correlation between pairs of ROIs' traces, on at most PAIRWISE_MAX_ROIS evenly spaced ROIs.
+src/mini2p_preprocessing/fluorescence.py::neuropil_correct	F minus coefficient × Fneu, after checking the two match in shape and are finite.
+src/mini2p_preprocessing/fluorescence.py::dff_from_corrected	ΔF/F0 of corrected traces: the baseline F0, ΔF = F − F0, and ΔF/F0 set to NaN wherever F0 is at or below min_f0.
+src/mini2p_preprocessing/fluorescence.py::_check_finite	Raises if any trace has NaN or inf (one bad frame would spread across a whole baseline window).
+src/mini2p_preprocessing/fluorescence.py::_check_same_shape	Raises if two trace arrays differ in shape.
+src/mini2p_preprocessing/focus.py::FocusQC	Per-frame focus QC: each frame's correlation with the mean image, its running baseline, the drop below it in robust SDs, relative brightness, and the frames flagged.
+src/mini2p_preprocessing/frame_order.py::WindowMatch	For each window of a checked stage: where in the acquired signature it matches best, the correlations there and at its own position, and its status (in place, moved, ambiguous, unclear).
+src/mini2p_preprocessing/frame_order.py::OrderReport	The frame-order check of one stage and channel: window matches, mismatched stretches, correlations with the acquired same and other channel, and frame counts.
+src/mini2p_preprocessing/frame_order.py::OrderReport.count	How many windows have the given status.
+src/mini2p_preprocessing/frame_order.py::OrderReport.channels_swapped	True when the stage matches the acquired other channel better than its own.
+src/mini2p_preprocessing/frame_order.py::OrderReport.wrong_length	True when the stage's file holds a different number of frames from the run.
+src/mini2p_preprocessing/frame_order.py::OrderReport.passed	True when no window moved or is unclear, nothing mismatched, channels are not swapped and the length is right.
+src/mini2p_preprocessing/frame_order.py::OrderReport.summary	One line saying whether the stage passed and how many windows are in place, moved, ambiguous or unclear.
+src/mini2p_preprocessing/frame_order.py::_r	Pearson correlation of two signatures over their common length.
+src/mini2p_preprocessing/frame_phase.py::FramePhases.has_structural	True when per-frame phases were measured on the structural channel too.
+src/mini2p_preprocessing/movies.py::MovieSettings._expand_home	Validator: expands ~ in a folder setting and refuses an empty one.
+src/mini2p_preprocessing/movies.py::MovieSettings._consistent	Validator: either run_dir, or all of cohort, subject, session, run and derivatives_root, must be set (run_dir wins, with a warning).
+src/mini2p_preprocessing/movies.py::MovieSettings.stages	The processing stages chosen for movies, in pipeline order.
+src/mini2p_preprocessing/movies.py::MovieSettings.versions	The movie versions chosen: unaveraged, averaged or both.
+src/mini2p_preprocessing/movies.py::_one	The single folder found; raises listing what is there when none or several match.
+src/mini2p_preprocessing/movies.py::registered_plane	The plane0 of a variant's registration (alignment channel, save_folder); raises saying whether Suite2p has not finished or never ran.
+src/mini2p_preprocessing/movies.py::channels_shown	The channels a movie shows: green and red for side_by_side, else the one chosen.
+src/mini2p_preprocessing/movies.py::Frames.read	Frames start to stop of a movie source, as float32 (the interface every source implements).
+src/mini2p_preprocessing/movies.py::BinaryFrames.__init__	Memory-maps a Suite2p int16 binary; raises if its size does not match the frame count and shape.
+src/mini2p_preprocessing/movies.py::BinaryFrames.read	Frames start to stop of the binary, as float32.
+src/mini2p_preprocessing/movies.py::TiffFrames.__init__	A source reading one channel of an interleaved TIFF.
+src/mini2p_preprocessing/movies.py::TiffFrames.read	Frames start to stop of the TIFF's channel, as float32; raises if the TIFF is shorter.
+src/mini2p_preprocessing/movies.py::CroppedFrames.__init__	A source showing only the given rows and columns of another.
+src/mini2p_preprocessing/movies.py::CroppedFrames.read	Frames start to stop of the underlying source, cropped.
+src/mini2p_preprocessing/movies.py::_windows	The averaged, spatially smoothed movie frames of each window, read in one go.
+src/mini2p_preprocessing/movies.py::_encoded_frames	How many frames an encoded movie file holds, by ffmpeg's count.
+src/mini2p_preprocessing/movies.py::MovieJob	One movie to write: its plan, frame sources per channel, frame span, title, frame rate and optional behavior video.
+src/mini2p_preprocessing/movies.py::_write_job	Renders and encodes one movie job to an MP4 in the output folder, logging when whole averaging windows shorten the requested span.
+src/mini2p_preprocessing/natex.py::CellResult	NATEX results for one ROI: baseline, ΔF/F0, low-passed ΔF/F0 and which frames are in significant transients.
+src/mini2p_preprocessing/natex.py::PlaneResult	NATEX results for every ROI of a plane: baselines, ΔF/F0, significant frames, cleaned events, SNR, fraction of undefined frames and event counts.
+src/mini2p_preprocessing/natex.py::_sha256	SHA-256 of a file's bytes.
+src/mini2p_preprocessing/photon_free.py::_readings	Detector readings as a flat float array; raises if empty or not finite.
+src/mini2p_preprocessing/photon_free.py::_refine	Refines the photon-free level and its spread a few times from the readings near it.
+src/mini2p_preprocessing/photon_free.py::_fraction_far_below	Fraction of readings far below the level (more than FAR_BELOW_SDS spreads).
+src/mini2p_preprocessing/photon_free.py::_check_photon_free	Raises when too few readings sit near the level, or too many far below it, for it to be a photon-free level.
+src/mini2p_preprocessing/photon_free_io.py::PhotonFreeLevels	Photon-free level per frame of each channel, the raw-frame pixels each was measured on, and the cache key.
+src/mini2p_preprocessing/photon_free_io.py::levels_key	What a run's photon-free levels depend on (TIFF identity, frame count, channels, settings), as the cache key.
+src/mini2p_preprocessing/photon_free_io.py::_measure	Measures the photon-free level of every frame of each channel from the raw TIFF; raises if its timepoints do not match the registered frames.
+src/mini2p_preprocessing/photon_free_io.py::_check_frames	Raises unless the levels cover exactly the traces' frames.
+src/mini2p_preprocessing/pipeline.py::PipelineResult	What one pipeline run produced: the corrected TIFF, the TIFF given to Suite2p, the plane folder and the correction summary.
+src/mini2p_preprocessing/pipeline.py::_log_stage	Logs how long a pipeline stage took and returns the time now, for timing the next stage.
+src/mini2p_preprocessing/pipeline.py::run_pipeline	One raw TIFF end to end: bidiphase correction (and destriping) with its frame-phase plot, the settings record, distortion correction (local_batched; cluster_full expects it done), and Suite2p registration, logging how long each stage took.
+src/mini2p_preprocessing/plane.py::PlaneTraces	A plane's extracted traces and what goes with them: F, Fneu, red F_chan2 and Fneu_chan2, iscell, stat, ops and a label image of the ROIs.
+src/mini2p_preprocessing/plane.py::PlaneTraces.fs	The plane's frame rate from ops.
+src/mini2p_preprocessing/plane.py::_load_optional	Loads a .npy file if it exists, else None.
+src/mini2p_preprocessing/plane.py::load_plane_traces	Loads a plane folder's traces, ROIs and ops; raises if nothing has been extracted yet.
+src/mini2p_preprocessing/plots.py::_axes_grid	The given axes reshaped to rows × columns, or a new figure's axes when none are given.
+src/mini2p_preprocessing/plots.py::plot_score_curve	The wide bidiphase search's score at every candidate phase, with the chosen phase marked.
+src/mini2p_preprocessing/plots.py::_check_columns	Raises when the image columns of a comparison figure do not line up with their titles, channels, display-range columns or zoom box.
+src/mini2p_preprocessing/plots.py::plot_nonrigid_offsets	The median nonrigid block offsets (x and y) over the recording, in minutes.
+src/mini2p_preprocessing/plots.py::_method_colors	One Okabe–Ito color per method; raises if there are more methods than colors.
+src/mini2p_preprocessing/progress.py::format_duration	A duration as short text: "1h05m", "3m20s" or "45s".
+src/mini2p_preprocessing/progress.py::ProgressLog.__init__	A progress reporter for *total* items that reports through *report*, at most every min_interval_s (clocks injectable for tests).
+src/mini2p_preprocessing/qc.py::load_chunk	Every channel of timepoints start to end of a TIFF; raises if start is outside the recording, and an end past it is clipped to the last timepoint.
+src/mini2p_preprocessing/qc.py::FramePhasePreview	Per-frame line-similarity curves of a stretch of frames and the phases chosen from them, for previewing the per-frame bidiphase step.
+src/mini2p_preprocessing/qc.py::lowest_score_chunk	The chunk whose phase estimate scored lowest (the least certain one); raises if no score is finite.
+src/mini2p_preprocessing/qc.py::mean_images	The mean image of each stack.
+src/mini2p_preprocessing/qc.py::_offsets	A registration offset array from ops, checked for its dimensions, frame count and finite values.
+src/mini2p_preprocessing/raw_previews.py::RawTiff	A raw TIFF to preview: its session, path and start time, and where the time came from (ScanImage epoch or file modification time).
+src/mini2p_preprocessing/registration.py::with_motion_source	A copy of the settings with the motion alignment channel set.
+src/mini2p_preprocessing/registration.py::resolved_channel	The channel motion is estimated on; raises if "auto" has not been resolved yet.
+src/mini2p_preprocessing/registration.py::build_suite2p_db	Suite2p's db for one registration: the input TIFF alone (an explicit file list), the save path and save_folder, and the fast_disk: the configured one, or for a save_folder other than suite2p a folder inside it, so its binaries are its own.
+src/mini2p_preprocessing/registration.py::MotionChoice	Which channel motion was estimated on and why; for "auto", the fraction of frames whose phase trusted the structural channel and the threshold.
+src/mini2p_preprocessing/registration.py::input_identity	The Suite2p input TIFF's path, size and modification time, recorded with a registration.
+src/mini2p_preprocessing/registration.py::binary_identity	A binary's path, size and modification time, recorded so the binary can later be shown to be this registration's.
+src/mini2p_preprocessing/registration.py::alignment_record	The motion_alignment.json record: the channel, why, the auto fraction and threshold, and the input identity.
+src/mini2p_preprocessing/registration.py::RegisteredOutputs	A registration's ops and its registered green (data.bin) and red (data_chan2.bin) movies, memory-mapped.
+src/mini2p_preprocessing/registration.py::load_registered_outputs	Loads a plane's ops and memory-maps its registered binaries, checking each binary belongs to this registration.
+src/mini2p_preprocessing/registration_comparison.py::load_ops	Loads a plane folder's ops.npy.
+src/mini2p_preprocessing/registration_comparison.py::write_table	Writes the comparison rows to a CSV, one column per measure.
+src/mini2p_preprocessing/registration_comparison.py::output_stems	The file stems of the comparison table and image figure, in <aligned folder>/registration_comparison/.
+src/mini2p_preprocessing/registration_comparison.py::caption_details	The values the figure captions are filled with: recording, crop, frames, blocks, patch size, cell settings.
+src/mini2p_preprocessing/tiff_io.py::_listed	Numbers sorted with None last, for error messages.
+src/mini2p_preprocessing/tiff_io.py::n_written_values	How many values a TIFF of these timepoints, channels and frame shape holds.

@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 712" role="img" aria-label="One run goes from the raw TIFF through phase, distortion and registration to masks, traces, ΔF/F0 and QC">
+<style>
+.cm-t{font-family:var(--f-body,system-ui,sans-serif);fill:var(--ink,#1b2126)}
+.cm-m{font-family:var(--f-mono,ui-monospace,monospace);fill:var(--ink,#1b2126)}
+.cm-q{fill:var(--muted,#5d6872)}
+.cm-b{font-weight:600}
+.cm-box{fill:var(--panel,#fff);stroke:var(--muted,#5d6872);stroke-width:1.2}
+.cm-man{stroke-dasharray:5 4}
+.cm-out{fill:var(--accent-soft,#e3f0f8);stroke:var(--accent,#0072B2);stroke-width:1}
+.cm-ln{fill:none;stroke:var(--muted,#5d6872);stroke-width:1.2}
+.cm-tree{fill:none;stroke:var(--line,#dde2e6);stroke-width:1.4}
+.cm-arrow{fill:var(--muted,#5d6872)}
+.cm-hl{fill:var(--accent,#0072B2)}
+</style>
+<defs><marker id="cm-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="cm-arrow"/></marker></defs>
+<text x="16" y="24" class="cm-t cm-b" font-size="15" text-anchor="start">One run: raw two-channel ScanImage TIFF → registered plane → traces → ΔF/F0 and QC</text>
+<text x="16" y="52" class="cm-t cm-q" font-size="11.5" text-anchor="start">Step, modules and how it is run</text>
+<text x="516" y="52" class="cm-t cm-q" font-size="11.5" text-anchor="start">What it writes</text>
+<rect x="16" y="74" width="440" height="70" rx="8" class="cm-box"/>
+<text x="30" y="96" class="cm-t cm-b" font-size="13.5" text-anchor="start">1. Bidiphase correction, destriping</text>
+<text x="30" y="115" class="cm-m cm-q" font-size="11.5" text-anchor="start">correction · frame_phase · bidiphase · destripe</text>
+<text x="30" y="133" class="cm-t cm-q" font-size="11.5" text-anchor="start">mini2p-preprocess (one TIFF) or a batch worker</text>
+<rect x="516" y="74" width="448" height="70" rx="8" class="cm-out"/>
+<text x="530" y="102" class="cm-m" font-size="12" text-anchor="start">&lt;stem&gt;_dynamic_bidiphase[_destriped].tif</text>
+<text x="530" y="123" class="cm-t cm-q" font-size="11.5" text-anchor="start">.phase.json · .phase_frames.npz · pipeline_settings.json</text>
+<path d="M456 109.0H514" class="cm-ln" marker-end="url(#cm-arr)"/>
+<path d="M236.0 144V164" class="cm-ln" marker-end="url(#cm-arr)"/>
+<rect x="16" y="166" width="440" height="70" rx="8" class="cm-box"/>
+<text x="30" y="188" class="cm-t cm-b" font-size="13.5" text-anchor="start">2. Distortion correction</text>
+<text x="30" y="207" class="cm-m cm-q" font-size="11.5" text-anchor="start">distortion · calibration</text>
+<text x="30" y="225" class="cm-t cm-q" font-size="11.5" text-anchor="start">mini2p-preprocess (skipped when mode = off)</text>
+<rect x="516" y="166" width="448" height="70" rx="8" class="cm-out"/>
+<text x="530" y="194" class="cm-m" font-size="12" text-anchor="start">&lt;stem&gt;_…_undistorted.tif</text>
+<text x="530" y="215" class="cm-t cm-q" font-size="11.5" text-anchor="start">.distortion.json (warp and crop of the fixed calibration)</text>
+<path d="M456 201.0H514" class="cm-ln" marker-end="url(#cm-arr)"/>
+<path d="M236.0 236V256" class="cm-ln" marker-end="url(#cm-arr)"/>
+<rect x="16" y="258" width="440" height="70" rx="8" class="cm-box"/>
+<text x="30" y="280" class="cm-t cm-b" font-size="13.5" text-anchor="start">3. Suite2p registration</text>
+<text x="30" y="299" class="cm-m cm-q" font-size="11.5" text-anchor="start">registration</text>
+<text x="30" y="317" class="cm-t cm-q" font-size="11.5" text-anchor="start">mini2p-preprocess</text>
+<rect x="516" y="258" width="448" height="70" rx="8" class="cm-out"/>
+<text x="530" y="286" class="cm-m" font-size="12" text-anchor="start">aligned_&lt;channel&gt;/&lt;save_folder&gt;/</text>
+<text x="530" y="307" class="cm-t cm-q" font-size="11.5" text-anchor="start">plane0/ (ops.npy · data.bin · data_chan2.bin) · motion_alignment.json</text>
+<path d="M456 293.0H514" class="cm-ln" marker-end="url(#cm-arr)"/>
+<path d="M236.0 328V348" class="cm-ln" marker-end="url(#cm-arr)"/>
+<rect x="16" y="350" width="440" height="70" rx="8" class="cm-box cm-man"/>
+<text x="30" y="372" class="cm-t cm-b" font-size="13.5" text-anchor="start">4. Cellpose segmentation, by hand</text>
+<text x="30" y="391" class="cm-m cm-q" font-size="11.5" text-anchor="start">outside the package</text>
+<text x="30" y="409" class="cm-t cm-q" font-size="11.5" text-anchor="start">on a mean image exported by exports or the QC notebook</text>
+<rect x="516" y="350" width="448" height="70" rx="8" class="cm-out"/>
+<text x="530" y="378" class="cm-m" font-size="12" text-anchor="start">*_seg.npy</text>
+<text x="530" y="399" class="cm-t cm-q" font-size="11.5" text-anchor="start">masks drawn on one registration&#x27;s mean image</text>
+<path d="M456 385.0H514" class="cm-ln" marker-end="url(#cm-arr)"/>
+<path d="M236.0 420V440" class="cm-ln" marker-end="url(#cm-arr)"/>
+<rect x="16" y="442" width="440" height="70" rx="8" class="cm-box"/>
+<text x="30" y="464" class="cm-t cm-b" font-size="13.5" text-anchor="start">5. Mask alignment and extraction</text>
+<text x="30" y="483" class="cm-m cm-q" font-size="11.5" text-anchor="start">alignment · extraction · rois · cellpose_batch</text>
+<text x="30" y="501" class="cm-t cm-q" font-size="11.5" text-anchor="start">mini2p-extract or batch_and_exports.ipynb</text>
+<rect x="516" y="442" width="448" height="70" rx="8" class="cm-out"/>
+<text x="530" y="470" class="cm-m" font-size="12" text-anchor="start">F, Fneu, F_chan2, Fneu_chan2, stat, iscell, spks</text>
+<text x="530" y="491" class="cm-t cm-q" font-size="11.5" text-anchor="start">cellpose_extraction.json (masks, alignment, settings)</text>
+<path d="M456 477.0H514" class="cm-ln" marker-end="url(#cm-arr)"/>
+<path d="M236.0 512V532" class="cm-ln" marker-end="url(#cm-arr)"/>
+<rect x="16" y="534" width="440" height="70" rx="8" class="cm-box"/>
+<text x="30" y="556" class="cm-t cm-b" font-size="13.5" text-anchor="start">6. ΔF/F0 and corrections</text>
+<text x="30" y="575" class="cm-m cm-q" font-size="11.5" text-anchor="start">fluorescence · background · photon_free · natex</text>
+<text x="30" y="593" class="cm-t cm-q" font-size="11.5" text-anchor="start">QC notebook · extraction_comparison.ipynb · mini2p-natex</text>
+<rect x="516" y="534" width="448" height="70" rx="8" class="cm-out"/>
+<text x="530" y="562" class="cm-m" font-size="12" text-anchor="start">ΔF/F0 versions · photon_free_levels.npz</text>
+<text x="530" y="583" class="cm-t cm-q" font-size="11.5" text-anchor="start">natex/ results and QC PDF</text>
+<path d="M456 569.0H514" class="cm-ln" marker-end="url(#cm-arr)"/>
+<path d="M236.0 604V624" class="cm-ln" marker-end="url(#cm-arr)"/>
+<rect x="16" y="626" width="440" height="70" rx="8" class="cm-box"/>
+<text x="30" y="648" class="cm-t cm-b" font-size="13.5" text-anchor="start">7. QC, comparisons, exports, movies</text>
+<text x="30" y="667" class="cm-m cm-q" font-size="11.5" text-anchor="start">qc · focus · frame_order · plots · exports · movies</text>
+<text x="30" y="685" class="cm-t cm-q" font-size="11.5" text-anchor="start">QC notebook · mini2p-movie · mini2p-compare-registrations</text>
+<rect x="516" y="626" width="448" height="70" rx="8" class="cm-out"/>
+<text x="530" y="654" class="cm-m" font-size="12" text-anchor="start">quality_control/&lt;step&gt;/ figures · meanImg_* PNG/TIFF</text>
+<text x="530" y="675" class="cm-t cm-q" font-size="11.5" text-anchor="start">review PDFs · movies/ MP4s · registration_comparison/</text>
+<path d="M456 661.0H514" class="cm-ln" marker-end="url(#cm-arr)"/>
+</svg>

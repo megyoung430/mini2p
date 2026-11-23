@@ -1,0 +1,178 @@
+# Hand-written text for the code map (scripts/build_code_map.py). HTML is allowed in values.
+# [[topic]]s are the overview sections at the top of the page, in this order; "svg" names a
+# schematic in schematics/. [[group]]s list the package's files under named sections, in this
+# order, before the folders; [package] summarizes folders, in this order; [module] overrides a file's docstring summary.
+
+intro = "mini2p (package <code>mini2p_preprocessing</code>) turns a raw two-channel Mini2P ScanImage TIFF into registered movies, Cellpose-mask traces and ΔF/F0, with QC at every step. It corrects the odd/even scan-line phase (and optionally stripes), corrects the lens distortion with the scope's fixed calibration, registers with Suite2p, moves hand-drawn Cellpose masks onto each registration, extracts traces for both channels and computes ΔF/F0, with several background and red-channel corrections to compare. Commands run one recording or a whole batch of sessions; notebooks drive the QC of one run and the post-batch steps. The layout follows the Good Research Code Handbook: an importable package in <code>src/</code>, notebooks and commands that call it, tests in <code>tests/</code>."
+
+[[topic]]
+title = "Processing one run"
+svg = "schematics/processing_flow.svg"
+caption = "Solid boxes run in the package; the dashed one is done by hand. Steps 1 to 3 are one <code>mini2p-preprocess</code> call (or one batch worker); steps 5 to 7 run from the notebooks or the other commands."
+text = """
+<p>A <b>run</b> is one raw TIFF, interleaving the red (structural) and green (functional, calcium) channels frame by frame. Each step reads the previous step's file and writes its own beside it, with a JSON sidecar saying what it did, so any step can be checked or rerun on its own.</p>
+<ol>
+<li><b>Scan phase</b> (<code>correction</code>, <code>frame_phase</code>, <code>bidiphase</code>): a resonant scanner writes odd and even lines in opposite directions, and their horizontal offset drifts. Each frame's offset is measured (red where it has texture, green summed over a longer window where it does not) and undone; <code>phase.method = "chunked"</code> uses one phase per chunk instead. Optional destriping (<code>destripe</code>) runs in the same pass.</li>
+<li><b>Distortion</b> (<code>distortion</code>, <code>calibration</code>): every frame is warped with the scope's fixed calibration and cropped to the area every output pixel samples inside the raw frame.</li>
+<li><b>Registration</b> (<code>registration</code>): Suite2p motion correction, with motion estimated on the red or green channel (<code>"auto"</code> chooses per run from how often the phase step trusted red). Each <code>[registration] save_folder</code> is a registration of its own.</li>
+<li><b>Segmentation</b>: by hand in Cellpose, on a registered mean image exported by <code>exports</code> or the QC notebook.</li>
+<li><b>Extraction</b> (<code>alignment</code>, <code>extraction</code>): the masks are shifted onto the plane when they were drawn on another registration's image, then F and Fneu are extracted for both channels, replacing Suite2p's trace files.</li>
+<li><b>ΔF/F0</b> (<code>fluorescence</code>, <code>background</code>, <code>photon_free</code>, <code>natex</code>): neuropil correction, F0 and ΔF/F0, with the drifting photon-free level removed frame by frame (on by default), optional background or red-channel regression, and the NATEX port.</li>
+<li><b>QC</b> (<code>qc</code>, <code>focus</code>, <code>frame_order</code>, <code>plots</code>, <code>exports</code>, <code>movies</code>, <code>registration_comparison</code>): figures saved under <code>quality_control/</code>, mean-image exports and review PDFs, stage movies, and side-by-side comparison of registration settings.</li>
+</ol>
+"""
+
+[[topic]]
+title = "Where outputs go"
+svg = "schematics/folder_layout.svg"
+caption = "The derivatives tree mirrors the raw one (NeuroBlueprint, with a cohort level). Names in bold are folders you choose between: the run, the variant, the alignment channel and the save_folder."
+text = """
+<p>A run's outputs live in a <b>variant</b> folder named for the corrections applied, <code>run-XX/&lt;with|without&gt;_distortion_correction/&lt;with|without&gt;_destriping/</code>, so the same TIFF can be processed several ways side by side (with <code>overwrite = false</code>, a stage whose output exists stops with an error rather than replace it). Inside it, <code>aligned_&lt;channel&gt;/&lt;save_folder&gt;/</code> is one registration: its <code>plane0/</code> (Suite2p's results and binaries, the extracted traces, the mean-image exports), its <code>motion_alignment.json</code>, and the QC plots and movies made from it. So a registration sweep (nonrigid or not, <code>smooth_sigma</code>, <code>norm_frames</code>) keeps each registration's files apart, and <code>mini2p-compare-registrations</code> measures them side by side. <code>run-XX/suite2p/</code>, outside any variant, is the registration the Cellpose masks were drawn on; the batch never changes it, and only checks that it came from the same TIFF as the run.</p>
+"""
+
+[[topic]]
+title = "Commands"
+text = """
+<div class="tbl"><table>
+<tr><th>Command</th><th>Function</th><th>What it does</th></tr>
+<tr><td><code>mini2p-preprocess</code></td><td><code>cli.main</code></td><td>Steps 1 to 3 for one raw TIFF (<code>pipeline.run_pipeline</code>) into a variant folder.</td></tr>
+<tr><td><code>mini2p-extract</code></td><td><code>cli.extract_main</code></td><td>Step 5 for one plane folder: align the Cellpose masks if needed and extract traces.</td></tr>
+<tr><td><code>mini2p-movie</code></td><td><code>cli.movie_main</code></td><td>Movies of a run's stages, as set in <code>[movies]</code> (any setting can be overridden on the command line).</td></tr>
+<tr><td><code>mini2p-natex</code></td><td><code>cli.natex_main</code></td><td>NATEX's ΔF/F, transients, SNR and cleaned events on one or more plane folders.</td></tr>
+<tr><td><code>mini2p-raw-means</code></td><td><code>cli.raw_means_main</code></td><td>The mean of the first frames of every raw TIFF of a subject, before any processing, to see which recordings are worth processing.</td></tr>
+<tr><td><code>mini2p-compare-registrations</code></td><td><code>cli.compare_registrations_main</code></td><td>Every registration of one <code>aligned_&lt;channel&gt;/</code> folder measured the same way: alignment, signal quality and putative-cell SNR and transients, without segmentation.</td></tr>
+</table></div>
+<p>Settings come from one TOML file (<code>config/pipeline.toml</code>, copied from <code>config/pipeline.example.toml</code>; never committed). <code>docs/settings.md</code> says which code reads each section, what to rerun after changing a setting, and every setting's default and effect.</p>
+"""
+
+[[topic]]
+title = "Many runs: the batch"
+text = """
+<ol>
+<li><b>Plan</b> (<code>batch.plan_batch</code>): every raw TIFF in a range of sessions whose name contains <code>[batch] source_substring</code> gets a run, <code>run-01</code>, <code>run-02</code>, … in acquisition order. Each run's variant folder holds a <code>source_tiff.json</code> saying which TIFF it came from and whether it finished, so runs already done are skipped and a TIFF that would land on another's run is a conflict, never an overwrite.</li>
+<li><b>Run</b> (<code>batch.run_batch</code>): each pending TIFF goes through <code>mini2p-preprocess</code> in a fresh Python process; the launch's config is frozen as <code>batch_config_&lt;time&gt;.toml</code>.</li>
+<li><b>Export and review</b> (<code>exports</code>): fixed-contrast mean images of every run, and review PDFs to check them by eye.</li>
+<li><b>Segment</b> each run's mean image in Cellpose, by hand.</li>
+<li><b>Extract</b> (<code>cellpose_batch</code>): the masks into every run, with a summary table and a PDF of each run's mask alignment.</li>
+</ol>
+<p><code>batch_and_exports.ipynb</code> drives all of it; <code>post_batch_sessions.ipynb</code> does steps 3 and 5 for the runs a live batch has already finished.</p>
+"""
+
+[[section]]
+name = "src/mini2p_preprocessing/"
+text = "The package. Its files are listed below in five groups that follow the data through the pipeline. Computation (pure functions on arrays), file reading and writing, and plotting are kept in separate functions, and mostly in separate modules: plots draw into axes they are given."
+
+[[section]]
+name = "src/code_map/"
+text = "Builds this page from the code: definitions and docstrings read with <code>ast</code>, notebooks by their headings, joined with the hand-written text in <code>docs/code_map/</code>."
+
+[[section]]
+name = "notebooks/"
+text = "Four notebooks that call the package and draw figures; all processing lives in the package. <code>qc_single_run.ipynb</code> is the place to look at one run step by step."
+
+[[section]]
+name = "scripts/"
+text = "<code>build_code_map.py</code> writes this page (<code>uv run python scripts/build_code_map.py</code>, into <code>build/code_map/</code>)."
+
+[[section]]
+name = "tests/"
+text = "About 40 pytest files (around 660 test functions), one or more per module, all on small synthetic data built in the tests (<code>conftest.py</code>: interleaved TIFFs with a known phase error, textured images, soma fields, a fake distortion calibration). <code>tests/reference/</code> holds verbatim copies of the code this package replaced (the original notebook's functions, the distortion script, <code>plane_snr.py</code>), and tests check the package reproduces them."
+
+[[section]]
+name = "config/"
+text = "<code>pipeline.example.toml</code>, the template for your <code>pipeline.toml</code>: the pipeline sections <code>[channels]</code>, <code>[phase]</code>, <code>[destripe]</code>, <code>[distortion]</code>, <code>[registration]</code>, <code>[fluorescence]</code>, <code>[focus]</code>, and sections read by their own loaders: <code>[qc]</code>, <code>[batch]</code>, <code>[exports]</code>, <code>[movies]</code>, <code>[natex]</code>. Real configs are git-ignored."
+
+[[section]]
+name = "docs/"
+text = "<code>settings.md</code>, the settings reference; <code>code_map/</code>, the hand-written text of this page (<code>overviews.toml</code>, the schematics, <code>descriptions.tsv</code> for definitions without a docstring, <code>explanations.md</code> for the In plain words sections)."
+
+[[section]]
+name = "README.md"
+text = "Setup, running (variants, local Suite2p binaries, several registrations of one variant, comparing a sweep, reruns), movies, NATEX, QC notebook outputs, the steps from registration to ΔF/F0, frame order, output data type, scan-phase correction, how the package relates to the original notebook and scripts, and known issues."
+
+[[section]]
+name = "pyproject.toml / uv.lock"
+text = "Package <code>mini2p-preprocessing</code>, Python ≥ 3.11: numpy, scipy, tifffile, matplotlib, pydantic, suite2p ≥ 1.0, torch, imageio-ffmpeg, pillow, scikit-image; a <code>notebook</code> extra (ipywidgets, jupyterlab); a dev group (pytest, ruff). Declares the six commands. Install with <code>uv sync --extra notebook</code> wherever you use the notebooks: a plain <code>uv sync</code> removes the extra's packages, JupyterLab included."
+
+[[section]]
+name = ".github/workflows/"
+text = "<code>code-map.yml</code> rebuilds this page on every push to <code>main</code> and publishes it with GitHub Pages."
+
+[[group]]
+name = "1. Settings and commands"
+about = "The boundary: settings are validated once (pydantic) and passed explicitly; the commands and the one-recording pipeline sit on top."
+files = [
+  "src/mini2p_preprocessing/__init__.py",
+  "src/mini2p_preprocessing/config.py",
+  "src/mini2p_preprocessing/cli.py",
+  "src/mini2p_preprocessing/pipeline.py",
+  "src/mini2p_preprocessing/progress.py",
+]
+
+[[group]]
+name = "2. Preprocessing: phase, stripes, distortion, registration"
+about = "Steps 1 to 3. TIFFs are read and written a chunk at a time (<code>tiff_io</code>); the estimators are pure functions, and the correction modules stream the file through them."
+files = [
+  "src/mini2p_preprocessing/tiff_io.py",
+  "src/mini2p_preprocessing/bidiphase.py",
+  "src/mini2p_preprocessing/frame_phase.py",
+  "src/mini2p_preprocessing/correction.py",
+  "src/mini2p_preprocessing/destripe.py",
+  "src/mini2p_preprocessing/calibration.py",
+  "src/mini2p_preprocessing/distortion.py",
+  "src/mini2p_preprocessing/registration.py",
+]
+
+[[group]]
+name = "3. Masks, traces and ΔF/F0"
+about = "Steps 5 and 6: Cellpose masks onto a plane, traces for both channels, and the corrections before ΔF/F0. The computation modules (<code>background</code>, <code>photon_free</code>) have file-handling partners (<code>background_io</code>, <code>photon_free_io</code>)."
+files = [
+  "src/mini2p_preprocessing/rois.py",
+  "src/mini2p_preprocessing/alignment.py",
+  "src/mini2p_preprocessing/extraction.py",
+  "src/mini2p_preprocessing/plane.py",
+  "src/mini2p_preprocessing/fluorescence.py",
+  "src/mini2p_preprocessing/background.py",
+  "src/mini2p_preprocessing/background_io.py",
+  "src/mini2p_preprocessing/photon_free.py",
+  "src/mini2p_preprocessing/photon_free_io.py",
+  "src/mini2p_preprocessing/extraction_comparison.py",
+  "src/mini2p_preprocessing/natex.py",
+]
+
+[[group]]
+name = "4. QC, comparisons, exports and movies"
+about = "Step 7: the computations behind the QC notebook's figures, the figures themselves, where they are saved, mean-image exports, raw previews, comparing registrations, and movies of each stage (with the behavior video beside them)."
+files = [
+  "src/mini2p_preprocessing/qc.py",
+  "src/mini2p_preprocessing/focus.py",
+  "src/mini2p_preprocessing/frame_order.py",
+  "src/mini2p_preprocessing/contrast.py",
+  "src/mini2p_preprocessing/plots.py",
+  "src/mini2p_preprocessing/qc_figures.py",
+  "src/mini2p_preprocessing/exports.py",
+  "src/mini2p_preprocessing/raw_previews.py",
+  "src/mini2p_preprocessing/registration_comparison.py",
+  "src/mini2p_preprocessing/cell_snr.py",
+  "src/mini2p_preprocessing/movies.py",
+  "src/mini2p_preprocessing/behavior_video.py",
+]
+
+[[group]]
+name = "5. Many runs: batch and Cellpose batch"
+about = "Planning and running the pipeline over a range of sessions, and extracting the Cellpose masks into every run."
+files = [
+  "src/mini2p_preprocessing/batch.py",
+  "src/mini2p_preprocessing/cellpose_batch.py",
+]
+
+[package]
+"notebooks (top level)" = "Interactive work on top of the package: one run's QC, the batch with exports and extraction, the post-batch steps, and comparing ΔF/F0 corrections."
+"src/code_map" = "The code-map builder: reads definitions and docstrings with <code>ast</code> (<code>extract</code>, <code>docstrings</code>), joins them with the hand-written text (<code>assemble</code>, <code>explanations</code>) and renders one self-contained HTML page (<code>render</code>, <code>template.html</code>). Reading files is kept in <code>files</code>."
+"scripts (top level)" = "Command-line scripts that are not package commands."
+
+[notebook]
+"notebooks/qc_single_run.ipynb" = "One recording from <code>[qc]</code>, step by step: raw mean image, phase preview, the corrected TIFF, before/after images of each correction, distortion, Suite2p registration and its diagnostics, frames that still do not match, frame order, mean-image contrast, the fluorescence audit, and background and red-channel corrections. Every figure is saved under <code>quality_control/</code>."
+"notebooks/batch_and_exports.ipynb" = "Plan and launch the batch for a range of sessions, export fixed-contrast mean images and review PDFs, then extract the Cellpose masks into every run and review their alignment."
+"notebooks/post_batch_sessions.ipynb" = "Alongside a live batch: finds the runs it has finished and does only their exports, extraction and alignment review."
+"notebooks/extraction_comparison.ipynb" = "For the <code>[qc]</code> run: how far ROIs stand above their surroundings, the field-wide green and red fluctuation, each neuropil and background correction's F0, noise and skew, and the same ROIs under each correction."

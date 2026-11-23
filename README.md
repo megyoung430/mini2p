@@ -6,6 +6,9 @@ mean-image review exports.
 
 Every setting, its default, and what to rerun after changing it: [`docs/settings.md`](docs/settings.md).
 
+Every file and function, with the processing steps and the output folders drawn out:
+the [code map](https://megyoung430.github.io/mini2p/) (see [Code map](#code-map)).
+
 ## Setup
 
 ```bash
@@ -14,6 +17,10 @@ uv sync --extra notebook     # adds JupyterLab and ipywidgets for the QC noteboo
 cp config/pipeline.example.toml config/pipeline.toml   # git-ignored; fill in your paths
 uv run pytest                # synthetic-data tests, no lab data needed
 ```
+
+Wherever you use the notebooks, update with `uv sync --extra notebook` every time: a plain
+`uv sync` removes the extra's packages, JupyterLab included (a running JupyterLab then cannot
+start kernels).
 
 `config/pipeline.toml` holds every setting and machine path. The notebooks, the
 CLI and the batch workers all read it, so they cannot drift apart.
@@ -720,6 +727,20 @@ cell did the same. QC and batch runs now share the variant subfolder names, so a
 run inside the derivatives tree would be taken as that run's batch output. Point
 `[qc] run_dir` somewhere outside `derivatives_subject_dir`, and don't run the CLI by
 hand inside it.
+
+## Code map
+
+A searchable page of every file and function (inputs, outputs, what it does), with the
+processing steps, the output folders, the commands and the batch drawn out at the top. Build
+it with `uv run python scripts/build_code_map.py`, into `build/code_map/` (git-ignored).
+Descriptions come from docstrings; the definitions without one, the overview text and
+schematics, and the module groups live in `docs/code_map/` (`descriptions.tsv`,
+`overviews.toml`, `schematics/`). `docs/code_map/explanations.md` adds "In plain words"
+sections for readers new to the methods. The script lists anything undescribed, and files a
+group names that no longer exist (`--strict` makes an undescribed definition an error). On
+every push to `main`, `.github/workflows/code-map.yml` rebuilds the page and publishes it at
+<https://megyoung430.github.io/mini2p/> (GitHub Pages must be on, with GitHub Actions as its
+source: repository Settings → Pages).
 
 ## Known issues, deliberately left for the follow-up fix step
 
