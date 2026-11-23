@@ -333,3 +333,13 @@ def test_the_record_gives_the_binaries_suite2p_wrote(tmp_path, monkeypatch):
     binary = plane.parent / "suite2p" / "plane0" / "data.bin"
     assert record["binaries"]["reg_file"]["path"] == str(binary)
     assert record["binaries"]["reg_file"]["size_bytes"] == binary.stat().st_size
+
+
+def test_registering_again_removes_the_registrations_movies(tmp_path, suite2p_calls):
+    out, tiff = variant_with_phase_record(tmp_path, 0.8)
+    run_registration(tiff, out, settings())
+    movies = out / "aligned_structural" / "suite2p" / "movies"
+    movies.mkdir(parents=True)
+    (movies / "old.mp4").write_bytes(b"movie of the old registration")
+    run_registration(tiff, out, settings())
+    assert not movies.exists()

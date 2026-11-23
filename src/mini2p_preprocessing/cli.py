@@ -89,7 +89,9 @@ MOVIE_HELP = {
     "derivatives_root": "folder holding cohort-XX/<subject>/ses-*/funcimg/run-XX",
     "raw_tiff": "the acquired TIFF, if not where source_tiff.json says",
     "behavior_video": "the behavior video, if not where video_frame_times.npz says",
-    "output_dir": "where to write (default: <variant>/aligned_<channel>/<save_folder>/movies)",
+    "output_dir": (
+        "where to write (default: run-XX/<variant>/aligned_<channel>/<save_folder>/movies)"
+    ),
     "overwrite": "replace existing movies",
     "save_folder": "Suite2p output folder inside the aligned_<channel> folder",
     "channel": "both side by side (functional left), or one alone",

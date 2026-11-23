@@ -1065,9 +1065,9 @@ def make_movies(
     values, and the stages are on different scales).
     """
     plane_dir, names = run_folder(settings)
-    # In the folder of the registration they are made from (every stage's frame count, rate
-    # and crop come from its ops), so movies of two registrations never collide; registering
-    # again, which replaces that folder, removes them with it.
+    # In the folder of the registration they are made from (its ops give every stage's frame
+    # count and rate, and the registered stages' crop), so movies of two registrations never
+    # collide; registering again, which replaces that folder, removes them with it.
     registration_folder = plane_dir.parent
     out_dir = (
         Path(settings.output_dir) if settings.output_dir else registration_folder / MOVIE_FOLDER
