@@ -71,9 +71,7 @@ def test_cropped_means_are_written_with_their_own_contrast(tmp_path, rng):
         "meanImg_cropped_red_contrast.png",
         "meanImg_cropped_red_raw.tif",
     ]
-    raw = tifffile.imread(paths["green raw TIFF"])
-    assert raw.dtype == np.float32
-    np.testing.assert_allclose(raw, green_raw[REGION], rtol=1e-6)
+    assert tifffile.imread(paths["green raw TIFF"]).dtype == np.float32
     for name, image, contrast in (("green", green_raw, green), ("red", red_raw, red)):
         np.testing.assert_allclose(tifffile.imread(paths[f"{name} raw TIFF"]), image[REGION],
                                    rtol=1e-6)  # fmt: skip
@@ -112,7 +110,11 @@ def test_a_crop_given_as_numpy_integers_or_open_ends_is_recorded_as_plain_bounds
     [((slice(5, 5), slice(0, 24)), "leaves nothing"),
      ((slice(2, 100), slice(0, 24)), "outside"),
      ((slice(-5, None), slice(0, 24)), "outside"),
-     ((slice(0, 20), slice(0, 24, 2)), "skip")],
+     ((slice(0, 20), slice(0, 24, 2)), "skip"),
+     ((slice(2.7, 10), slice(0, 24)), "integer"),
+     ((slice(True, 10), slice(0, 24)), "integer"),
+     ((slice(0, 20),), "rows, columns"),
+     ((3, slice(0, 24)), "rows, columns")],
 )  # fmt: skip
 def test_cropped_means_refuse_a_crop_that_is_not_a_block_of_the_image(
     tmp_path, rng, region, message

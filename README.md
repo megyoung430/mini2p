@@ -341,8 +341,8 @@ output folder:
 | `fluorescence/` | photon-free levels, F0 overview, mask alignment, background, top ROIs |
 
 Plots behind a slider (manual chunk offset, contrast preview, one ROI at a time) are not
-saved; the contrast you choose is. Registration-dependent plots are overwritten when the same variant is registered
-again; each caption names the plane folder it was drawn from.
+saved; the contrast you choose is. Registration-dependent plots are overwritten when the same
+variant is registered again; each caption names the plane folder it was drawn from.
 
 The mean images stay beside `ops.npy`: `meanImg_{green,red}_contrast.png` and
 `meanImg_{green,red}_raw.tif` (the whole frame), and `meanImg_cropped_{green,red}_contrast.png`

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import operator
 import re
 import tomllib
 from collections.abc import Callable
@@ -309,10 +310,18 @@ def crop_within(region: tuple[slice, slice], shape: tuple[int, int]) -> tuple[sl
     Raises:
         ValueError: If a slice has a step, a negative or out-of-range bound, or leaves nothing.
     """
+    if len(region) != 2 or not all(isinstance(part, slice) for part in region):
+        raise ValueError(f"The crop must be (rows, columns) slices, not {region!r}")
     checked = []
     for part, size in zip(region, shape, strict=True):
-        start = 0 if part.start is None else int(part.start)
-        stop = size if part.stop is None else int(part.stop)
+        # operator.index takes Python and numpy integers and refuses floats and bools
+        if isinstance(part.start, bool) or isinstance(part.stop, bool):
+            raise ValueError(f"The crop {region} must have integer bounds")
+        try:
+            start = 0 if part.start is None else operator.index(part.start)
+            stop = size if part.stop is None else operator.index(part.stop)
+        except TypeError as error:
+            raise ValueError(f"The crop {region} must have integer bounds") from error
         if part.step not in (None, 1):
             raise ValueError(f"The crop {region} must not skip pixels (step {part.step})")
         if start < 0 or stop > size:
