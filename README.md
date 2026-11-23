@@ -101,11 +101,12 @@ run-01/
         suite2p/                      [registration] save_folder
           plane0/                     Suite2p's results and binaries
           motion_alignment.json       which channel, and why
+          movies/
         suite2p_rigid_sigma3/         another registration (another save_folder)
           plane0/                     its results
           suite2p/plane0/             its binaries (Suite2p always names that folder suite2p)
           motion_alignment.json
-        movies/
+          movies/
       aligned_functional/
         suite2p/plane0/
     without_destriping/
@@ -233,7 +234,12 @@ Everything is set in the `[movies]` section of the config (see
   labelled "behavior (no video)". The video is decoded from its start for every movie, so
   a frame range late in a long run waits for the video to reach it;
 - **where to read and write**: `derivatives_root`, `raw_tiff`, `output_dir` (default
-  `run-XX/<variant>/aligned_<channel>/movies/`; `~` works in all of them);
+  `run-XX/<variant>/aligned_<channel>/<save_folder>/movies/`, beside the registration they are
+  made from, whose `save_folder` also appears in their names if it is not `suite2p`; registering
+  again into that `save_folder` deletes them with it. The raw, bidiphase and undistorted stages
+  take only the frame count and rate from the registration, so each registration of a variant
+  gets its own copy of those. Movies made before this, in `aligned_<channel>/movies/`, are left
+  where they are; `~` works in all of them);
 - **how they look**.
 
 Suite2p must have finished on the run: it writes `ops.npy` only at the end. Then:

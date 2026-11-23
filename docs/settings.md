@@ -315,7 +315,7 @@ Command-line options override these.
 
 | Key | Default | What it does |
 |---|---|---|
-| `output_dir` | none | Default: `run-XX/<variant>/aligned_<channel>/movies`. |
+| `output_dir` | none | Default: `run-XX/<variant>/aligned_<channel>/<save_folder>/movies`, beside the registration the movies are made from (removed with it when it is registered again). |
 | `overwrite` | `false` | Replace existing movies. |
 | `channel` | `"side_by_side"` | Functional left and structural right, or `"green"` / `"red"` alone. |
 | `average_frames` | `5` | Frames per averaged movie frame (2–256). |
