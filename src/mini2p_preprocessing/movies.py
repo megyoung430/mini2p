@@ -944,7 +944,7 @@ def open_jobs(
     # in every file name, so a movie moved out of its folder still names its registration:
     # aligned_<source>, and the save_folder if it is not the default
     alignment = plane_dir.parents[1].name
-    if plane_dir.parent.name != "suite2p":
+    if plane_dir.parent.name != DEFAULT_SAVE_FOLDER:
         alignment += f"_{plane_dir.parent.name}"
     stages = settings.stages
     if set(stages) - {"registered"}:
