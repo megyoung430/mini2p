@@ -39,6 +39,8 @@ packages = ["src/mini2p_preprocessing"]
 
 [tool.ruff]
 line-length = 100
+# a verbatim copy of an external script, kept as written so it can be diffed against it
+extend-exclude = ["tests/reference/plane_snr.py"]
 
 [tool.ruff.format]
 # a verbatim copy of an external script, kept as written so it can be diffed against it

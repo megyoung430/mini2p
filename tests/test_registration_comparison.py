@@ -11,6 +11,8 @@ from scipy.ndimage import gaussian_filter, shift
 from mini2p_preprocessing.cli import compare_registrations_main
 from mini2p_preprocessing.registration_comparison import (
     block_slices,
+    bright_half_median,
+    cell_frame_count,
     common_crop,
     compare_registrations,
     crispness,
@@ -20,6 +22,7 @@ from mini2p_preprocessing.registration_comparison import (
     output_stems,
     patch_traces,
     peak_snr,
+    reg_dx,
     registration_settings,
     robust_noise,
     sample_frames,
@@ -92,6 +95,21 @@ def test_registration_settings_come_from_suite2p_1x_or_older_ops():
     assert registration_settings({})["smooth_sigma"] is None
 
 
+def test_reg_dx_is_suite2ps_combined_shift_averaged_over_components():
+    columns = np.array([[1.0, 2, 3, 0.5], [9, 9, 9, 1.5]])  # rigid, mean NR, max NR, combined
+    assert reg_dx({"regDX": columns}) == pytest.approx(1.0)
+    assert np.isnan(reg_dx({}))
+    with pytest.raises(ValueError, match="shape"):
+        reg_dx({"regDX": np.ones((2, 2))})
+
+
+def test_putative_cells_use_the_first_minutes_in_whole_bins():
+    assert cell_frame_count(10_000, 7.5, 1.0) == 448  # 450 frames, bins of 4
+    assert cell_frame_count(1000, 7.5, None) == 1000
+    with pytest.raises(ValueError, match="recording has"):
+        cell_frame_count(100, 7.5, 1.0)
+
+
 # ---- signal -----------------------------------------------------------------------
 
 
@@ -123,6 +141,13 @@ def test_noise_level_matches_its_definition_for_white_noise(rng):
     assert np.median(level) == pytest.approx(expected, rel=0.03)
     level, _ = noise_level(np.zeros((2, 100)), FS)
     assert np.isnan(level).all()
+
+
+def test_noise_level_summary_uses_the_brighter_half():
+    values = np.array([1.0, 2, 3, 4, np.nan, 100])
+    f0 = np.array([10.0, 20, 30, 40, 50, -1])  # the last has no usable F0
+    assert bright_half_median(values, f0) == pytest.approx(3.5)
+    assert np.isnan(bright_half_median(values, -np.ones(6)))
 
 
 def test_local_correlation_finds_a_cell_and_not_independent_noise(rng):
@@ -167,7 +192,7 @@ def write_registration(aligned, name, green, red, nonrigid=False):
         "nframes": len(green), "Ly": LY, "Lx": LX, "fs": FS,
         "yoff": np.zeros(len(green)), "xoff": np.zeros(len(green)),
         "badframes": np.zeros(len(green), bool),
-        "meanImg": green.mean(axis=0),
+        "meanImg": green.mean(axis=0), "yrange": [0, LY], "xrange": [0, LX],
         "registration": {"nonrigid": nonrigid, "smooth_sigma": 1.15, "norm_frames": False},
         "reg_file": str(plane / "data.bin"), "reg_file_chan2": str(plane / "data_chan2.bin"),
     }  # fmt: skip
@@ -205,7 +230,7 @@ def test_the_aligned_registration_wins_and_everything_is_saved(tmp_path, rng):
     assert good["red_fluctuation_pct"] < wobbly["red_fluctuation_pct"]
     assert good["green_local_corr_contrast"] > wobbly["green_local_corr_contrast"]
     assert np.isfinite(good["green_cell_resting_snr_median"])
-    assert good["red_cell_transients_per_min"] <= wobbly["red_cell_transients_per_min"]
+    assert good["red_cell_transients_per_min"] == pytest.approx(0)
     table, images = output_stems(aligned)
     with open(table.with_suffix(".csv")) as handle:
         names = [r["registration"] for r in csv.DictReader(handle)]

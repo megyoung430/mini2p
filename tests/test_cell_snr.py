@@ -34,10 +34,11 @@ def test_cells_are_the_blobs_of_the_mean_image_away_from_its_edge(rng):
         image[row, column] += 300
     image = gaussian_filter(image, 3)
     image[5, 5] += 50  # brighter but inside the edge margin
-    cells = pick_cells(image, scaled_geometry(), n_cells=5)
+    whole = ((0, 160), (0, 160))
+    cells = pick_cells(image, whole, scaled_geometry(), n_cells=5)
     assert sorted(map(tuple, cells)) == sorted(blobs)
     with pytest.raises(ValueError, match="putative cells"):
-        pick_cells(image, scaled_geometry(), n_cells=10_000)
+        pick_cells(image, whole, scaled_geometry(), n_cells=10_000)
 
 
 def test_disc_and_annulus_weights_average_their_pixels():
@@ -97,3 +98,56 @@ def test_a_flash_around_every_cell_is_not_a_transient(rng):
     measures = cell_measures(disc, ring, bin_s=0.5)
     assert measures["n_flash_bins"] == 1
     assert measures["transients"].sum() <= 1
+
+
+# ---- the same as the original script ----------------------------------------------
+
+
+def textured_movie(rng, n_frames=400, size=128):
+    """A mean image with blob-like cells, some active, on noise."""
+    image = gaussian_filter(rng.normal(size=(size, size)), 2.0)
+    image = 200 + 400 * (image - image.min()) / np.ptp(image)
+    movie = image + rng.normal(0, 8, (n_frames, size, size))
+    activity = np.stack([np.convolve((rng.random(n_frames) < 0.02) * 60.0,
+                                     np.exp(-np.arange(20) / 4))[:n_frames]
+                         for _ in range(6)])  # fmt: skip
+    for (row, column), trace in zip([(40, 40), (40, 88), (88, 40), (88, 88), (64, 64), (50, 70)],
+                                    activity, strict=True):  # fmt: skip
+        movie[:, row - 3 : row + 4, column - 3 : column + 4] += trace[:, None, None]
+    return movie.astype(np.int16).astype(np.float32)
+
+
+def test_cells_traces_and_measures_match_plane_snr(rng):
+    from tests.reference import plane_snr as original
+
+    movie = textured_movie(rng)
+    mean_image = movie.mean(axis=0).astype(np.float64)
+    valid = ((2, 126), (3, 125))
+    geometry = scaled_geometry(256)
+    cells = pick_cells(mean_image, valid, geometry, n_cells=12)
+    assert np.array_equal(cells, original.pick_cells(mean_image, valid, geometry, n_cells=12))
+    shape = mean_image.shape
+    weights = [roi_weights(cells, shape, 0, geometry["disc_r"]),
+               roi_weights(cells, shape, geometry["ring_in"], geometry["ring_out"])]  # fmt: skip
+    fpb, n_bins = 4, 100
+    disc, ring = binned_traces([movie[:200], movie[200:]], weights, fpb)
+    assert np.allclose(disc, original.bin_traces(movie, weights[0], fpb, n_bins))
+    assert np.allclose(ring, original.bin_traces(movie, weights[1], fpb, n_bins))
+    bin_s = 0.5
+    ours = cell_measures(disc.copy(), ring, bin_s)
+    theirs = original.cell_measures(disc.copy(), ring, original.HIGHPASS_S / bin_s)
+    assert np.allclose(ours["resting_snr"], theirs["resting_snr"])
+    assert np.allclose(ours["noise"], theirs["noise"])
+    assert ours["transients"].sum() == theirs["transients"]
+    assert ours["transients_flipped"].sum() == theirs["transients_flipped"]
+    assert (ours["transients"] >= 1).sum() == theirs["cells_ge1"]
+    assert ours["n_flash_bins"] == theirs["n_flash_bins"]
+
+
+def test_ragged_bins_and_constant_cells_are_refused(rng):
+    with pytest.raises(ValueError, match="whole bins"):
+        bin_frames(np.zeros((7, 2, 2)), 3)
+    disc, ring = synthetic_traces(rng, active=0)
+    disc[:, 0] = ring[:, 0] = 5.0
+    with pytest.raises(ValueError, match="no noise"):
+        cell_measures(disc, ring, bin_s=0.5)

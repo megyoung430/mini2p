@@ -1,6 +1,7 @@
 """Resting SNR and large transients of putative cells, without segmentation.
 
-The measure used to compare 71R, AB08 and M (``174R/scripts/plane_snr.py``): putative cells
+Ported from the ``plane_snr.py`` script that compared mice 71R, AB08 and M; the tests check it
+gives the same cells, counts and SNR (``tests/reference/plane_snr.py``). Putative cells
 are the strongest local maxima of the mean image's cell-scale structure (a difference of
 Gaussians); each one's trace is the mean of a disc on it minus the mean of an annulus around
 it, so a drifting detector offset, common to both, cancels; traces are averaged in about
@@ -13,14 +14,15 @@ it, so a drifting detector offset, common to both, cancels; traces are averaged 
   (sigma 16 s); the same count on the sign-flipped traces estimates how many are noise.
 
 Bins where the brightness around every cell jumps together (stray light reaching the
-detector) are left out. Pixel geometry is given for the mini2p's 512 px scan and scaled by
+detector) are left out; such a bin inside a transient splits it into two crossings, as in the
+original. Pixel geometry is given for the mini2p's 512 px scan and scaled by
 ``scale`` for other scan widths of the same field of view; cropping (distortion correction)
 does not change the pixel size.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 
 import numpy as np
 from scipy import sparse
@@ -47,17 +49,24 @@ def scaled_geometry(scan_px: int = SCAN_PX) -> dict:
     return {key: value * scale for key, value in GEOMETRY_512.items()}
 
 
-def pick_cells(mean_image: np.ndarray, geometry: dict, n_cells: int = N_CELLS) -> np.ndarray:
+def pick_cells(
+    mean_image: np.ndarray,
+    valid: tuple[Sequence[int], Sequence[int]],
+    geometry: dict,
+    n_cells: int = N_CELLS,
+) -> np.ndarray:
     """(cells, 2) row and column of the strongest local maxima of the mean image's
-    cell-scale structure, at least ``edge`` px from its edges, strongest first."""
+    cell-scale structure, at least ``edge`` px inside the *valid* ((row start, stop),
+    (column start, stop)) region, strongest first."""
     image = np.asarray(mean_image, np.float64)
     dog = gaussian_filter(image, geometry["dog_small"]) - gaussian_filter(
         image, geometry["dog_large"]
     )
     peaks = dog == maximum_filter(dog, size=int(round(geometry["spacing"])) | 1)
+    (top, bottom), (left, right) = ((int(a), int(b)) for a, b in valid)
     edge = int(np.ceil(geometry["edge"]))
     inside = np.zeros_like(peaks)
-    inside[edge:-edge, edge:-edge] = True
+    inside[top + edge : bottom - edge, left + edge : right - edge] = True
     rows, columns = np.nonzero(peaks & inside)
     order = np.argsort(dog[rows, columns])[::-1][:n_cells]
     if len(order) < n_cells:
@@ -89,6 +98,8 @@ def roi_weights(
 def bin_frames(block: np.ndarray, frames_per_bin: int) -> np.ndarray:
     """(bins, pixels): the mean of each run of *frames_per_bin* frames of a block whose
     length is a multiple of it."""
+    if len(block) % frames_per_bin:
+        raise ValueError(f"{len(block)} frames are not whole bins of {frames_per_bin}")
     n_bins = len(block) // frames_per_bin
     flat = np.asarray(block[: n_bins * frames_per_bin], np.float32).reshape(n_bins, -1)
     return flat.reshape(n_bins, frames_per_bin, -1).mean(axis=1)
@@ -124,6 +135,9 @@ def cell_measures(disc: np.ndarray, ring: np.ndarray, bin_s: float) -> dict:
     contrast = disc - ring
     contrast[flash] = np.nan
     noise = robust_sd_of_steps(contrast)
+    if not (noise > 0).all():
+        raise ValueError(f"{int((~(noise > 0)).sum())} putative cells have no noise; their "
+                         "traces are constant (empty or saturated pixels?)")  # fmt: skip
     filled = np.where(np.isnan(contrast), np.nanmedian(contrast, axis=0), contrast)
     high_passed = contrast - gaussian_filter1d(filled, HIGHPASS_S / bin_s, axis=0, mode="nearest")
     z = high_passed / noise
@@ -157,7 +171,7 @@ def frames_per_bin(fs_hz: float) -> int:
 
 
 def binned_traces(
-    chunks: Sequence[np.ndarray] | object, weights: Sequence[sparse.csr_matrix], fpb: int
+    chunks: Iterable[np.ndarray], weights: Sequence[sparse.csr_matrix], fpb: int
 ) -> list[np.ndarray]:
     """(bins, cells) traces for each weight matrix, from (frames, rows, columns) chunks whose
     lengths are multiples of *fpb*."""

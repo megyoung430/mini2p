@@ -17,6 +17,7 @@ import types
 import typing
 from pathlib import Path
 
+from .cell_snr import N_CELLS, SCAN_PX
 from .config import load_settings, with_destriping
 from .extraction import run_cellpose_extraction
 from .movies import MovieSettings, load_movie_settings, make_movies
@@ -31,8 +32,9 @@ from .registration_comparison import (
     N_FRAMES,
     PATCH_PX,
     TABLE_NAME,
-    compare_registrations,
     output_stems,
+    prepare_comparison,
+    run_comparison,
 )
 
 
@@ -258,9 +260,11 @@ def compare_registrations_main(argv: list[str] | None = None) -> None:
     parser.add_argument("--cell-minutes", type=float, default=CELL_MINUTES,
                         help="first minutes for the putative-cell SNR and transients "
                         "(0: the whole recording)")  # fmt: skip
-    parser.add_argument("--scan-px", type=int, default=512,
+    parser.add_argument("--scan-px", type=int, default=SCAN_PX,
                         help="scan width in px (sets the putative-cell geometry)")  # fmt: skip
-    parser.add_argument("--cells", type=int, default=200, help="putative cells per registration")
+    parser.add_argument(
+        "--cells", type=int, default=N_CELLS, help="putative cells per registration"
+    )
     parser.add_argument("--overwrite", action="store_true", help="replace an earlier comparison")
     args = parser.parse_args(argv)
     if args.cell_minutes < 0:
@@ -271,14 +275,14 @@ def compare_registrations_main(argv: list[str] | None = None) -> None:
     if args.detrend_s <= 0:
         parser.error("--detrend-s must be positive")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
-    try:
-        rows = compare_registrations(
-            args.aligned_folder, args.frames, args.blocks, args.block_frames, args.patch_px,
-            args.detrend_s, args.overwrite, args.cell_minutes or None, args.scan_px,
-            args.cells,
+    try:  # only the request is checked here; errors while measuring raise as they are
+        planes, plan = prepare_comparison(
+            args.aligned_folder, args.frames, args.blocks, args.block_frames, args.overwrite,
+            args.cell_minutes or None, args.scan_px, args.cells,
         )  # fmt: skip
     except (ValueError, KeyError, FileNotFoundError, FileExistsError) as error:
         parser.error(str(error))
+    rows = run_comparison(args.aligned_folder, planes, plan, args.patch_px, args.detrend_s)
     print_summary(rows)
     print(f"Saved {output_stems(args.aligned_folder)[0].parent}")
 

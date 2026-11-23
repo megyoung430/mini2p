@@ -1,8 +1,9 @@
 """Compare registrations of one recording side by side (a registration sweep), without cells.
 
 Every registration in ``<aligned_folder>/<save_folder>/plane0`` is measured the same way, on
-the same frames and in the same crop (inside every registration's unwrapped region), so the
-numbers differ only because the registrations do. Nothing needs cell segmentation.
+the same frames and, for the alignment and signal measures, in the same crop (inside every
+registration's unwrapped region). The crop depends on which registrations are in the folder,
+so numbers compare within one comparison, not between comparisons of different folders.
 
 Alignment, on evenly spaced frames (both channels):
 
@@ -10,40 +11,50 @@ Alignment, on evenly spaced frames (both channels):
   with the same Gaussian (higher, and a higher 5th percentile = frames line up better);
 - residual shift: the subpixel shift that still best aligns each frame to that mean (lower);
 - crispness: gradient energy of the mean image over its intensity (higher = less blur);
-- Suite2p's own rigid shifts: their median frame-to-frame change (jitter), and bad frames.
+- Suite2p's regDX (combined rigid + nonrigid shift between the top and bottom of its
+  principal components, when computed) and bad frames.
 
 Signal, on a few contiguous blocks of frames, from small patches of pixels (``patch_px``) and
 single pixels, each high-passed over ``detrend_s`` to remove bleaching and drift:
 
 - green peak SNR: how far a patch's largest fluctuations (its 99th percentile, after a
   3-frame running mean) rise above its median, in units of its frame-to-frame noise (the
-  robust SD of its first differences / sqrt 2). Higher = clearer activity. Motion that jitters
-  from frame to frame raises that noise as much as the peaks, so this is not a motion measure;
+  robust SD of its first differences / sqrt 2);
 - red fluctuation: a patch's high-passed SD over its mean, in %. The red signal should not
-  change, so beyond the noise floor (the same for every registration) this is motion left in
-  it, from frame to frame or slower. Lower is better;
+  change, so beyond its noise this is motion left in it, from frame to frame or slower;
 - noise level (Rupprecht et al., Eur J Neurosci 2021): the median absolute frame-to-frame
   change of a patch's ΔF/F over sqrt(frame rate), in %/sqrt(Hz), over the brighter half of the
-  patches (F0: their 20th percentile). Lower = less noise per unit of baseline. F0 includes any
-  detector offset, so it compares registrations, not recordings;
+  patches (F0: their 20th percentile). F0 includes any detector offset, so it compares
+  registrations, not recordings;
 - local correlation image: each pixel's correlation with the mean of its 8 neighbours. Cells
-  stand out as bright patches; its 99th percentile measures them, and its contrast (99th
-  percentile minus median) discounts the correlation that resampling alone gives neighbouring
-  pixels (nonrigid registration and subpixel shifts interpolate, which smooths noise);
+  stand out as bright patches; reported as its 99th percentile and its contrast (99th
+  percentile minus median);
 - green-red correlation: the median correlation of a patch's green and red fluctuations.
   Lower = less of what moves the red (motion, brain movement in z) left in the green.
 
-Putative cells, as in the 71R / AB08 / M comparison (``cell_snr``): the 200 strongest
-cell-scale peaks of Suite2p's green mean image, each a disc-minus-annulus trace in 0.5 s bins
-over the first ``cell_minutes``; green resting SNR (contrast over noise), large transients per
-minute (and on flipped traces, the noise count), cells with at least one; and the same count
-in red at the same places, which should be at the noise count (above it = motion or light).
+Putative cells (``cell_snr``, the measure of the earlier 71R / AB08 / M comparison): the 200
+strongest cell-scale peaks of each registration's green mean image, each a disc-minus-annulus
+trace in 0.5 s bins over the first ``cell_minutes``; green resting SNR (contrast over noise),
+large transients per minute (and on flipped traces, the noise count), cells with at least
+one; and the same count in red at the same places, which should be at the noise count (above
+it = motion or stray light).
 
-Red (structural) is the fairer test of motion, as its signal does not change with activity.
-Read the green signal measures only among registrations the red measures find equally well
-aligned: motion left in a movie raises a pixel's correlation with its neighbours and a patch's
-largest fluctuations too, so on its own a gain in green peak SNR or in the local correlation's
-99th percentile can be motion. The contrast and the noise level are not fooled that way.
+What these can and cannot tell apart:
+
+- Red (structural) is the fairer test of motion, as its signal does not change with activity.
+  Motion left in a movie also raises green peak SNR, local correlation and transient counts,
+  so compare green measures only among registrations the red measures find equally well
+  aligned.
+- Registrations that resample frames differently cannot be compared cleanly on the measures
+  that depend on pixel noise. Nonrigid registration interpolates every frame by its own
+  subpixel block shifts; rigid registration moves frames by whole pixels. Interpolation
+  smooths noise (lowering noise level and fluctuation, raising local correlation and resting
+  SNR) and blurs each frame by a different amount (raising fluctuation, lowering crispness),
+  with no change in alignment. Comparing settings within one mode (smooth_sigma, norm_frames,
+  rigid or nonrigid) is clean; between modes, rely on residual shift, the red transient count
+  and the transient counts against their flipped noise counts.
+- Suite2p computes regDX with each registration's own smooth_sigma, so it does not compare
+  registrations of different smooth_sigma cleanly either.
 """
 
 from __future__ import annotations
@@ -161,17 +172,20 @@ def alignment_measures(frames: np.ndarray) -> tuple[dict, np.ndarray]:
     return measures, mean
 
 
-def shift_jitter(ops: dict) -> float:
-    """Median frame-to-frame change of Suite2p's rigid shift (px)."""
-    dy = np.diff(np.asarray(ops["yoff"], float))
-    dx = np.diff(np.asarray(ops["xoff"], float))
-    return float(np.median(np.hypot(dy, dx))) if dy.size else float("nan")
+REG_DX_COMBINED = 3  # regDX columns: rigid, mean nonrigid, max nonrigid, combined
 
 
 def reg_dx(ops: dict) -> float:
-    """Suite2p's registration metric (regDX) averaged, or NaN when it was not computed."""
+    """Suite2p's regDX: the combined rigid + nonrigid shift (px) between the top and bottom of
+    each principal component of the registered movie, averaged over the components; NaN when
+    Suite2p did not compute it (do_regmetrics off, or fewer than 1500 frames)."""
     value = ops.get("regDX")
-    return float(np.mean(value)) if value is not None and np.size(value) else float("nan")
+    if value is None or not np.size(value):
+        return float("nan")
+    value = np.atleast_2d(np.asarray(value, float))
+    if value.shape[1] <= REG_DX_COMBINED:
+        raise ValueError(f"ops['regDX'] has shape {value.shape}; expected (components, 4)")
+    return float(np.mean(value[:, REG_DX_COMBINED]))
 
 
 def registration_settings(ops: dict) -> dict:
@@ -387,23 +401,24 @@ def plan_comparison(
     )
 
 
-def movie_chunks(movie, crop: tuple[slice, slice], n_frames: int, chunk_frames: int):
-    """The first *n_frames* of a (frames, rows, columns) movie in the crop, in chunks of
-    *chunk_frames* (the last may be shorter)."""
+def movie_chunks(movie, n_frames: int, chunk_frames: int):
+    """The first *n_frames* of a (frames, rows, columns) movie in chunks of *chunk_frames*
+    (the last may be shorter)."""
     for start in range(0, n_frames, chunk_frames):
-        stop = min(start + chunk_frames, n_frames)
-        yield np.asarray(movie[start:stop])[:, crop[0], crop[1]]
+        yield np.asarray(movie[start : min(start + chunk_frames, n_frames)])
 
 
 def putative_cell_measures(outputs, plan: Plan) -> dict:
-    """Resting SNR and transients of putative cells picked on Suite2p's green mean image, in
-    green, and transients at the same places in red."""
-    rows, columns = plan.crop
+    """Resting SNR and transients of putative cells picked, as in ``cell_snr``'s source, on
+    the registration's own green mean image within its own valid region (Suite2p's yrange and
+    xrange), in green, and transients at the same places in red."""
     geometry = cell_snr.scaled_geometry(plan.scan_px)
-    if "meanImg" not in outputs.ops:
-        raise KeyError("ops has no 'meanImg' (Suite2p's green mean image) to pick cells on")
-    mean_image = np.asarray(outputs.ops["meanImg"], np.float64)[rows, columns]
-    cells = cell_snr.pick_cells(mean_image, geometry, plan.n_cells)
+    for key in ("meanImg", "yrange", "xrange"):
+        if key not in outputs.ops:
+            raise KeyError(f"ops has no '{key}', which the putative cells are picked with")
+    mean_image = np.asarray(outputs.ops["meanImg"], np.float64)
+    valid = (tuple(outputs.ops["yrange"]), tuple(outputs.ops["xrange"]))
+    cells = cell_snr.pick_cells(mean_image, valid, geometry, plan.n_cells)
     shape = mean_image.shape
     disc_weights = cell_snr.roi_weights(cells, shape, 0, geometry["disc_r"])
     ring_weights = cell_snr.roi_weights(cells, shape, geometry["ring_in"], geometry["ring_out"])
@@ -413,7 +428,7 @@ def putative_cell_measures(outputs, plan: Plan) -> dict:
     minutes = plan.cell_frames / plan.fs_hz / 60
     row = {}
     for name in ("functional", "structural"):
-        chunks = movie_chunks(getattr(outputs, name), plan.crop, plan.cell_frames, chunk)
+        chunks = movie_chunks(getattr(outputs, name), plan.cell_frames, chunk)
         disc, ring = cell_snr.binned_traces(chunks, weights, fpb)
         measures = cell_snr.cell_measures(disc, ring, fpb / plan.fs_hz)
         row |= {f"{SHORT[name]}_cell_{key}": value
@@ -429,9 +444,8 @@ def measure_registration(
     outputs = load_registered_outputs(plane)
     rows, columns = plan.crop
     row = {"registration": Path(plane).parent.name, **registration_settings(outputs.ops)}
-    row["bad_frames"] = int(np.sum(outputs.ops.get("badframes", [])))
-    row["rigid_shift_jitter_px"] = shift_jitter(outputs.ops)
-    row["suite2p_regDX"] = reg_dx(outputs.ops)
+    row["bad_frames"] = int(np.sum(outputs.ops["badframes"]))
+    row["suite2p_regDX_px"] = reg_dx(outputs.ops)
     means = {}
     for name in CHANNELS:
         sampled = np.asarray(getattr(outputs, name)[plan.frames])[:, rows, columns]
@@ -459,26 +473,42 @@ def output_stems(aligned_folder: Path) -> tuple[Path, Path]:
     return folder / TABLE_NAME, folder / IMAGES_NAME
 
 
-def compare_registrations(
+def prepare_comparison(
     aligned_folder: Path,
     n_frames: int = N_FRAMES,
     n_blocks: int = N_BLOCKS,
     block_frames: int = BLOCK_FRAMES,
-    patch_px: int = PATCH_PX,
-    detrend_s: float = DETREND_S,
     overwrite: bool = False,
     cell_minutes: float | None = CELL_MINUTES,
     scan_px: int = cell_snr.SCAN_PX,
     n_cells: int = cell_snr.N_CELLS,
-) -> list[dict]:
-    """Measure every registration in *aligned_folder* and save the table, the measures
-    figure and the image figure in ``<aligned_folder>/registration_comparison/``. Reads the
-    registrations only. Returns the rows."""
-    table_stem, images_stem = output_stems(aligned_folder)
+) -> tuple[list[Path], Plan]:
+    """The registrations in *aligned_folder* and what they are measured on.
+
+    Raises:
+        FileExistsError: If a comparison is there already and *overwrite* is not set.
+        FileNotFoundError: If the folder holds no registration.
+        KeyError, ValueError: If the registrations are not of one recording, or the request
+            does not fit it.
+    """
+    table_stem, _ = output_stems(aligned_folder)
     if table_stem.with_suffix(".csv").exists() and not overwrite:
         raise FileExistsError(f"{table_stem}.csv exists; pass overwrite to replace it")
     planes = find_registrations(aligned_folder)
     plan = plan_comparison(planes, n_frames, n_blocks, block_frames, cell_minutes, scan_px, n_cells)
+    return planes, plan
+
+
+def run_comparison(
+    aligned_folder: Path,
+    planes: Sequence[Path],
+    plan: Plan,
+    patch_px: int = PATCH_PX,
+    detrend_s: float = DETREND_S,
+) -> list[dict]:
+    """Measure the registrations and save the table, the measures figure and the image
+    figure in ``<aligned_folder>/registration_comparison/``. Returns the rows."""
+    table_stem, images_stem = output_stems(aligned_folder)
     rows, images = [], []
     for plane in planes:
         logger.info("Measuring %s", plane.parent.name)
@@ -499,31 +529,53 @@ def compare_registrations(
     return rows
 
 
+def compare_registrations(
+    aligned_folder: Path,
+    n_frames: int = N_FRAMES,
+    n_blocks: int = N_BLOCKS,
+    block_frames: int = BLOCK_FRAMES,
+    patch_px: int = PATCH_PX,
+    detrend_s: float = DETREND_S,
+    overwrite: bool = False,
+    cell_minutes: float | None = CELL_MINUTES,
+    scan_px: int = cell_snr.SCAN_PX,
+    n_cells: int = cell_snr.N_CELLS,
+) -> list[dict]:
+    """Measure every registration in *aligned_folder* and save the results (see
+    ``prepare_comparison`` and ``run_comparison``). Reads the registrations only."""
+    planes, plan = prepare_comparison(
+        aligned_folder, n_frames, n_blocks, block_frames, overwrite, cell_minutes, scan_px, n_cells
+    )
+    return run_comparison(aligned_folder, planes, plan, patch_px, detrend_s)
+
+
 # ---- plotting ---------------------------------------------------------------------
 
 
-# (column, title, which way is better); one row of panels per line
+HIGHER, LOWER = "higher is better", "lower is better"
+IF_RED_QUIET = "higher is better if red is at noise"
+# (column, title, how to read it); one row of panels per line
 PANELS = [
-    [("red_corr_median", "Red Frame-To-Mean r", "higher"),
-     ("red_corr_p5", "Red r, 5th Percentile", "higher"),
-     ("red_residual_shift_px", "Red Residual Shift (px)", "lower"),
-     ("red_crispness", "Red Mean Crispness", "higher"),
-     ("red_fluctuation_pct", "Red Fluctuation (%)", "lower")],
-    [("green_corr_median", "Green Frame-To-Mean r", "higher"),
-     ("green_crispness", "Green Mean Crispness", "higher"),
-     ("green_red_corr_median", "Green-Red Correlation", "lower"),
-     ("rigid_shift_jitter_px", "Rigid Shift Jitter (px)", "lower"),
-     ("bad_frames", "Bad Frames", "lower")],
-    [("green_peak_snr_median", "Green Peak SNR, Median", "higher"),
-     ("green_peak_snr_p95", "Green Peak SNR, 95th Percentile", "higher"),
-     ("green_residual_shift_median_px", "Green Residual Shift, Median (px)", "lower"),
-     ("green_local_corr_contrast", "Green Local Correlation Contrast", "higher"),
-     ("green_noise_level", "Green Noise Level (%/√Hz)", "lower")],
-    [("green_cell_resting_snr_median", "Green Resting SNR, Median", "higher"),
-     ("green_cell_transients_per_min", "Green Transients / Min", "higher"),
-     ("green_cell_transients_flipped_per_min", "Green Flipped Transients / Min (Noise)", "lower"),
-     ("green_cell_cells_with_transient", "Cells With >= 1 Transient", "higher"),
-     ("red_cell_transients_per_min", "Red Transients / Min (Motion)", "lower")],
+    [("red_corr_median", "Red Frame-To-Mean r", HIGHER),
+     ("red_corr_p5", "Red r, 5th Percentile", HIGHER),
+     ("red_residual_shift_median_px", "Red Residual Shift, Median (px)", LOWER),
+     ("red_crispness", "Red Mean Crispness", HIGHER),
+     ("red_fluctuation_pct", "Red Fluctuation (%)", LOWER)],
+    [("green_corr_median", "Green Frame-To-Mean r", HIGHER),
+     ("green_crispness", "Green Mean Crispness", HIGHER),
+     ("green_red_corr_median", "Green-Red Correlation", LOWER),
+     ("suite2p_regDX_px", "Suite2p regDX (px)", LOWER),
+     ("bad_frames", "Bad Frames", LOWER)],
+    [("green_peak_snr_median", "Green Peak SNR, Median", IF_RED_QUIET),
+     ("green_peak_snr_p95", "Green Peak SNR, 95th Percentile", IF_RED_QUIET),
+     ("green_residual_shift_median_px", "Green Residual Shift, Median (px)", LOWER),
+     ("green_local_corr_contrast", "Green Local Correlation Contrast", IF_RED_QUIET),
+     ("green_noise_level", "Green Noise Level (%/√Hz)", LOWER)],
+    [("green_cell_resting_snr_median", "Green Resting SNR, Median", HIGHER),
+     ("green_cell_transients_per_min", "Green Transients / Min", IF_RED_QUIET),
+     ("green_cell_transients_flipped_per_min", "Green Flipped Transients / Min", "noise count"),
+     ("green_cell_cells_with_transient", "Cells With >= 1 Transient", IF_RED_QUIET),
+     ("red_cell_transients_per_min", "Red Transients / Min", "motion; noise count is best")],
 ]  # fmt: skip
 
 
@@ -541,7 +593,7 @@ def zoomed_limits(values: np.ndarray) -> tuple[float, float] | None:
     return (max(low, 0.0) if finite.min() >= 0 else low), float(finite.max()) + 0.6 * spread
 
 
-def plot_measure(ax, labels: Sequence[str], values: np.ndarray, title: str, better: str):
+def plot_measure(ax, labels: Sequence[str], values: np.ndarray, title: str, reading: str):
     """One measure: a dot per registration, labelled with its value."""
     x = np.arange(len(labels))
     colors = [SERIES_COLORS[i % len(SERIES_COLORS)] for i in x]
@@ -550,7 +602,7 @@ def plot_measure(ax, labels: Sequence[str], values: np.ndarray, title: str, bett
         if np.isfinite(value):
             ax.annotate(f"{value:.3g}", (xi, value), textcoords="offset points",
                         xytext=(0, 7), ha="center", fontsize=7)  # fmt: skip
-    ax.set_title(f"{title}\n({better} is better)", fontsize=9)
+    ax.set_title(f"{title}\n({reading})", fontsize=9)
     ax.set_xticks(x, labels, rotation=45, ha="right", fontsize=7)
     ax.set_xlim(-0.6, len(labels) - 0.4)
     limits = zoomed_limits(values)
@@ -569,9 +621,9 @@ def plot_measures(rows: Sequence[dict], axes=None) -> np.ndarray:
     axes = np.asarray(axes).reshape(n_rows, n_columns)
     labels = [short_label(row["registration"]) for row in rows]
     for panel_row, ax_row in zip(PANELS, axes, strict=True):
-        for (key, title, better), ax in zip(panel_row, ax_row, strict=True):
+        for (key, title, reading), ax in zip(panel_row, ax_row, strict=True):
             values = np.asarray([np.nan if r[key] is None else r[key] for r in rows], float)
-            plot_measure(ax, labels, values, title, better)
+            plot_measure(ax, labels, values, title, reading)
     axes.flat[0].figure.suptitle("Registration Comparison")
     return axes
 
@@ -617,48 +669,56 @@ def caption_details(aligned_folder: Path, plan: Plan, patch_px: int, detrend_s: 
     }  # fmt: skip
 
 
-MEASURES_CAPTION = """Registrations of {recording}, each measured the same way in rows \
+MEASURES_CAPTION = """Registrations of {recording}. Alignment and signal measures in rows \
 {rows} and columns {columns} (inside every registration's unwrapped region); no cell \
 segmentation.
-Alignment, on the same {n} evenly spaced frames: frame-to-mean r, each frame \
-against the mean of those frames, both smoothed with a {sigma} px Gaussian (median and 5th \
-percentile across frames); residual shift, root-mean-square subpixel shift that still best \
-aligns each frame to that mean; crispness, gradient energy of the mean over its intensity; \
-rigid shift jitter, median frame-to-frame change of Suite2p's rigid shift; bad frames, \
-Suite2p's count.
+Alignment, on the same {n} evenly spaced frames: frame-to-mean r, each frame against the mean \
+of those frames, both smoothed with a {sigma} px Gaussian (median and 5th percentile across \
+frames); residual shift, median across frames of the subpixel shift that still best aligns \
+each frame to that mean; crispness, gradient energy of the mean over its intensity; Suite2p's \
+regDX, combined rigid + nonrigid shift between the top and bottom of each principal component, \
+averaged over components (computed with each registration's own smooth_sigma; blank when \
+Suite2p did not compute it); bad frames, Suite2p's count.
 Signal, on {n_blocks} contiguous blocks of {block_frames} frames ({fs:g} Hz) spread over the \
 recording, from {patch} x {patch} px patches high-passed over {detrend:g} s: peak SNR, a \
 patch's 99th percentile (3-frame running mean) above its median over its frame-to-frame \
 noise (robust SD of first differences / sqrt 2), median or 95th percentile across patches; \
 red fluctuation, median across patches of the high-passed SD over the mean, in % (the red \
-signal is activity-independent, so beyond the shared noise floor this is motion left in it); \
-green-red correlation, median correlation of each patch's green and red fluctuations (shared \
-motion); local correlation, each pixel's correlation with the mean of its 8 neighbours \
-(99th percentile, and contrast = 99th percentile minus median, which discounts the \
-correlation that interpolation alone gives neighbouring pixels); noise level (Rupprecht et \
-al. 2021), median absolute frame-to-frame change of ΔF/F (F0: 20th percentile) over \
-sqrt(frame rate), median over the brighter half of the patches; F0 includes any detector \
-offset, so compare registrations, not recordings.
-Putative cells (bottom row; the measure of the 71R / AB08 / M comparison): the {n_cells} \
-strongest local maxima of the cell-scale structure (difference of Gaussians) of Suite2p's \
-green mean image, geometry for a {scan_px} px scan; trace = disc minus surrounding annulus in \
-{bin_s:.2g} s bins over the first {cell_minutes:.1f} min, without bins where the brightness \
-around every cell jumps; noise = robust SD of successive bin differences / sqrt 2. Resting \
-SNR: a cell's mean excess over its surroundings over its noise (median across cells; contrast, \
-not activity). Transients: rising crossings of {threshold:g} SD after removing a Gaussian \
-running mean (sigma {highpass:g} s), summed over cells, per minute; flipped: the same on \
-sign-flipped traces (noise count); red: the same in red at the same places (should be at the \
-noise count; above it = motion or stray light).
-Red is the structural channel (activity-independent, the fairer test of motion); green the \
-functional one. Motion also raises green peak SNR and local correlation, so compare green \
-signal measures only among registrations the red measures find equally well aligned. Y-axes \
-are zoomed on each measure's range (dots, not bars). Table: registration_comparison.csv \
-(also the local correlation's 99th percentile, and median residual shifts).
+signal is activity-independent, so beyond its noise this is motion left in it); green-red \
+correlation, median correlation of each patch's green and red fluctuations (shared motion); \
+local correlation contrast, 99th percentile minus median of each pixel's correlation with the \
+mean of its 8 neighbours; noise level (Rupprecht et al. 2021), median absolute frame-to-frame \
+change of ΔF/F (F0: 20th percentile) over sqrt(frame rate), median over the brighter half of \
+the patches; F0 includes any detector offset, so compare registrations, not recordings.
+Putative cells (bottom row; the measure of the earlier 71R / AB08 / M comparison): the \
+{n_cells} strongest local maxima of the cell-scale structure (difference of Gaussians) of each \
+registration's green mean image, within its valid region less a margin, geometry for a \
+{scan_px} px scan; trace = disc minus surrounding annulus in {bin_s:.2g} s bins over the first \
+{cell_minutes:.1f} min, without bins where the brightness around every cell jumps; noise = \
+robust SD of successive bin differences / sqrt 2. Resting SNR: a cell's mean excess over its \
+surroundings over its noise (median across cells; contrast, not activity). Transients: rising \
+crossings of {threshold:g} SD after removing a Gaussian running mean (sigma {highpass:g} s), \
+summed over cells, per minute; flipped: the same on sign-flipped traces (noise count); red: \
+the same in red at the same places (at the noise count when no motion or stray light is left).
+How to read: red is the structural channel (activity-independent, the fairer test of \
+motion); motion also raises green peak SNR, local correlation and transient counts, so read \
+those only among registrations the red measures find equally well aligned. Nonrigid \
+registration interpolates each frame by its own subpixel shifts and rigid registration moves \
+frames by whole pixels; interpolation alone changes the measures that depend on pixel noise \
+(fluctuation, noise level, local correlation, crispness, frame-to-mean r, resting SNR), in \
+either direction, so compare those within one mode (rigid or nonrigid) and, between modes, \
+rely on residual shift and on transient counts against the flipped and red counts. The crop \
+depends on which registrations are compared, so numbers compare within this comparison only. \
+Y-axes are zoomed on each measure's range (dots, not bars). Table: \
+registration_comparison.csv (also root-mean-square residual shifts and the local \
+correlation's 99th percentile).
 """
 
 IMAGES_CAPTION = """Registrations of {recording}, rows {rows} and columns {columns}. Top: red \
 mean of the {n} evenly spaced frames (1st-99.5th percentile of each). Bottom: green local \
 correlation image, each pixel's correlation with the mean of its 8 neighbours over \
 {n_blocks} blocks of {block_frames} frames high-passed over {detrend:g} s, on one color scale \
-for all registrations; sharper, brighter cell bodies mean better-aligned activity.
+for all registrations. Cells stand out as bright patches. Motion left in a movie, and the \
+interpolation of nonrigid registration, brighten the whole image, so compare registrations \
+of one mode (rigid or nonrigid) whose red measures agree.
 """
