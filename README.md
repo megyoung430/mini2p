@@ -156,7 +156,8 @@ refused when loaded and must be registered again.
 ### Several registrations of one variant
 
 Each `[registration] save_folder` of a variant is a registration of its own, with its own
-results, binaries and `motion_alignment.json`. Suite2p always writes binaries to a
+results, binaries, `motion_alignment.json` and registration QC plots (see "QC notebook
+outputs"). Suite2p always writes binaries to a
 `suite2p/plane0` folder, so for a `save_folder` other than `suite2p` they go in
 `<save_folder>/suite2p/plane0/`. Re-registering a `save_folder` clears only that folder.
 
