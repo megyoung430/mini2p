@@ -149,6 +149,9 @@ network share this is slow and can fail with `OSError: [Errno 5] Input/output er
 `_<save_folder>` added for a `save_folder` other than `suite2p`), everything else still goes beside the run, and
 `ops["reg_file"]` records where the binary is. Cellpose extraction reads the binary, so keep a
 run's folder until it has been extracted. Re-registering does not clear these local folders.
+Two copies of one run (e.g. on the share and on the laptop) registered with the same `fast_disk`
+share a local folder, so the second overwrites the first one's binaries; the first is then
+refused when loaded and must be registered again.
 
 ### Several registrations of one variant
 

@@ -74,9 +74,10 @@ def test_a_plain_output_folder_is_not_checked():
 
 def test_fast_disk_folders_name_subject_session_run_variant_and_alignment():
     fast = Path("/fast")
-    registration = RUN / "without_distortion_correction" / "with_destriping" / "aligned_structural"
+    run = Path("/d/cohort-01/sub-03_id-MY_71_R/ses-224_date-x/funcimg/run-01")
+    registration = run / "without_distortion_correction" / "with_destriping" / "aligned_structural"
     assert fast_disk_for(registration, fast) == fast / (
-        f"{RUN.parents[3].name}_{RUN.parents[2].name}_ses-224_date-x_funcimg_run-01_"
+        "cohort-01_sub-03_id-MY_71_R_ses-224_date-x_funcimg_run-01_"
         "without_distortion_correction_with_destriping_aligned_structural"
     )
 

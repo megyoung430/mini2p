@@ -331,5 +331,5 @@ def test_the_record_gives_the_binaries_suite2p_wrote(tmp_path, monkeypatch):
     plane = run_registration(tiff, out, settings(save_folder="suite2p_sigma3"))
     record = json.loads((plane.parent / MOTION_ALIGNMENT_RECORD).read_text())
     binary = plane.parent / "suite2p" / "plane0" / "data.bin"
-    assert record["binaries"]["reg_file"]["suite2p_input"] == str(binary)
+    assert record["binaries"]["reg_file"]["path"] == str(binary)
     assert record["binaries"]["reg_file"]["size_bytes"] == binary.stat().st_size

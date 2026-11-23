@@ -376,10 +376,19 @@ def binaries_identity(plane_dir: Path) -> dict:
     told apart from another one written there later."""
     ops_file = Path(plane_dir) / "ops.npy"
     if not ops_file.is_file():
+        log.warning("No %s after Suite2p: the binaries are not recorded", ops_file)
         return {}
     ops = np.load(ops_file, allow_pickle=True).item()
     paths = {key: Path(ops[key]) for key in BINARY_KEYS if ops.get(key)}
-    return {key: input_identity(path) for key, path in paths.items() if path.is_file()}
+    missing = [str(path) for path in paths.values() if not path.is_file()]
+    if missing:
+        log.warning("Binaries named in %s do not exist, not recorded: %s", ops_file, missing)
+    return {key: binary_identity(path) for key, path in paths.items() if path.is_file()}
+
+
+def binary_identity(path: Path) -> dict:
+    stat = Path(path).stat()
+    return {"path": str(path), "size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns}
 
 
 def alignment_record(choice: MotionChoice, identity: dict) -> dict:
@@ -472,9 +481,12 @@ def check_registration_binary(binary: Path, plane_dir: Path, ops_key: str) -> No
         if binary.is_relative_to(own):
             return
         recorded = json.loads(record_file.read_text()).get("binaries", {}).get(ops_key)
-        if recorded is None or any(
-            recorded[k] != input_identity(binary)[k] for k in SAME_INPUT_KEYS
-        ):
+        if recorded is None:
+            raise RuntimeError(
+                f"{record_file} records no {ops_key} binary, so {binary}, outside "
+                f"{own.name}/, cannot be shown to be this registration's; register again"
+            )
+        if any(recorded[k] != binary_identity(binary)[k] for k in SAME_INPUT_KEYS):
             raise RuntimeError(
                 f"{binary} is not the {ops_key} binary {own.name} wrote (its size or "
                 f"modification time differ from {record_file}): another registration may have "

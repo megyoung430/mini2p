@@ -539,11 +539,11 @@ def record_binary(save_folder_dir, key, binary):
     """The binary's identity in the registration's record, as run_registration writes it."""
     import json
 
-    from mini2p_preprocessing.registration import MOTION_ALIGNMENT_RECORD, input_identity
+    from mini2p_preprocessing.registration import MOTION_ALIGNMENT_RECORD, binary_identity
 
     path = save_folder_dir / MOTION_ALIGNMENT_RECORD
     record = json.loads(path.read_text())
-    record.setdefault("binaries", {})[key] = input_identity(binary)
+    record.setdefault("binaries", {})[key] = binary_identity(binary)
     path.write_text(json.dumps(record))
 
 
@@ -611,3 +611,16 @@ def test_a_binary_without_its_ops_file_is_not_checked(tmp_path):
     binary = tmp_path / "data.bin"
     binary.write_bytes(b"frames")
     check_binary_belongs(binary, tmp_path / "ops.npy")
+
+
+def test_a_record_without_the_binary_says_to_register_again(tmp_path):
+    from mini2p_preprocessing.registration import resolve_registered_binary
+
+    aligned = tmp_path / "with_destriping" / "aligned_structural"
+    sweep, _ = registration(aligned, "suite2p_sigma3")
+    (aligned / "suite2p_sigma3" / "suite2p").rename(tmp_path / "unused")
+    local = tmp_path / "local" / "data.bin"
+    local.parent.mkdir()
+    local.write_bytes(b"frames")
+    with pytest.raises(RuntimeError, match="records no reg_file binary"):
+        resolve_registered_binary({"reg_file": str(local)}, sweep, "reg_file", "data.bin")
