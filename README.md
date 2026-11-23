@@ -103,8 +103,7 @@ run-01/
           motion_alignment.json       which channel, and why
           movies/
         suite2p_rigid_sigma3/         another registration (another save_folder)
-          plane0/                     its results
-          suite2p/plane0/             its binaries (Suite2p always names that folder suite2p)
+          plane0/                     its results and binaries
           motion_alignment.json
           movies/
       aligned_functional/
@@ -158,9 +157,12 @@ refused when loaded and must be registered again.
 
 Each `[registration] save_folder` of a variant is a registration of its own, with its own
 results, binaries, `motion_alignment.json` and registration QC plots (see "QC notebook
-outputs"). Suite2p always writes binaries to a
-`suite2p/plane0` folder, so for a `save_folder` other than `suite2p` they go in
-`<save_folder>/suite2p/plane0/`. Re-registering a `save_folder` clears only that folder.
+outputs"). Suite2p always writes binaries to a `suite2p/plane0` folder, so for a `save_folder`
+other than `suite2p` they are written to `<save_folder>/suite2p/plane0/` and then moved into
+`<save_folder>/plane0/`, beside the results, with `ops.npy` and `db.npy` updated (with
+`fast_disk` set they stay on the local disk). Registrations made between PR #36 and this keep
+theirs in `<save_folder>/suite2p/plane0/`, where they are still found. Re-registering a
+`save_folder` clears only that folder.
 
 Up to and including mini2p PR #33, a registration into another `save_folder` wrote its binaries
 over those of the variant's `suite2p` registration. So in any `aligned_<channel>/` folder that

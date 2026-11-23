@@ -108,7 +108,8 @@ def build_suite2p_db(
         # Suite2p writes its binaries in <fast_disk>/suite2p/plane0 whatever save_folder is
         # (fast_disk defaulting to save_path0), so another save_folder would overwrite the
         # default registration's data.bin. Here they go inside this registration's folder,
-        # <save_folder>/suite2p/plane0, and are removed with it when it is registered again.
+        # <save_folder>/suite2p/plane0 (run_registration then moves them into its plane0),
+        # and are removed with it when it is registered again.
         db["fast_disk"] = str(registration_dir / save_folder)
     return db
 
@@ -277,6 +278,8 @@ def run_registration(
 
     run_s2p(settings=build_suite2p_settings(settings), db=db)
     plane_dir = registration_dir / save_folder / "plane0"
+    if settings.registration.fast_disk is None and save_folder != DEFAULT_SAVE_FOLDER:
+        move_binaries_into_plane(plane_dir)
     record = alignment_record(choice, identity) | {"binaries": binaries_identity(plane_dir)}
     write_alignment_record(registration_dir / save_folder, record)
     return plane_dir
@@ -368,6 +371,33 @@ SAME_INPUT_KEYS = ("size_bytes", "mtime_ns")
 
 
 BINARY_KEYS = ("reg_file", "reg_file_chan2", "raw_file", "raw_file_chan2")
+
+
+def move_binaries_into_plane(plane_dir: Path) -> None:
+    """Move the binaries Suite2p left in ``<save_folder>/suite2p/plane0`` into the
+    registration's ``plane0``, beside its results, and point ``ops.npy`` and ``db.npy`` at
+    them. Suite2p always writes binaries to a ``suite2p/plane0`` folder, so for a save_folder
+    other than the default they would otherwise sit one folder down."""
+    plane_dir = Path(plane_dir)
+    nested = plane_dir.parent / "suite2p" / "plane0"
+    for record_name in ("ops.npy", "db.npy"):
+        record_file = plane_dir / record_name
+        if not record_file.is_file():
+            continue
+        record = np.load(record_file, allow_pickle=True).item()
+        for key in BINARY_KEYS:
+            path = Path(record[key]) if record.get(key) else None
+            if path is None or path.parent != nested:
+                continue
+            if path.is_file():
+                path.replace(plane_dir / path.name)
+            record[key] = str(plane_dir / path.name)
+        partial = record_file.with_name(record_file.stem + ".partial.npy")
+        np.save(partial, record, allow_pickle=True)
+        partial.replace(record_file)
+    for folder in (nested, nested.parent):
+        if folder.is_dir() and not any(folder.iterdir()):
+            folder.rmdir()
 
 
 def binaries_identity(plane_dir: Path) -> dict:

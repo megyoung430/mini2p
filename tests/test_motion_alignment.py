@@ -330,7 +330,7 @@ def test_the_record_gives_the_binaries_suite2p_wrote(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "run_s2p", fake_suite2p)
     plane = run_registration(tiff, out, settings(save_folder="suite2p_sigma3"))
     record = json.loads((plane.parent / MOTION_ALIGNMENT_RECORD).read_text())
-    binary = plane.parent / "suite2p" / "plane0" / "data.bin"
+    binary = plane / "data.bin"  # moved beside the results
     assert record["binaries"]["reg_file"]["path"] == str(binary)
     assert record["binaries"]["reg_file"]["size_bytes"] == binary.stat().st_size
 
@@ -343,3 +343,57 @@ def test_registering_again_removes_the_registrations_movies(tmp_path, suite2p_ca
     (movies / "old.mp4").write_bytes(b"movie of the old registration")
     run_registration(tiff, out, settings())
     assert not movies.exists()
+
+
+def nested_suite2p(keep_raw=False):
+    """A stand-in for Suite2p 1.x: results in <save_folder>/plane0, binaries in
+    <fast_disk>/suite2p/plane0 (fast_disk defaulting to save_path0), paths in ops and db."""
+
+    def run(settings, db):
+        plane = Path(db["save_path0"]) / db["save_folder"] / "plane0"
+        binaries = Path(db.get("fast_disk", db["save_path0"])) / "suite2p" / "plane0"
+        plane.mkdir(parents=True)
+        binaries.mkdir(parents=True, exist_ok=True)
+        names = {"reg_file": "data.bin", "reg_file_chan2": "data_chan2.bin"}
+        if keep_raw:
+            names |= {"raw_file": "data_raw.bin", "raw_file_chan2": "data_chan2_raw.bin"}
+        paths = {key: str(binaries / name) for key, name in names.items()}
+        for path in paths.values():
+            Path(path).write_bytes(b"frames")
+        np.save(plane / "db.npy", dict(paths))
+        np.save(plane / "ops.npy", {**paths, "nframes": 2})
+
+    return run
+
+
+@pytest.mark.parametrize("keep_raw", [False, True])
+def test_a_sweep_registration_keeps_its_binaries_in_its_own_plane0(tmp_path, monkeypatch, keep_raw):
+    out, tiff = variant_with_phase_record(tmp_path, 0.8)
+    module = importlib.import_module("suite2p.run_s2p")
+    monkeypatch.setattr(module, "run_s2p", nested_suite2p(keep_raw))
+    plane = run_registration(tiff, out, settings(save_folder="suite2p_sigma3"))
+    names = ["data.bin", "data_chan2.bin"] + (
+        ["data_chan2_raw.bin", "data_raw.bin"] if keep_raw else []
+    )
+    assert sorted(p.name for p in plane.glob("*.bin")) == sorted(names)
+    assert not (plane.parent / "suite2p").exists()  # no empty nested folder left
+    ops = np.load(plane / "ops.npy", allow_pickle=True).item()
+    db = np.load(plane / "db.npy", allow_pickle=True).item()
+    for key in ("reg_file", "reg_file_chan2"):
+        assert Path(ops[key]).parent == plane and Path(db[key]).parent == plane
+    record = json.loads((plane.parent / MOTION_ALIGNMENT_RECORD).read_text())
+    assert Path(record["binaries"]["reg_file"]["path"]).parent == plane
+    assert ops["nframes"] == 2  # the rest of ops is kept
+
+
+def test_binaries_on_a_fast_disk_stay_there(tmp_path, monkeypatch):
+    out, tiff = variant_with_phase_record(tmp_path, 0.8)
+    module = importlib.import_module("suite2p.run_s2p")
+    monkeypatch.setattr(module, "run_s2p", nested_suite2p())
+    local = tmp_path / "local"
+    plane = run_registration(
+        tiff, out, settings(save_folder="suite2p_sigma3", fast_disk=str(local))
+    )
+    assert not list(plane.glob("*.bin"))
+    ops = np.load(plane / "ops.npy", allow_pickle=True).item()
+    assert Path(ops["reg_file"]).is_relative_to(local) and Path(ops["reg_file"]).is_file()
