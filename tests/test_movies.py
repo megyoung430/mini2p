@@ -88,6 +88,7 @@ def write_interleaved_tiff(path: Path, green: np.ndarray, red: np.ndarray, green
 def make_run(
     root: Path,
     variant: str = WITHOUT,
+    save_folder: str = "suite2p",
     reg_file: Path | None = None,
     tiffs: bool = True,
     manifest: bool = True,
@@ -100,7 +101,7 @@ def make_run(
     green_page = run.channels.functional_channel - 1
     run_dir = root / "cohort-01" / "sub-03_id-MY_71_R" / SESSION / "funcimg" / "run-01"
     variant_dir = run_dir / variant
-    plane = variant_dir / ALIGNED / "suite2p" / "plane0"
+    plane = variant_dir / ALIGNED / save_folder / "plane0"
     plane.mkdir(parents=True)
     ramp(GREEN_OFFSET["registered"]).tofile(reg_file or plane / "data.bin")
     flat(RED_LEVEL["registered"]).tofile(plane / "data_chan2.bin")
@@ -184,7 +185,7 @@ def decoded(path: Path) -> tuple[dict, np.ndarray]:
 
 def movie_dir(root: Path, variant: str = WITHOUT) -> Path:
     run_dir = root / "cohort-01" / "sub-03_id-MY_71_R" / SESSION / "funcimg" / "run-01"
-    return run_dir / variant / ALIGNED / "movies"
+    return run_dir / variant / ALIGNED / "suite2p" / "movies"
 
 
 # ---------------------------------------------------------------- pure functions
@@ -734,7 +735,7 @@ def test_movies_of_a_run_folder_given_by_path(tmp_path, caplog):
         p.name.startswith("example_ses_img_with_distortion_correction_without_destriping_")
         for p in written
     )
-    assert all(p.parent == run_dir / WITHOUT / ALIGNED / "movies" for p in written)
+    assert all(p.parent == run_dir / WITHOUT / ALIGNED / "suite2p" / "movies" for p in written)
     assert "No pipeline_settings.json" in caplog.text
 
 
@@ -858,7 +859,7 @@ def test_command_line_run_dir_and_run_by_name(tmp_path):
     make_run(tmp_path, tiffs=False)
     config = write_config(tmp_path, "")  # names sub-03 session 224 run 1 under tmp_path
     movie_main(["--config", str(config), "--run-dir", str(run_dir), "--no-averaged-movie"])
-    assert len(list((run_dir / WITHOUT / ALIGNED / "movies").glob("*.mp4"))) == 1
+    assert len(list((run_dir / WITHOUT / ALIGNED / "suite2p" / "movies").glob("*.mp4"))) == 1
     in_config = config.read_text() + f'run_dir = "{run_dir}"\n'
     config.write_text(in_config)
     movie_main(["--config", str(config), "--session", "224", "--no-averaged-movie"])
@@ -917,7 +918,7 @@ def test_movies_of_a_run_without_distortion_correction(tmp_path):
     assert all(p.name.startswith(f"sub-03_id-MY_71_R_{SESSION}_run-01_") for p in written)
     assert all(p.parent == tmp_path.joinpath(
         "cohort-01", "sub-03_id-MY_71_R", SESSION, "funcimg", "run-01", nested, ALIGNED,
-        "movies")
+        "suite2p", "movies")
         for p in written)  # fmt: skip
 
 
@@ -1056,3 +1057,16 @@ def test_the_background_removed_stage_is_titled_cropped_and_needs_its_tiff(tmp_p
     with pytest.raises(FileNotFoundError, match="background step"):
         make_movies(settings_for(tmp_path, stage_registered=False, overwrite=True,
                                  stage_background_removed=True, averaged_movie=False))  # fmt: skip
+
+
+def test_each_registration_of_a_variant_keeps_its_own_movies(tmp_path):
+    make_run(tmp_path, tiffs=False)
+    make_run(tmp_path, tiffs=False, save_folder="suite2p_rigid_sigma3")
+    run = dict(averaged_movie=False)
+    (default,) = make_movies(settings_for(tmp_path, **run))
+    (sweep,) = make_movies(settings_for(tmp_path, save_folder="suite2p_rigid_sigma3", **run))
+    aligned = movie_dir(tmp_path).parents[1]
+    assert default.parent == aligned / "suite2p" / "movies"
+    assert sweep.parent == aligned / "suite2p_rigid_sigma3" / "movies"
+    assert "_aligned_structural_registered_" in default.name  # the default's name is kept
+    assert "_aligned_structural_suite2p_rigid_sigma3_registered_" in sweep.name

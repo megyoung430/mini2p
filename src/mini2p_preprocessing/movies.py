@@ -161,7 +161,7 @@ class MovieSettings(BaseModel):
     derivatives_root: Path | None = None  # holds cohort-XX/<subject>/ses-*/funcimg/run-XX
     raw_tiff: Path | None = None  # the acquired TIFF, if not where source_tiff.json says
     behavior_video: Path | None = None  # the video, if not where video_frame_times.npz says
-    output_dir: Path | None = None  # None: run-XX/<variant>/aligned_<source>/movies
+    output_dir: Path | None = None  # None: run-XX/<variant>/aligned_<source>/<save_folder>/movies
     overwrite: bool = False  # replace existing movies
     save_folder: str = DEFAULT_SAVE_FOLDER  # Suite2p output folder inside aligned_<channel>/
     # How they look
@@ -941,7 +941,11 @@ def open_jobs(
     with the config's settings, which *config* loads only then.
     """
     variant_dir = variant_dir_of(plane_dir)
-    alignment = plane_dir.parents[1].name  # in every file name: the folder can be left
+    # in every file name, so a movie moved out of its folder still names its registration:
+    # aligned_<source>, and the save_folder if it is not the default
+    alignment = plane_dir.parents[1].name
+    if plane_dir.parent.name != "suite2p":
+        alignment += f"_{plane_dir.parent.name}"
     stages = settings.stages
     if set(stages) - {"registered"}:
         run = load_run_settings(variant_dir)  # the TIFF stages need it: fail if unreadable
@@ -1061,9 +1065,13 @@ def make_movies(
     values, and the stages are on different scales).
     """
     plane_dir, names = run_folder(settings)
-    # Beside the registration they show, so movies of two alignments never collide.
-    alignment_folder = plane_dir.parents[1]
-    out_dir = Path(settings.output_dir) if settings.output_dir else alignment_folder / MOVIE_FOLDER
+    # In the folder of the registration they are made from (every stage's frame count, rate
+    # and crop come from its ops), so movies of two registrations never collide; registering
+    # again, which replaces that folder, removes them with it.
+    registration_folder = plane_dir.parent
+    out_dir = (
+        Path(settings.output_dir) if settings.output_dir else registration_folder / MOVIE_FOLDER
+    )
     with ExitStack() as stack:
         jobs = open_jobs(settings, plane_dir, names, stack, config)
         for job in jobs:
