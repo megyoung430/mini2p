@@ -30,33 +30,60 @@ def test_preprocessing_plots_go_in_the_variant_folder(tmp_path):
         qc_step_dir(tmp_path, "registration")
 
 
+VARIANT = ("run-02", "without_distortion_correction", "with_destriping")
+
+
+def plane(tmp_path, save_folder="suite2p", channel="aligned_structural"):
+    return tmp_path.joinpath(*VARIANT, channel, save_folder, "plane0")
+
+
 def test_registration_plots_go_in_their_registration_folder(tmp_path):
-    variant = tmp_path / "run-02" / "without_distortion_correction" / "with_destriping"
-    one = variant / "aligned_structural" / "suite2p"
-    other = variant / "aligned_structural" / "suite2p_rigid_sigma3"
+    variant = tmp_path.joinpath(*VARIANT)
+    one, other = plane(tmp_path), plane(tmp_path, "suite2p_rigid_sigma3")
     assert {"motion_registration", "frame_order", "fluorescence"} == set(REGISTRATION_STEPS)
     for step in REGISTRATION_STEPS:
-        assert qc_step_dir(variant, step, one) == one / QC_FOLDER / step
-        assert qc_step_dir(variant, step, one) != qc_step_dir(variant, step, other)
-    with pytest.raises(ValueError, match="registration folder"):
+        assert qc_step_dir(variant, step, one) == one.parent / QC_FOLDER / step
+        assert qc_step_dir(variant, step, other, "suite2p_rigid_sigma3") == (
+            other.parent / QC_FOLDER / step
+        )
+    with pytest.raises(ValueError, match="registration cell"):
         qc_step_dir(variant, "motion_registration")
 
 
-def test_a_registration_folder_must_be_inside_the_variant(tmp_path):
-    variant = tmp_path / "run-02" / "with_destriping"
-    elsewhere = tmp_path / "run-03" / "with_destriping" / "aligned_structural" / "suite2p"
-    with pytest.raises(ValueError, match="inside"):
-        qc_step_dir(variant, "fluorescence", elsewhere)
+def test_a_plane_of_another_registration_than_the_configured_one_is_refused(tmp_path):
+    # e.g. save_folder changed in the config while the notebook still holds the old plane
+    variant = tmp_path.joinpath(*VARIANT)
+    with pytest.raises(ValueError, match="suite2p_rigid_sigma3"):
+        qc_step_dir(variant, "fluorescence", plane(tmp_path), "suite2p_rigid_sigma3")
+
+
+@pytest.mark.parametrize(
+    "wrong",
+    [
+        lambda t: t.joinpath(*VARIANT),  # the variant itself
+        lambda t: plane(t).parent,  # the save folder rather than its plane0
+        lambda t: t / "run-03" / "with_destriping" / "aligned_structural" / "suite2p" / "plane0",
+        lambda t: t.joinpath(*VARIANT, "suite2p", "plane0"),  # not inside aligned_<channel>/
+    ],
+)
+def test_a_plane_that_is_not_a_registration_of_the_variant_is_refused(tmp_path, wrong):
+    with pytest.raises(ValueError, match="not a registration of"):
+        qc_step_dir(tmp_path.joinpath(*VARIANT), "fluorescence", wrong(tmp_path))
+
+
+def test_preprocessing_plots_take_no_plane(tmp_path):
+    with pytest.raises(ValueError, match="variant"):
+        qc_step_dir(tmp_path.joinpath(*VARIANT), "bidiphase", plane(tmp_path))
 
 
 def test_a_registration_plot_is_saved_beside_its_registration(tmp_path):
-    variant = tmp_path / "with_destriping"
-    registration = variant / "aligned_functional" / "suite2p"
+    variant = tmp_path.joinpath(*VARIANT)
+    plane0 = plane(tmp_path, channel="aligned_functional")
     fig = plt.figure()
     stem = save_qc_figure(fig, variant, "fluorescence", "f0_overview", "F0.\n",
-                          registration_dir=registration)  # fmt: skip
+                          plane_dir=plane0, save_folder="suite2p")  # fmt: skip
     plt.close(fig)
-    assert stem == registration / QC_FOLDER / "fluorescence" / "f0_overview"
+    assert stem == plane0.parent / QC_FOLDER / "fluorescence" / "f0_overview"
     assert (stem.parent / "f0_overview.png").is_file()
 
 

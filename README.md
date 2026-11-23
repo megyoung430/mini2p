@@ -368,8 +368,13 @@ depend on the registration go in that registration's Suite2p folder,
 | `fluorescence/` | registration | photon-free levels, F0 overview, mask alignment, background, top ROIs |
 
 So registrations of one variant with different settings, each in its own
-`[registration] save_folder` (e.g. `suite2p_rigid_sigma3`), keep their own plots, and
-registering again, which replaces that folder, removes the old registration's plots with it.
+`[registration] save_folder` (e.g. `suite2p_rigid_sigma3`), keep their own plots. Registering
+again into the same `save_folder` (with `overwrite = true`, and no Cellpose masks in that
+`aligned_<channel>/` folder) replaces the folder and the old registration's plots with it.
+Each registration plot is saved only for the registration of the configured `save_folder`: the
+notebook refuses to save one drawn from another. `motion_registration/`, `frame_order/` and
+`fluorescence/` folders left directly in `<variant>/quality_control/` by earlier versions of the
+notebook belong to whichever registration ran last before the change, and can be deleted.
 Plots behind a slider (manual chunk offset, contrast preview, one ROI at a time) are not saved;
 the contrast you choose is.
 

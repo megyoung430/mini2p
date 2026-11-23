@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
 
+from .config import variant_dir_of
 from .raw_previews import save_preview
 
 QC_FOLDER = "quality_control"
@@ -26,30 +27,53 @@ QC_STEPS = PREPROCESSING_STEPS + REGISTRATION_STEPS
 QC_DPI = 200
 
 
-def qc_step_dir(variant_dir: Path, step: str, registration_dir: Path | None = None) -> Path:
+def qc_step_dir(
+    variant_dir: Path,
+    step: str,
+    plane_dir: Path | None = None,
+    save_folder: str | None = None,
+) -> Path:
     """The folder for one QC step's plots.
 
     ``<variant_dir>/quality_control/<step>`` for a preprocessing step;
-    ``<registration_dir>/quality_control/<step>`` for a step that depends on the
-    registration, where ``registration_dir`` is that registration's Suite2p folder inside the
-    variant (the parent of its ``plane0``).
+    ``<variant_dir>/aligned_<channel>/<save_folder>/quality_control/<step>`` for a step that
+    depends on the registration, taken from that registration's ``plane_dir``
+    (``.../<save_folder>/plane0``). With ``save_folder`` (the configured
+    ``[registration] save_folder``), a plane of another registration is refused.
 
     Raises:
-        ValueError: For an unknown step, or a registration step without a registration
-            folder inside ``variant_dir``.
+        ValueError: For an unknown step; a preprocessing step given a plane; a registration
+            step without a plane, or with one that is not a registration of this variant
+            or of ``save_folder``.
     """
     if step in PREPROCESSING_STEPS:
+        if plane_dir is not None:
+            raise ValueError(f"The {step} plots belong to the variant, not to a registration")
         return Path(variant_dir) / QC_FOLDER / step
     if step not in REGISTRATION_STEPS:
         raise ValueError(f"Unknown QC step {step!r}; one of {', '.join(QC_STEPS)}")
-    if registration_dir is None:
-        raise ValueError(f"The {step} plots go in their registration folder; none was given")
-    if not Path(registration_dir).is_relative_to(variant_dir):
+    if plane_dir is None:
         raise ValueError(
-            f"The registration folder {registration_dir} must be inside the variant "
-            f"folder {variant_dir}"
+            f"The {step} plots go in their registration's folder: give its plane0 folder "
+            "(in the QC notebook, run the registration cell, or the cell after it that "
+            "finds the registration, first)"
         )
-    return Path(registration_dir) / QC_FOLDER / step
+    plane_dir = Path(plane_dir)
+    try:
+        of_this_variant = variant_dir_of(plane_dir) == Path(variant_dir)
+    except ValueError:  # not inside an aligned_<channel>/ folder
+        of_this_variant = False
+    if plane_dir.name != "plane0" or not of_this_variant:
+        raise ValueError(
+            f"{plane_dir} is not a registration of {variant_dir} "
+            "(expected <variant>/aligned_<channel>/<save_folder>/plane0)"
+        )
+    if save_folder is not None and plane_dir.parent.name != save_folder:
+        raise ValueError(
+            f"{plane_dir} is the registration in {plane_dir.parent.name}/, not the configured "
+            f"save_folder {save_folder!r}; find or run that registration first"
+        )
+    return plane_dir.parent / QC_FOLDER / step
 
 
 def figure_of(drawn) -> plt.Figure:
@@ -69,7 +93,8 @@ def save_qc_figure(
     step: str,
     name: str,
     caption: str,
-    registration_dir: Path | None = None,
+    plane_dir: Path | None = None,
+    save_folder: str | None = None,
     dpi: int = QC_DPI,
 ) -> Path:
     """Save the figure in its step's folder (``qc_step_dir``) as ``<name>.png/.pdf/.svg``
@@ -79,6 +104,6 @@ def save_qc_figure(
     """
     if not name or Path(name).name != name or Path(name).suffix or name in (".", ".."):
         raise ValueError(f"A QC figure name must be a plain file stem, not {name!r}")
-    stem = qc_step_dir(variant_dir, step, registration_dir) / name
+    stem = qc_step_dir(variant_dir, step, plane_dir, save_folder) / name
     save_preview(figure_of(drawn), stem, caption, dpi=dpi)
     return stem
