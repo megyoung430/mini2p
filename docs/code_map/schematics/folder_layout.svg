@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 538" role="img" aria-label="Where a run's outputs go in the derivatives tree">
+<style>
+.cm-t{font-family:var(--f-body,system-ui,sans-serif);fill:var(--ink,#1b2126)}
+.cm-m{font-family:var(--f-mono,ui-monospace,monospace);fill:var(--ink,#1b2126)}
+.cm-q{fill:var(--muted,#5d6872)}
+.cm-b{font-weight:600}
+.cm-box{fill:var(--panel,#fff);stroke:var(--muted,#5d6872);stroke-width:1.2}
+.cm-man{stroke-dasharray:5 4}
+.cm-out{fill:var(--accent-soft,#e3f0f8);stroke:var(--accent,#0072B2);stroke-width:1}
+.cm-ln{fill:none;stroke:var(--muted,#5d6872);stroke-width:1.2}
+.cm-tree{fill:none;stroke:var(--line,#dde2e6);stroke-width:1.4}
+.cm-arrow{fill:var(--muted,#5d6872)}
+.cm-hl{fill:var(--accent,#0072B2)}
+</style>
+<text x="16" y="24" class="cm-t cm-b" font-size="15" text-anchor="start">Where a run&#x27;s outputs go in the derivatives tree</text>
+<text x="16" y="60" class="cm-m" font-size="12.5" text-anchor="start">&lt;derivatives&gt;/cohort-01/sub-03_id-MY_71_R/ses-223_date-20260807/funcimg/</text>
+<path d="M22 66V82H36" class="cm-tree"/>
+<text x="40" y="86" class="cm-m" font-size="12.5" text-anchor="start">preview-all-tifs/</text>
+<text x="560" y="86" class="cm-t cm-q" font-size="12" text-anchor="start">raw mean images of every TIFF (mini2p-raw-means)</text>
+<path d="M22 66V108H36" class="cm-tree"/>
+<text x="40" y="112" class="cm-m cm-b" font-size="12.5" text-anchor="start">run-02/</text>
+<text x="560" y="112" class="cm-t cm-q" font-size="12" text-anchor="start">one raw TIFF; runs numbered by acquisition</text>
+<path d="M46 118V134H60" class="cm-tree"/>
+<text x="64" y="138" class="cm-m" font-size="12.5" text-anchor="start">source_tiff.json</text>
+<text x="560" y="138" class="cm-t cm-q" font-size="12" text-anchor="start">which raw TIFF this run is, and whether it finished (batch)</text>
+<path d="M46 118V160H60" class="cm-tree"/>
+<text x="64" y="164" class="cm-m" font-size="12.5" text-anchor="start">suite2p/plane0/</text>
+<text x="560" y="164" class="cm-t cm-q" font-size="12" text-anchor="start">the registration the Cellpose masks are drawn on (batch)</text>
+<path d="M46 118V186H60" class="cm-tree"/>
+<text x="64" y="190" class="cm-m cm-b" font-size="12.5" text-anchor="start">with_distortion_correction/with_destriping/</text>
+<text x="560" y="190" class="cm-t cm-q" font-size="12" text-anchor="start">a variant: with or without each correction</text>
+<path d="M70 196V212H84" class="cm-tree"/>
+<text x="88" y="216" class="cm-m" font-size="12.5" text-anchor="start">&lt;stem&gt;_dynamic_bidiphase_destriped.tif</text>
+<text x="560" y="216" class="cm-t cm-q" font-size="12" text-anchor="start">step 1, with .phase.json and .phase_frames.npz</text>
+<path d="M70 196V238H84" class="cm-tree"/>
+<text x="88" y="242" class="cm-m" font-size="12.5" text-anchor="start">&lt;stem&gt;_…_undistorted.tif</text>
+<text x="560" y="242" class="cm-t cm-q" font-size="12" text-anchor="start">step 2, with .distortion.json</text>
+<path d="M70 196V264H84" class="cm-tree"/>
+<text x="88" y="268" class="cm-m" font-size="12.5" text-anchor="start">pipeline_settings.json</text>
+<text x="560" y="268" class="cm-t cm-q" font-size="12" text-anchor="start">the exact settings this variant used</text>
+<path d="M70 196V290H84" class="cm-tree"/>
+<text x="88" y="294" class="cm-m" font-size="12.5" text-anchor="start">quality_control/</text>
+<text x="560" y="294" class="cm-t cm-q" font-size="12" text-anchor="start">raw_mean · bidiphase · destriping · distortion_correction</text>
+<path d="M70 196V316H84" class="cm-tree"/>
+<text x="88" y="320" class="cm-m cm-b" font-size="12.5" text-anchor="start">aligned_structural/</text>
+<text x="560" y="320" class="cm-t cm-q" font-size="12" text-anchor="start">motion estimated on red (or aligned_functional/)</text>
+<path d="M94 326V342H108" class="cm-tree"/>
+<text x="112" y="346" class="cm-m" font-size="12.5" text-anchor="start">suite2p/</text>
+<text x="560" y="346" class="cm-t cm-q" font-size="12" text-anchor="start">the default save_folder, laid out like the one below</text>
+<path d="M94 326V368H108" class="cm-tree"/>
+<text x="112" y="372" class="cm-m cm-b" font-size="12.5" text-anchor="start">&lt;save_folder&gt;/</text>
+<text x="560" y="372" class="cm-t cm-q" font-size="12" text-anchor="start">one registration per [registration] save_folder</text>
+<path d="M118 378V394H132" class="cm-tree"/>
+<text x="136" y="398" class="cm-m" font-size="12.5" text-anchor="start">plane0/</text>
+<text x="560" y="398" class="cm-t cm-q" font-size="12" text-anchor="start">ops.npy · data.bin · data_chan2.bin · F.npy … · meanImg_*</text>
+<path d="M118 378V420H132" class="cm-tree"/>
+<text x="136" y="424" class="cm-m" font-size="12.5" text-anchor="start">motion_alignment.json</text>
+<text x="560" y="424" class="cm-t cm-q" font-size="12" text-anchor="start">which channel motion used, why, and its binaries</text>
+<path d="M118 378V446H132" class="cm-tree"/>
+<text x="136" y="450" class="cm-m" font-size="12.5" text-anchor="start">quality_control/</text>
+<text x="560" y="450" class="cm-t cm-q" font-size="12" text-anchor="start">motion_registration · frame_order · fluorescence</text>
+<path d="M118 378V472H132" class="cm-tree"/>
+<text x="136" y="476" class="cm-m" font-size="12.5" text-anchor="start">movies/</text>
+<text x="560" y="476" class="cm-t cm-q" font-size="12" text-anchor="start">stage movies made from this registration</text>
+<path d="M94 326V498H108" class="cm-tree"/>
+<text x="112" y="502" class="cm-m" font-size="12.5" text-anchor="start">registration_comparison/</text>
+<text x="560" y="502" class="cm-t cm-q" font-size="12" text-anchor="start">the save_folders side by side (mini2p-compare-registrations)</text>
+</svg>
