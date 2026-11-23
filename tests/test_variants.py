@@ -72,12 +72,12 @@ def test_a_plain_output_folder_is_not_checked():
     assert run_name_from_output_dir(Path("/tmp/anything")) == "anything"
 
 
-def test_fast_disk_folders_name_session_run_variant_and_alignment():
+def test_fast_disk_folders_name_subject_session_run_variant_and_alignment():
     fast = Path("/fast")
     registration = RUN / "without_distortion_correction" / "with_destriping" / "aligned_structural"
     assert fast_disk_for(registration, fast) == fast / (
-        "ses-224_date-x_funcimg_run-01_without_distortion_correction_with_destriping_"
-        "aligned_structural"
+        f"{RUN.parents[3].name}_{RUN.parents[2].name}_ses-224_date-x_funcimg_run-01_"
+        "without_distortion_correction_with_destriping_aligned_structural"
     )
 
 
