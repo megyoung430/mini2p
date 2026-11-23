@@ -387,7 +387,8 @@ def write_alignment_record(suite2p_dir: Path, record: dict) -> None:
 
 def alignment_records(alignment_folder: Path) -> list[dict]:
     """The records of every registration in ``aligned_<source>/``: one per save_folder,
-    and the one earlier versions wrote beside them, in ``aligned_<source>/`` itself."""
+    and the one earlier versions wrote beside them, in ``aligned_<source>/`` itself (only
+    read, never removed: it describes the TIFF the folder's earlier registrations used)."""
     alignment_folder = Path(alignment_folder)
     paths = [alignment_folder / MOTION_ALIGNMENT_RECORD]
     paths += sorted(alignment_folder.glob(f"*/{MOTION_ALIGNMENT_RECORD}"))
@@ -439,23 +440,19 @@ def resolve_registered_binary(ops: dict, plane_dir: Path, ops_key: str, filename
 def may_be_shared(binary: Path, plane_dir: Path) -> bool:
     """Whether another registration of the variant may have written *binary*.
 
-    Registrations into a save_folder other than the default used to write their binaries
-    into the default registration's ``suite2p/plane0``. So a binary may be shared if it is
-    outside this registration's own save_folder, or if this is the default registration
-    and another save_folder beside it has a plane0 but no binaries of its own.
+    A registration with its own ``<save_folder>/motion_alignment.json`` keeps its binaries
+    to itself: that record is written after Suite2p finishes, and only since each
+    save_folder has its own binaries. Earlier registrations into a save_folder other than
+    the default wrote theirs into the variant's ``suite2p/plane0``, so a registration
+    without the record may be sharing its binary if the binary is outside its own folder,
+    or if it is the default registration of an ``aligned_<channel>/`` folder.
     """
     own = Path(plane_dir).parent
+    if (own / MOTION_ALIGNMENT_RECORD).is_file():
+        return False
     if not Path(binary).is_relative_to(own):
         return True
-    if own.name != DEFAULT_SAVE_FOLDER:
-        return False
-    for sibling in own.parent.glob("*/plane0"):
-        folder = sibling.parent
-        if folder == own or not (sibling / "ops.npy").is_file():
-            continue
-        if not any((d / "data.bin").is_file() for d in (sibling, folder / "suite2p" / "plane0")):
-            return True
-    return False
+    return own.name == DEFAULT_SAVE_FOLDER and own.parent.name in ALIGNMENT_SUBDIRS.values()
 
 
 def check_binary_belongs(binary: Path, ops_file: Path) -> None:
