@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 # fast_disk that is the results folder itself.
 DEFAULT_SAVE_FOLDER = "suite2p"
 
-MOTION_ALIGNMENT_RECORD = "motion_alignment.json"  # in aligned_<source>/: why that channel
+MOTION_ALIGNMENT_RECORD = "motion_alignment.json"  # in <save_folder>/: why that channel
 
 
 # ---- analysis: build Suite2p inputs (pure apart from Suite2p's defaults) ----------
@@ -246,7 +246,9 @@ def run_registration(
     check_existing_suite2p_folder(registration_dir, suite2p_input_tiff, save_folder)
     other = "functional" if choice.source == "structural" else "structural"
     other_dir = alignment_dir(output_dir, other)
-    stale = other_dir.exists() and not same_input(read_alignment_record(other_dir), identity)
+    stale = other_dir.exists() and not any(
+        same_input(record, identity) for record in alignment_records(other_dir)
+    )
     # Every refusal comes before anything is removed, so a refused run changes nothing.
     if (registration_dir / save_folder).exists():
         check_removable(registration_dir, settings, f"Not replacing {registration_dir}")
@@ -261,9 +263,9 @@ def run_registration(
         shutil.rmtree(other_dir)
     elif other_dir.exists():
         log.info("Keeping %s: it registered the same TIFF", other_dir)
+    # Removes this registration's earlier record too: a run that fails must not leave the
+    # previous run's record describing it.
     clear_earlier_registration(registration_dir / save_folder, settings)
-    # A run that fails must not leave the previous run's record describing it.
-    (registration_dir / MOTION_ALIGNMENT_RECORD).unlink(missing_ok=True)
     registration_dir.mkdir(parents=True, exist_ok=True)
     db = build_suite2p_db(output_dir, suite2p_input_tiff, settings)
     log.info(
@@ -275,7 +277,7 @@ def run_registration(
     from suite2p.run_s2p import run_s2p
 
     run_s2p(settings=build_suite2p_settings(settings), db=db)
-    write_alignment_record(registration_dir, alignment_record(choice, identity))
+    write_alignment_record(registration_dir / save_folder, alignment_record(choice, identity))
     return registration_dir / save_folder / "plane0"
 
 
@@ -375,16 +377,22 @@ def alignment_record(choice: MotionChoice, identity: dict) -> dict:
     }
 
 
-def write_alignment_record(registration_dir: Path, record: dict) -> None:
-    path = Path(registration_dir) / MOTION_ALIGNMENT_RECORD
+def write_alignment_record(suite2p_dir: Path, record: dict) -> None:
+    """The record of one registration, in its ``<save_folder>/``."""
+    path = Path(suite2p_dir) / MOTION_ALIGNMENT_RECORD
+    path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_name(path.name + ".partial")
     partial.write_text(json.dumps(record, indent=2))
     partial.replace(path)
 
 
-def read_alignment_record(registration_dir: Path) -> dict | None:
-    path = Path(registration_dir) / MOTION_ALIGNMENT_RECORD
-    return json.loads(path.read_text()) if path.is_file() else None
+def alignment_records(alignment_folder: Path) -> list[dict]:
+    """The records of every registration in ``aligned_<source>/``: one per save_folder,
+    and the one earlier versions wrote beside them, in ``aligned_<source>/`` itself."""
+    alignment_folder = Path(alignment_folder)
+    paths = [alignment_folder / MOTION_ALIGNMENT_RECORD]
+    paths += sorted(alignment_folder.glob(f"*/{MOTION_ALIGNMENT_RECORD}"))
+    return [json.loads(path.read_text()) for path in paths if path.is_file()]
 
 
 def same_input(record: dict | None, identity: dict) -> bool:

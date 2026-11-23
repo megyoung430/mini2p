@@ -98,8 +98,13 @@ run-01/
   with_distortion_correction/
     with_destriping/                  corrected TIFFs and their sidecars
       aligned_structural/
-        suite2p/plane0/
-        motion_alignment.json         which channel, and why
+        suite2p/                      [registration] save_folder
+          plane0/                     Suite2p's results and binaries
+          motion_alignment.json       which channel, and why
+        suite2p_rigid_sigma3/         another registration (another save_folder)
+          plane0/                     its results
+          suite2p/plane0/             its binaries (Suite2p always names that folder suite2p)
+          motion_alignment.json
         movies/
       aligned_functional/
         suite2p/plane0/
