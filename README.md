@@ -98,8 +98,13 @@ run-01/
   with_distortion_correction/
     with_destriping/                  corrected TIFFs and their sidecars
       aligned_structural/
-        suite2p/plane0/
-        motion_alignment.json         which channel, and why
+        suite2p/                      [registration] save_folder
+          plane0/                     Suite2p's results and binaries
+          motion_alignment.json       which channel, and why
+        suite2p_rigid_sigma3/         another registration (another save_folder)
+          plane0/                     its results
+          suite2p/plane0/             its binaries (Suite2p always names that folder suite2p)
+          motion_alignment.json
         movies/
       aligned_functional/
         suite2p/plane0/
@@ -140,9 +145,29 @@ Suite2p writes each run's registered movie (`data.bin`, `data_chan2.bin`, about 
 for a 7,000-frame two-channel run) and rereads it several times while registering. Over a
 network share this is slow and can fail with `OSError: [Errno 5] Input/output error`. Set
 `[registration] fast_disk` to a local folder: the binaries go to
-`<fast_disk>/<session>_funcimg_<run>_<variant>/`, everything else still goes beside the run,
-and `ops["reg_file"]` records where the binary is. Cellpose extraction reads the binary, so
-keep a run's folder until it has been extracted.
+`<fast_disk>/<cohort>_<subject>_<session>_funcimg_<run>_<variant>_aligned_<channel>/` (with
+`_<save_folder>` added for a `save_folder` other than `suite2p`), everything else still goes beside the run, and
+`ops["reg_file"]` records where the binary is. Cellpose extraction reads the binary, so keep a
+run's folder until it has been extracted. Re-registering does not clear these local folders.
+Two copies of one run (e.g. on the share and on the laptop) registered with the same `fast_disk`
+share a local folder, so the second overwrites the first one's binaries; the first is then
+refused when loaded and must be registered again.
+
+### Several registrations of one variant
+
+Each `[registration] save_folder` of a variant is a registration of its own, with its own
+results, binaries and `motion_alignment.json`. Suite2p always writes binaries to a
+`suite2p/plane0` folder, so for a `save_folder` other than `suite2p` they go in
+`<save_folder>/suite2p/plane0/`. Re-registering a `save_folder` clears only that folder.
+
+Up to and including mini2p PR #33, a registration into another `save_folder` wrote its binaries
+over those of the variant's `suite2p` registration. So in any `aligned_<channel>/` folder that
+has held a registration in another `save_folder`, register the `suite2p` registration again, and
+the other save_folders too. Until then, a registration made by those versions whose binary was
+written after its `ops.npy` stops with an error when loaded; `F.npy` or background TIFFs already
+extracted from such a binary are not checked. Update mini2p everywhere that registers into the
+same folders (laptop, cluster): an older version would still write a second registration's
+binaries over the first one's.
 
 ### Re-running, extraction and outputs
 

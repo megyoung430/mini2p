@@ -16,6 +16,10 @@ log = logging.getLogger(__name__)
 ChannelRole = Literal["structural", "functional"]
 # "auto": structural where the bidiphase step trusted it often enough, else functional.
 MotionSource = Literal["structural", "functional", "auto"]
+# Suite2p's output folder inside aligned_<channel>/ unless [registration] save_folder says
+# otherwise. Suite2p writes its binaries in <fast_disk>/suite2p/plane0, so with this name (and
+# no fast_disk) they sit in the results' own plane0.
+DEFAULT_SAVE_FOLDER = "suite2p"
 WITHOUT_DESTRIPING_SUBDIR = "without_destriping"
 WITH_DESTRIPING_SUBDIR = "with_destriping"
 VARIANT_SUBDIRS = (WITHOUT_DESTRIPING_SUBDIR, WITH_DESTRIPING_SUBDIR)
@@ -193,7 +197,7 @@ class RegistrationSettings(_Frozen):
     batch_size: int = Field(500, ge=1)
     keep_raw_binary: bool = False
     # One plain folder name inside the output folder; it is cleared when re-registering.
-    save_folder: str = Field("suite2p", pattern=r"^[A-Za-z0-9_.-]+$")
+    save_folder: str = Field(DEFAULT_SAVE_FOLDER, pattern=r"^[A-Za-z0-9_.-]+$")
     run_roi_detection: bool = False
     motion_alignment_source: MotionSource = "auto"
     # "auto" aligns on the structural channel when the per-frame bidiphase step trusted it
@@ -408,7 +412,9 @@ def alignment_dir(variant_dir: Path, source: ChannelRole) -> Path:
     return Path(variant_dir) / ALIGNMENT_SUBDIRS[source]
 
 
-def plane_dir_of(variant_dir: Path, source: ChannelRole, save_folder: str = "suite2p") -> Path:
+def plane_dir_of(
+    variant_dir: Path, source: ChannelRole, save_folder: str = DEFAULT_SAVE_FOLDER
+) -> Path:
     return alignment_dir(variant_dir, source) / save_folder / "plane0"
 
 
@@ -423,7 +429,7 @@ def variant_dir_of(plane_dir: Path) -> Path:
 
 
 def find_registered_plane(
-    variant_dir: Path, alignment: MotionSource = "auto", save_folder: str = "suite2p"
+    variant_dir: Path, alignment: MotionSource = "auto", save_folder: str = DEFAULT_SAVE_FOLDER
 ) -> Path | None:
     """The registered plane folder (with an ops.npy) of a variant, or None if there is none.
 

@@ -14,6 +14,7 @@ import tifffile
 
 from .config import (
     ALIGNMENT_SUBDIRS,
+    DEFAULT_SAVE_FOLDER,
     VARIANT_SUBDIRS,
     ChannelRole,
     PipelineSettings,
@@ -22,8 +23,7 @@ from .config import (
 )
 
 log = logging.getLogger(__name__)
-
-MOTION_ALIGNMENT_RECORD = "motion_alignment.json"  # in aligned_<source>/: why that channel
+MOTION_ALIGNMENT_RECORD = "motion_alignment.json"  # in <save_folder>/: why that channel
 
 
 # ---- analysis: build Suite2p inputs (pure apart from Suite2p's defaults) ----------
@@ -99,19 +99,32 @@ def build_suite2p_db(
         "functional_chan": settings.channels.functional_channel,
         "keep_movie_raw": settings.registration.keep_raw_binary,
     }
+    save_folder = settings.registration.save_folder
     if settings.registration.fast_disk is not None:
-        db["fast_disk"] = str(fast_disk_for(registration_dir, settings.registration.fast_disk))
+        db["fast_disk"] = str(
+            fast_disk_for(registration_dir, settings.registration.fast_disk, save_folder)
+        )
+    elif save_folder != DEFAULT_SAVE_FOLDER:
+        # Suite2p writes its binaries in <fast_disk>/suite2p/plane0 whatever save_folder is
+        # (fast_disk defaulting to save_path0), so another save_folder would overwrite the
+        # default registration's data.bin. Here they go inside this registration's folder,
+        # <save_folder>/suite2p/plane0, and are removed with it when it is registered again.
+        db["fast_disk"] = str(registration_dir / save_folder)
     return db
 
 
-def fast_disk_for(registration_dir: Path, fast_disk: Path) -> Path:
-    """This registration's folder under *fast_disk*, named after its session, run, variant
-    and alignment (``registration_dir`` is ``<variant>/aligned_<source>``)."""
+def fast_disk_for(
+    registration_dir: Path, fast_disk: Path, save_folder: str = DEFAULT_SAVE_FOLDER
+) -> Path:
+    """This registration's folder under *fast_disk*, named after its cohort, subject, session,
+    run, variant, alignment (``registration_dir`` is ``<variant>/aligned_<source>``) and,
+    other than the default, its save_folder."""
     registration_dir = Path(registration_dir)
     run_dir = run_dir_of(registration_dir.parent)
-    return Path(fast_disk) / "_".join(
-        run_dir.parts[-3:] + registration_dir.relative_to(run_dir).parts
-    )
+    parts = run_dir.parts[-5:] + registration_dir.relative_to(run_dir).parts
+    if save_folder != DEFAULT_SAVE_FOLDER:
+        parts += (save_folder,)
+    return Path(fast_disk) / "_".join(parts)
 
 
 # ---- I/O --------------------------------------------------------------------------
@@ -232,7 +245,9 @@ def run_registration(
     check_existing_suite2p_folder(registration_dir, suite2p_input_tiff, save_folder)
     other = "functional" if choice.source == "structural" else "structural"
     other_dir = alignment_dir(output_dir, other)
-    stale = other_dir.exists() and not same_input(read_alignment_record(other_dir), identity)
+    stale = other_dir.exists() and not any(
+        same_input(record, identity) for record in alignment_records(other_dir)
+    )
     # Every refusal comes before anything is removed, so a refused run changes nothing.
     if (registration_dir / save_folder).exists():
         check_removable(registration_dir, settings, f"Not replacing {registration_dir}")
@@ -247,9 +262,9 @@ def run_registration(
         shutil.rmtree(other_dir)
     elif other_dir.exists():
         log.info("Keeping %s: it registered the same TIFF", other_dir)
+    # Removes this registration's earlier record too: a run that fails must not leave the
+    # previous run's record describing it.
     clear_earlier_registration(registration_dir / save_folder, settings)
-    # A run that fails must not leave the previous run's record describing it.
-    (registration_dir / MOTION_ALIGNMENT_RECORD).unlink(missing_ok=True)
     registration_dir.mkdir(parents=True, exist_ok=True)
     db = build_suite2p_db(output_dir, suite2p_input_tiff, settings)
     log.info(
@@ -261,8 +276,10 @@ def run_registration(
     from suite2p.run_s2p import run_s2p
 
     run_s2p(settings=build_suite2p_settings(settings), db=db)
-    write_alignment_record(registration_dir, alignment_record(choice, identity))
-    return registration_dir / save_folder / "plane0"
+    plane_dir = registration_dir / save_folder / "plane0"
+    record = alignment_record(choice, identity) | {"binaries": binaries_identity(plane_dir)}
+    write_alignment_record(registration_dir / save_folder, record)
+    return plane_dir
 
 
 class NoPerFrameRecord(ValueError):
@@ -350,6 +367,30 @@ def input_identity(tiff: Path) -> dict:
 SAME_INPUT_KEYS = ("size_bytes", "mtime_ns")
 
 
+BINARY_KEYS = ("reg_file", "reg_file_chan2", "raw_file", "raw_file_chan2")
+
+
+def binaries_identity(plane_dir: Path) -> dict:
+    """Path, size and modification time of each binary Suite2p wrote for this registration,
+    as its ops records them, so a binary outside the registration's folder (fast_disk) can be
+    told apart from another one written there later."""
+    ops_file = Path(plane_dir) / "ops.npy"
+    if not ops_file.is_file():
+        log.warning("No %s after Suite2p: the binaries are not recorded", ops_file)
+        return {}
+    ops = np.load(ops_file, allow_pickle=True).item()
+    paths = {key: Path(ops[key]) for key in BINARY_KEYS if ops.get(key)}
+    missing = [str(path) for path in paths.values() if not path.is_file()]
+    if missing:
+        log.warning("Binaries named in %s do not exist, not recorded: %s", ops_file, missing)
+    return {key: binary_identity(path) for key, path in paths.items() if path.is_file()}
+
+
+def binary_identity(path: Path) -> dict:
+    stat = Path(path).stat()
+    return {"path": str(path), "size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
 def alignment_record(choice: MotionChoice, identity: dict) -> dict:
     return {
         "motion_alignment_source": choice.source,
@@ -361,16 +402,23 @@ def alignment_record(choice: MotionChoice, identity: dict) -> dict:
     }
 
 
-def write_alignment_record(registration_dir: Path, record: dict) -> None:
-    path = Path(registration_dir) / MOTION_ALIGNMENT_RECORD
+def write_alignment_record(suite2p_dir: Path, record: dict) -> None:
+    """The record of one registration, in its ``<save_folder>/``."""
+    path = Path(suite2p_dir) / MOTION_ALIGNMENT_RECORD
+    path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_name(path.name + ".partial")
     partial.write_text(json.dumps(record, indent=2))
     partial.replace(path)
 
 
-def read_alignment_record(registration_dir: Path) -> dict | None:
-    path = Path(registration_dir) / MOTION_ALIGNMENT_RECORD
-    return json.loads(path.read_text()) if path.is_file() else None
+def alignment_records(alignment_folder: Path) -> list[dict]:
+    """The records of every registration in ``aligned_<source>/``: one per save_folder,
+    and the one earlier versions wrote beside them, in ``aligned_<source>/`` itself (only
+    read, never removed: it describes the TIFF the folder's earlier registrations used)."""
+    alignment_folder = Path(alignment_folder)
+    paths = [alignment_folder / MOTION_ALIGNMENT_RECORD]
+    paths += sorted(alignment_folder.glob(f"*/{MOTION_ALIGNMENT_RECORD}"))
+    return [json.loads(path.read_text()) for path in paths if path.is_file()]
 
 
 def same_input(record: dict | None, identity: dict) -> bool:
@@ -389,16 +437,83 @@ class RegisteredOutputs:
     structural: np.memmap  # Suite2p's data_chan2.bin
 
 
+# How much newer than its registration's ops.npy a binary may be (file times can be coarse,
+# e.g. on SMB shares); Suite2p itself saves ops.npy only after closing the binaries.
+BINARY_AFTER_OPS_TOLERANCE_S = 2.0
+
+
 def resolve_registered_binary(ops: dict, plane_dir: Path, ops_key: str, filename: str) -> Path:
-    # Binaries can sit outside save_folder (fast_disk, reused conversions), so the
-    # path recorded in ops is tried first, then the default suite2p/ folder.
+    """This registration's binary: in its plane0, else in <save_folder>/suite2p/plane0 (where
+    Suite2p puts it for a save_folder other than the default), else where ops records it
+    (fast_disk). Never another registration's.
+
+    Raises:
+        FileNotFoundError: If there is no such binary.
+        RuntimeError: If the binary found is not shown to be this registration's (see
+            ``check_registration_binary``).
+    """
     plane_dir = Path(plane_dir)
-    candidates = [Path(ops[ops_key])] if ops.get(ops_key) else []
-    candidates += [plane_dir / filename, plane_dir.parents[1] / "suite2p" / "plane0" / filename]
+    candidates = [plane_dir / filename, plane_dir.parent / "suite2p" / "plane0" / filename]
+    if ops.get(ops_key) and Path(ops[ops_key]) not in candidates:
+        candidates.append(Path(ops[ops_key]))
     for candidate in candidates:
         if candidate.is_file():
+            check_registration_binary(candidate, plane_dir, ops_key)
             return candidate
     raise FileNotFoundError(f"Could not find {filename}; checked {[str(c) for c in candidates]}")
+
+
+def check_registration_binary(binary: Path, plane_dir: Path, ops_key: str) -> None:
+    """Raise unless *binary* is shown to belong to the registration in *plane_dir*.
+
+    A registration with its own ``<save_folder>/motion_alignment.json`` keeps its binaries to
+    itself: one inside its folder is its own; one outside it (fast_disk) must have the size
+    and modification time the record gives. A registration without the record was made
+    before each save_folder kept its own binaries, when a registration into a save_folder
+    other than the default wrote its binaries into the variant's ``suite2p/plane0``: its
+    binary is checked against its ``ops.npy`` if it is outside its own folder, or if it is the
+    default registration of an ``aligned_<channel>/`` folder.
+    """
+    own = Path(plane_dir).parent
+    binary = Path(binary)
+    record_file = own / MOTION_ALIGNMENT_RECORD
+    if record_file.is_file():
+        if binary.is_relative_to(own):
+            return
+        recorded = json.loads(record_file.read_text()).get("binaries", {}).get(ops_key)
+        if recorded is None:
+            raise RuntimeError(
+                f"{record_file} records no {ops_key} binary, so {binary}, outside "
+                f"{own.name}/, cannot be shown to be this registration's; register again"
+            )
+        if any(recorded[k] != binary_identity(binary)[k] for k in SAME_INPUT_KEYS):
+            raise RuntimeError(
+                f"{binary} is not the {ops_key} binary {own.name} wrote (its size or "
+                f"modification time differ from {record_file}): another registration may have "
+                "written it, or it was copied without keeping file times; register again, or "
+                "copy it again with cp -p or rsync -t"
+            )
+        return
+    shared_place = not binary.is_relative_to(own) or (
+        own.name == DEFAULT_SAVE_FOLDER and own.parent.name in ALIGNMENT_SUBDIRS.values()
+    )
+    if shared_place:
+        check_binary_belongs(binary, Path(plane_dir) / "ops.npy")
+
+
+def check_binary_belongs(binary: Path, ops_file: Path) -> None:
+    """Refuse a binary written after the registration's ops.npy (no ops.npy: not checked):
+    another registration wrote it, or the folder was copied without keeping file times."""
+    if not ops_file.is_file():
+        return
+    lag = binary.stat().st_mtime - ops_file.stat().st_mtime
+    if lag > BINARY_AFTER_OPS_TOLERANCE_S:
+        raise RuntimeError(
+            f"{binary} was written {lag:.0f} s after {ops_file}. Either another registration "
+            "into a save_folder of this variant wrote over it (register this one again), or "
+            "the folder was copied without keeping file times (copy it again with cp -p or "
+            "rsync -t)"
+        )
 
 
 def load_registered_outputs(plane_dir: Path) -> RegisteredOutputs:

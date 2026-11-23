@@ -68,6 +68,7 @@ from .behavior_video import (
     video_frame_for,
 )
 from .config import (
+    DEFAULT_SAVE_FOLDER,
     SETTINGS_RECORD,
     VARIANTS,
     WITH_DESTRIPING_SUBDIR,
@@ -162,7 +163,7 @@ class MovieSettings(BaseModel):
     behavior_video: Path | None = None  # the video, if not where video_frame_times.npz says
     output_dir: Path | None = None  # None: run-XX/<variant>/aligned_<source>/movies
     overwrite: bool = False  # replace existing movies
-    save_folder: str = "suite2p"  # Suite2p output folder inside aligned_<channel>/
+    save_folder: str = DEFAULT_SAVE_FOLDER  # Suite2p output folder inside aligned_<channel>/
     # How they look
     channel: Channel = "side_by_side"  # functional left, structural right; or one alone
     average_frames: int = Field(5, ge=2, le=256)
@@ -295,7 +296,7 @@ def find_plane_dir(
     session: int,
     run: int,
     variant: str,
-    save_folder: str = "suite2p",
+    save_folder: str = DEFAULT_SAVE_FOLDER,
     alignment: MotionSource = "auto",
 ) -> Path:
     """``<root>/<cohort>/<subject>/ses-<session>_*/funcimg/run-<run>/<variant>/aligned_<source>/

@@ -4,6 +4,7 @@ folder its output goes in."""
 
 import importlib
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -77,7 +78,8 @@ def test_auto_registers_into_the_folder_of_the_channel_it_chose(
     ((registration, db),) = suite2p_calls
     assert registration["align_by_chan2"] is (chosen == "structural")
     assert db["save_path0"] == str(out / f"aligned_{chosen}")
-    record = json.loads((out / f"aligned_{chosen}" / MOTION_ALIGNMENT_RECORD).read_text())
+    record_path = out / f"aligned_{chosen}" / "suite2p" / MOTION_ALIGNMENT_RECORD
+    record = json.loads(record_path.read_text())
     assert record["motion_alignment_source"] == chosen
     assert record["fraction_structural"] == fraction
     assert record["auto_structural_min_fraction"] == 0.5
@@ -98,7 +100,7 @@ def test_a_fixed_channel_ignores_the_phase_record(tmp_path, suite2p_calls):
     out, tiff = variant_with_phase_record(tmp_path, 0.9)
     plane = run_registration(tiff, out, settings(motion_alignment_source="functional"))
     assert plane.parents[1].name == "aligned_functional"
-    assert json.loads((plane.parents[1] / MOTION_ALIGNMENT_RECORD).read_text())["reason"] == (
+    assert json.loads((plane.parent / MOTION_ALIGNMENT_RECORD).read_text())["reason"] == (
         "set in the config"
     )
 
@@ -146,15 +148,15 @@ def test_switching_channel_on_a_rewritten_tiff_removes_the_stale_registration(
     set_fraction(out, 0.2)
     run_registration(tiff, out, settings())
     assert not (out / "aligned_structural").exists()
-    assert (out / "aligned_functional" / MOTION_ALIGNMENT_RECORD).is_file()
+    assert (out / "aligned_functional" / "suite2p" / MOTION_ALIGNMENT_RECORD).is_file()
 
 
 def test_both_alignments_of_the_same_tiff_are_kept(tmp_path, suite2p_calls):
     out, tiff = variant_with_phase_record(tmp_path, 0.8)
     run_registration(tiff, out, settings(motion_alignment_source="structural"))
     run_registration(tiff, out, settings(motion_alignment_source="functional"))
-    assert (out / "aligned_structural" / MOTION_ALIGNMENT_RECORD).is_file()
-    assert (out / "aligned_functional" / MOTION_ALIGNMENT_RECORD).is_file()
+    assert (out / "aligned_structural" / "suite2p" / MOTION_ALIGNMENT_RECORD).is_file()
+    assert (out / "aligned_functional" / "suite2p" / MOTION_ALIGNMENT_RECORD).is_file()
 
 
 def test_a_stale_registration_is_only_removed_with_overwrite_and_without_masks(
@@ -184,7 +186,7 @@ def test_a_failed_registration_leaves_no_record(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "run_s2p", fail)
     with pytest.raises(RuntimeError, match="crashed"):
         run_registration(tiff, out, settings())
-    assert not (out / "aligned_structural" / MOTION_ALIGNMENT_RECORD).exists()
+    assert not (out / "aligned_structural" / "suite2p" / MOTION_ALIGNMENT_RECORD).exists()
 
 
 def test_auto_needs_the_per_frame_phase_method():
@@ -247,7 +249,7 @@ def test_a_refused_run_keeps_the_record_and_both_registrations(tmp_path, suite2p
     with pytest.raises(RuntimeError, match="Cellpose masks"):
         run_registration(tiff, out, settings(motion_alignment_source="structural"))
     for source in ("structural", "functional"):
-        assert (out / f"aligned_{source}" / MOTION_ALIGNMENT_RECORD).is_file()
+        assert (out / f"aligned_{source}" / "suite2p" / MOTION_ALIGNMENT_RECORD).is_file()
         assert (out / f"aligned_{source}" / "suite2p" / "plane0").is_dir()
 
 
@@ -270,3 +272,64 @@ def test_red_is_usable_by_the_same_rule_as_auto_alignment(tmp_path, fraction, us
     _, tiff = variant_with_phase_record(tmp_path, fraction)
     ok, why = red_usable(tiff, settings(motion_alignment_source="functional"))
     assert ok is usable and f"{fraction:.0%}" in why
+
+
+def test_each_registration_of_a_variant_keeps_its_own_record(tmp_path, suite2p_calls):
+    out, tiff = variant_with_phase_record(tmp_path, 0.8)
+    run_registration(tiff, out, settings())
+    default = out / "aligned_structural" / "suite2p" / MOTION_ALIGNMENT_RECORD
+    first = default.read_bytes()
+    run_registration(tiff, out, settings(save_folder="suite2p_rigid_sigma3", nonrigid=False))
+    assert default.read_bytes() == first
+    assert (out / "aligned_structural" / "suite2p_rigid_sigma3" / MOTION_ALIGNMENT_RECORD).is_file()
+
+
+def test_a_failed_sweep_registration_leaves_the_others_and_their_records(tmp_path, monkeypatch):
+    out, tiff = variant_with_phase_record(tmp_path, 0.8)
+    module = importlib.import_module("suite2p.run_s2p")
+    monkeypatch.setattr(module, "run_s2p", lambda settings, db: None)
+    run_registration(tiff, out, settings())
+
+    def fail(settings, db):
+        raise RuntimeError("Suite2p crashed")
+
+    monkeypatch.setattr(module, "run_s2p", fail)
+    with pytest.raises(RuntimeError, match="crashed"):
+        run_registration(tiff, out, settings(save_folder="suite2p_sigma3"))
+    assert (out / "aligned_structural" / "suite2p" / MOTION_ALIGNMENT_RECORD).is_file()
+    # so a registration aligned on the other channel still sees the structural one as this
+    # TIFF's, and keeps it
+    monkeypatch.setattr(module, "run_s2p", lambda settings, db: None)
+    run_registration(tiff, out, settings(motion_alignment_source="functional"))
+    assert (out / "aligned_structural" / "suite2p").is_dir()
+
+
+def test_a_record_left_by_earlier_versions_beside_the_registrations_still_counts(
+    tmp_path, suite2p_calls
+):
+    out, tiff = variant_with_phase_record(tmp_path, 0.8)
+    run_registration(tiff, out, settings())
+    aligned = out / "aligned_structural"
+    (aligned / "suite2p" / MOTION_ALIGNMENT_RECORD).replace(aligned / MOTION_ALIGNMENT_RECORD)
+    run_registration(tiff, out, settings(motion_alignment_source="functional"))
+    assert (aligned / "suite2p").is_dir()  # recognised as a registration of the same TIFF
+
+
+def test_the_record_gives_the_binaries_suite2p_wrote(tmp_path, monkeypatch):
+    out, tiff = variant_with_phase_record(tmp_path, 0.8)
+    module = importlib.import_module("suite2p.run_s2p")
+
+    def fake_suite2p(settings, db):
+        plane = Path(db["save_path0"]) / db["save_folder"] / "plane0"
+        binaries = Path(db.get("fast_disk", db["save_path0"])) / "suite2p" / "plane0"
+        plane.mkdir(parents=True)
+        binaries.mkdir(parents=True, exist_ok=True)
+        (binaries / "data.bin").write_bytes(b"frames")
+        np.save(plane / "ops.npy", {"reg_file": str(binaries / "data.bin")})
+
+    monkeypatch.setattr(module, "run_s2p", fake_suite2p)
+    plane = run_registration(tiff, out, settings(save_folder="suite2p_sigma3"))
+    record = json.loads((plane.parent / MOTION_ALIGNMENT_RECORD).read_text())
+    binary = plane.parent / "suite2p" / "plane0" / "data.bin"
+    assert record["binaries"]["reg_file"]["path"] == str(binary)
+    assert record["binaries"]["reg_file"]["size_bytes"] == binary.stat().st_size
