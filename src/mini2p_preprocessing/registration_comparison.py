@@ -183,8 +183,10 @@ def reg_dx(ops: dict) -> float:
     if value is None or not np.size(value):
         return float("nan")
     value = np.atleast_2d(np.asarray(value, float))
-    if value.shape[1] <= REG_DX_COMBINED:
-        raise ValueError(f"ops['regDX'] has shape {value.shape}; expected (components, 4)")
+    if value.shape[1] <= REG_DX_COMBINED:  # Suite2p 0.x: no combined column
+        logger.warning("ops['regDX'] has shape %s, without Suite2p 1.x's combined column; "
+                       "regDX is left blank", value.shape)  # fmt: skip
+        return float("nan")
     return float(np.mean(value[:, REG_DX_COMBINED]))
 
 
@@ -408,18 +410,24 @@ def movie_chunks(movie, n_frames: int, chunk_frames: int):
         yield np.asarray(movie[start : min(start + chunk_frames, n_frames)])
 
 
-def putative_cell_measures(outputs, plan: Plan) -> dict:
-    """Resting SNR and transients of putative cells picked, as in ``cell_snr``'s source, on
-    the registration's own green mean image within its own valid region (Suite2p's yrange and
-    xrange), in green, and transients at the same places in red."""
-    geometry = cell_snr.scaled_geometry(plan.scan_px)
+def putative_cells(ops: dict, plan: Plan) -> np.ndarray:
+    """The putative cells, picked as in ``cell_snr``'s source on the registration's own green
+    mean image within its own valid region (Suite2p's yrange and xrange)."""
     for key in ("meanImg", "yrange", "xrange"):
-        if key not in outputs.ops:
+        if key not in ops:
             raise KeyError(f"ops has no '{key}', which the putative cells are picked with")
-    mean_image = np.asarray(outputs.ops["meanImg"], np.float64)
-    valid = (tuple(outputs.ops["yrange"]), tuple(outputs.ops["xrange"]))
-    cells = cell_snr.pick_cells(mean_image, valid, geometry, plan.n_cells)
-    shape = mean_image.shape
+    valid = (tuple(ops["yrange"]), tuple(ops["xrange"]))
+    geometry = cell_snr.scaled_geometry(plan.scan_px)
+    mean_image = np.asarray(ops["meanImg"], np.float64)
+    return cell_snr.pick_cells(mean_image, valid, geometry, plan.n_cells)
+
+
+def putative_cell_measures(outputs, plan: Plan) -> dict:
+    """Resting SNR and transients of the putative cells in green, and transients at the same
+    places in red."""
+    geometry = cell_snr.scaled_geometry(plan.scan_px)
+    cells = putative_cells(outputs.ops, plan)
+    shape = np.shape(outputs.ops["meanImg"])
     disc_weights = cell_snr.roi_weights(cells, shape, 0, geometry["disc_r"])
     ring_weights = cell_snr.roi_weights(cells, shape, geometry["ring_in"], geometry["ring_out"])
     weights = [disc_weights, ring_weights]
@@ -489,13 +497,15 @@ def prepare_comparison(
         FileExistsError: If a comparison is there already and *overwrite* is not set.
         FileNotFoundError: If the folder holds no registration.
         KeyError, ValueError: If the registrations are not of one recording, or the request
-            does not fit it.
+            does not fit it (e.g. too few putative cells).
     """
     table_stem, _ = output_stems(aligned_folder)
     if table_stem.with_suffix(".csv").exists() and not overwrite:
         raise FileExistsError(f"{table_stem}.csv exists; pass overwrite to replace it")
     planes = find_registrations(aligned_folder)
     plan = plan_comparison(planes, n_frames, n_blocks, block_frames, cell_minutes, scan_px, n_cells)
+    for plane in planes:  # seconds now, rather than failing after measuring the others
+        putative_cells(load_ops(plane), plan)
     return planes, plan
 
 
@@ -517,7 +527,7 @@ def run_comparison(
         images.append(image)
     table_stem.parent.mkdir(parents=True, exist_ok=True)
     write_table(rows, table_stem.with_suffix(".csv"))
-    labels = [short_label(row["registration"]) for row in rows]
+    labels = [short_label(row) for row in rows]
     details = caption_details(aligned_folder, plan, patch_px, detrend_s)
     with plt.rc_context({"font.family": "sans-serif", "font.sans-serif": QC_FONTS}):
         figure = plot_measures(rows).flat[0].figure
@@ -554,6 +564,7 @@ def compare_registrations(
 
 HIGHER, LOWER = "higher is better", "lower is better"
 IF_RED_QUIET = "higher is better if red is at noise"
+WITHIN_MODE = "higher is better, within a mode"
 # (column, title, how to read it); one row of panels per line
 PANELS = [
     [("red_corr_median", "Red Frame-To-Mean r", HIGHER),
@@ -571,7 +582,7 @@ PANELS = [
      ("green_residual_shift_median_px", "Green Residual Shift, Median (px)", LOWER),
      ("green_local_corr_contrast", "Green Local Correlation Contrast", IF_RED_QUIET),
      ("green_noise_level", "Green Noise Level (%/√Hz)", LOWER)],
-    [("green_cell_resting_snr_median", "Green Resting SNR, Median", HIGHER),
+    [("green_cell_resting_snr_median", "Green Resting SNR, Median", WITHIN_MODE),
      ("green_cell_transients_per_min", "Green Transients / Min", IF_RED_QUIET),
      ("green_cell_transients_flipped_per_min", "Green Flipped Transients / Min", "noise count"),
      ("green_cell_cells_with_transient", "Cells With >= 1 Transient", IF_RED_QUIET),
@@ -579,8 +590,11 @@ PANELS = [
 ]  # fmt: skip
 
 
-def short_label(registration: str) -> str:
-    return registration.removeprefix("suite2p_") or registration
+def short_label(row: dict) -> str:
+    """The save_folder without its 'suite2p_' prefix, and the registration's mode."""
+    name = row["registration"].removeprefix("suite2p_") or row["registration"]
+    mode = {True: "nonrigid", False: "rigid"}.get(row.get("nonrigid"), "mode unknown")
+    return f"{name}\n({mode})"
 
 
 def zoomed_limits(values: np.ndarray) -> tuple[float, float] | None:
@@ -619,7 +633,7 @@ def plot_measures(rows: Sequence[dict], axes=None) -> np.ndarray:
         _, axes = plt.subplots(n_rows, n_columns, figsize=(3.6 * n_columns, 3.6 * n_rows),
                                constrained_layout=True, squeeze=False)  # fmt: skip
     axes = np.asarray(axes).reshape(n_rows, n_columns)
-    labels = [short_label(row["registration"]) for row in rows]
+    labels = [short_label(row) for row in rows]
     for panel_row, ax_row in zip(PANELS, axes, strict=True):
         for (key, title, reading), ax in zip(panel_row, ax_row, strict=True):
             values = np.asarray([np.nan if r[key] is None else r[key] for r in rows], float)

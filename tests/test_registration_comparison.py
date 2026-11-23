@@ -99,8 +99,7 @@ def test_reg_dx_is_suite2ps_combined_shift_averaged_over_components():
     columns = np.array([[1.0, 2, 3, 0.5], [9, 9, 9, 1.5]])  # rigid, mean NR, max NR, combined
     assert reg_dx({"regDX": columns}) == pytest.approx(1.0)
     assert np.isnan(reg_dx({}))
-    with pytest.raises(ValueError, match="shape"):
-        reg_dx({"regDX": np.ones((2, 2))})
+    assert np.isnan(reg_dx({"regDX": np.ones((2, 3))}))  # Suite2p 0.x: no combined column
 
 
 def test_putative_cells_use_the_first_minutes_in_whole_bins():

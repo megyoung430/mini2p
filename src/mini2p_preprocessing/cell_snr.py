@@ -15,9 +15,13 @@ it, so a drifting detector offset, common to both, cancels; traces are averaged 
 
 Bins where the brightness around every cell jumps together (stray light reaching the
 detector) are left out; such a bin inside a transient splits it into two crossings, as in the
-original. Pixel geometry is given for the mini2p's 512 px scan and scaled by
-``scale`` for other scan widths of the same field of view; cropping (distortion correction)
-does not change the pixel size.
+original.
+
+Pixel geometry is given for the mini2p's 512 px scan and scaled for other scan widths of the
+same field of view (``scaled_geometry``). The original scaled it by the registered frame's
+width instead; the two agree for uncropped frames, and differ for distortion-corrected crops,
+whose pixels are the scan's size. The frame rate is Suite2p's ``fs`` here, given on the
+command line in the original.
 """
 
 from __future__ import annotations
