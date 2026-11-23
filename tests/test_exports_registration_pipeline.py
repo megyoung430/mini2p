@@ -1,6 +1,7 @@
 import importlib
 import json
 import re
+from pathlib import Path
 
 import matplotlib
 import numpy as np
@@ -379,3 +380,74 @@ def test_auto_alignment_reads_the_phase_record_the_pipeline_just_wrote(
     chosen = "structural" if fraction >= 0.5 else "functional"
     assert result.plane_dir == out / f"aligned_{chosen}" / "suite2p" / "plane0"
     assert calls[0]["registration"]["align_by_chan2"] is (chosen == "structural")
+
+
+def suite2p_binary_dir(db: dict) -> Path:
+    """Where Suite2p itself puts the binaries for this db (it creates the folders)."""
+    from suite2p.io.utils import init_dbs
+
+    return Path(init_dbs(dict(db))[0]["reg_file"]).parent
+
+
+def test_each_save_folder_keeps_its_binaries_inside_it(tmp_path):
+    # Suite2p writes its binaries in <fast_disk>/suite2p/plane0 whatever save_folder is, so a
+    # second registration of the variant used to overwrite the first one's data.bin
+    from mini2p_preprocessing.registration import build_suite2p_db
+
+    output_dir = tmp_path / "run-02" / "without_distortion_correction" / "with_destriping"
+    tiff = output_dir / "a_destriped.tif"
+    aligned = output_dir / "aligned_structural"
+    folders = {}
+    for save_folder in ("suite2p", "suite2p_rigid_sigma3", "suite2p_withoutnonrigid_sigma1.15"):
+        settings = PipelineSettings.model_validate(
+            {
+                **STRUCTURAL,
+                "registration": {**STRUCTURAL["registration"], "save_folder": save_folder},
+            }  # fmt: skip
+        )
+        binaries = suite2p_binary_dir(build_suite2p_db(output_dir, tiff, settings))
+        assert binaries.is_relative_to(aligned / save_folder)
+        folders[save_folder] = binaries
+    assert folders["suite2p"] == aligned / "suite2p" / "plane0"  # unchanged for the default
+    assert len(set(folders.values())) == len(folders)
+
+
+def test_fast_disk_binaries_are_kept_apart_per_save_folder(tmp_path):
+    from mini2p_preprocessing.registration import build_suite2p_db
+
+    output_dir = tmp_path / "ses-223_date-20260807" / "funcimg" / "run-02" / "with_destriping"
+    tiff = output_dir / "a_destriped.tif"
+
+    def db(save_folder):
+        settings = PipelineSettings.model_validate(
+            {
+                "distortion": {"mode": "off"},
+                "registration": {
+                    "fast_disk": str(tmp_path / "local"),
+                    "save_folder": save_folder,
+                    "motion_alignment_source": "structural",
+                },
+            }  # fmt: skip
+        )
+        return build_suite2p_db(output_dir, tiff, settings)
+
+    default, other = db("suite2p"), db("suite2p_rigid_sigma3")
+    assert not default["fast_disk"].endswith("suite2p")  # the default keeps its old name
+    assert other["fast_disk"] == default["fast_disk"] + "_suite2p_rigid_sigma3"
+    assert suite2p_binary_dir(default) != suite2p_binary_dir(other)
+
+
+def test_a_registration_never_reads_another_registrations_binary(tmp_path):
+    from mini2p_preprocessing.registration import resolve_registered_binary
+
+    aligned = tmp_path / "with_destriping" / "aligned_structural"
+    plane = aligned / "suite2p_rigid_sigma3" / "plane0"
+    plane.mkdir(parents=True)
+    (aligned / "suite2p" / "plane0").mkdir(parents=True)
+    (aligned / "suite2p" / "plane0" / "data.bin").write_bytes(b"other registration")
+    with pytest.raises(FileNotFoundError, match="data.bin"):
+        resolve_registered_binary({}, plane, "reg_file", "data.bin")
+    own = aligned / "suite2p_rigid_sigma3" / "suite2p" / "plane0" / "data.bin"
+    own.parent.mkdir(parents=True)
+    own.write_bytes(b"this registration")
+    assert resolve_registered_binary({}, plane, "reg_file", "data.bin") == own

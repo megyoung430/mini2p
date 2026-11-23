@@ -22,6 +22,9 @@ from .config import (
 )
 
 log = logging.getLogger(__name__)
+# Suite2p puts its binaries in <fast_disk>/suite2p/plane0; with this save_folder and no
+# fast_disk that is the results folder itself.
+DEFAULT_SAVE_FOLDER = "suite2p"
 
 MOTION_ALIGNMENT_RECORD = "motion_alignment.json"  # in aligned_<source>/: why that channel
 
@@ -99,19 +102,30 @@ def build_suite2p_db(
         "functional_chan": settings.channels.functional_channel,
         "keep_movie_raw": settings.registration.keep_raw_binary,
     }
+    save_folder = settings.registration.save_folder
     if settings.registration.fast_disk is not None:
-        db["fast_disk"] = str(fast_disk_for(registration_dir, settings.registration.fast_disk))
+        db["fast_disk"] = str(
+            fast_disk_for(registration_dir, settings.registration.fast_disk, save_folder)
+        )
+    elif save_folder != DEFAULT_SAVE_FOLDER:
+        # Suite2p writes its binaries in <fast_disk>/suite2p/plane0 whatever save_folder is
+        # (fast_disk defaulting to save_path0), so another save_folder would overwrite the
+        # default registration's data.bin. Here they go inside this registration's folder,
+        # <save_folder>/suite2p/plane0, and are removed with it when it is registered again.
+        db["fast_disk"] = str(registration_dir / save_folder)
     return db
 
 
-def fast_disk_for(registration_dir: Path, fast_disk: Path) -> Path:
-    """This registration's folder under *fast_disk*, named after its session, run, variant
-    and alignment (``registration_dir`` is ``<variant>/aligned_<source>``)."""
+def fast_disk_for(registration_dir: Path, fast_disk: Path, save_folder: str = "suite2p") -> Path:
+    """This registration's folder under *fast_disk*, named after its session, run, variant,
+    alignment (``registration_dir`` is ``<variant>/aligned_<source>``) and, other than the
+    default, its save_folder."""
     registration_dir = Path(registration_dir)
     run_dir = run_dir_of(registration_dir.parent)
-    return Path(fast_disk) / "_".join(
-        run_dir.parts[-3:] + registration_dir.relative_to(run_dir).parts
-    )
+    parts = run_dir.parts[-3:] + registration_dir.relative_to(run_dir).parts
+    if save_folder != DEFAULT_SAVE_FOLDER:
+        parts += (save_folder,)
+    return Path(fast_disk) / "_".join(parts)
 
 
 # ---- I/O --------------------------------------------------------------------------
@@ -390,11 +404,12 @@ class RegisteredOutputs:
 
 
 def resolve_registered_binary(ops: dict, plane_dir: Path, ops_key: str, filename: str) -> Path:
-    # Binaries can sit outside save_folder (fast_disk, reused conversions), so the
-    # path recorded in ops is tried first, then the default suite2p/ folder.
+    """This registration's binary: the path recorded in ops (fast_disk binaries sit outside
+    save_folder), else in its plane0, else in <save_folder>/suite2p/plane0, where Suite2p
+    puts it for a save_folder other than the default. Never another registration's."""
     plane_dir = Path(plane_dir)
     candidates = [Path(ops[ops_key])] if ops.get(ops_key) else []
-    candidates += [plane_dir / filename, plane_dir.parents[1] / "suite2p" / "plane0" / filename]
+    candidates += [plane_dir / filename, plane_dir.parent / "suite2p" / "plane0" / filename]
     for candidate in candidates:
         if candidate.is_file():
             return candidate
