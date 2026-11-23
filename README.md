@@ -155,10 +155,12 @@ run's folder until it has been extracted. Re-registering does not clear these lo
 Each `[registration] save_folder` of a variant is a registration of its own, with its own
 results, binaries, `motion_alignment.json` and QC plots. Suite2p always writes binaries to a
 `suite2p/plane0` folder, so for a `save_folder` other than `suite2p` they go in
-`<save_folder>/suite2p/plane0/`. Registrations made before this, in a `save_folder` other than
-`suite2p`, wrote their binaries over those of the variant's `suite2p` registration. Loading a
-registration whose binary was written after its `ops.npy` (by another registration) now stops
-with an error: register both again.
+`<save_folder>/suite2p/plane0/`. Up to and including mini2p PR #33, a registration into another
+`save_folder` wrote its binaries over those of the variant's `suite2p` registration: in an
+`aligned_<channel>/` folder holding `suite2p/` and another save_folder with no binaries of its own,
+the `suite2p` registration's frames (and any `F.npy` or background TIFF extracted from them) may
+belong to another registration. Loading such a registration whose binary was written after its
+`ops.npy` stops with an error: register them again.
 
 ### Re-running, extraction and outputs
 

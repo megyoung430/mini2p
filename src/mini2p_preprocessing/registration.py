@@ -410,7 +410,8 @@ class RegisteredOutputs:
     structural: np.memmap  # Suite2p's data_chan2.bin
 
 
-# Allowed lag of ops.npy behind its binaries: Suite2p saves ops.npy only after closing them.
+# How much newer than its registration's ops.npy a binary may be (file times can be coarse,
+# e.g. on SMB shares); Suite2p itself saves ops.npy only after closing the binaries.
 BINARY_AFTER_OPS_TOLERANCE_S = 2.0
 
 
@@ -421,30 +422,54 @@ def resolve_registered_binary(ops: dict, plane_dir: Path, ops_key: str, filename
 
     Raises:
         FileNotFoundError: If there is no such binary.
-        RuntimeError: If the binary was written after the registration's ops.npy, i.e. by
-            another registration (before each save_folder kept its own binaries, a second
-            save_folder of a variant wrote its binaries over the default registration's).
+        RuntimeError: If the binary may be shared with another registration of the variant
+            and was written after this registration's ops.npy (see ``check_binary_belongs``).
     """
     plane_dir = Path(plane_dir)
     candidates = [Path(ops[ops_key])] if ops.get(ops_key) else []
     candidates += [plane_dir / filename, plane_dir.parent / "suite2p" / "plane0" / filename]
     for candidate in candidates:
         if candidate.is_file():
-            check_binary_belongs(candidate, plane_dir / "ops.npy")
+            if may_be_shared(candidate, plane_dir):
+                check_binary_belongs(candidate, plane_dir / "ops.npy")
             return candidate
     raise FileNotFoundError(f"Could not find {filename}; checked {[str(c) for c in candidates]}")
 
 
+def may_be_shared(binary: Path, plane_dir: Path) -> bool:
+    """Whether another registration of the variant may have written *binary*.
+
+    Registrations into a save_folder other than the default used to write their binaries
+    into the default registration's ``suite2p/plane0``. So a binary may be shared if it is
+    outside this registration's own save_folder, or if this is the default registration
+    and another save_folder beside it has a plane0 but no binaries of its own.
+    """
+    own = Path(plane_dir).parent
+    if not Path(binary).is_relative_to(own):
+        return True
+    if own.name != DEFAULT_SAVE_FOLDER:
+        return False
+    for sibling in own.parent.glob("*/plane0"):
+        folder = sibling.parent
+        if folder == own or not (sibling / "ops.npy").is_file():
+            continue
+        if not any((d / "data.bin").is_file() for d in (sibling, folder / "suite2p" / "plane0")):
+            return True
+    return False
+
+
 def check_binary_belongs(binary: Path, ops_file: Path) -> None:
-    """Refuse a binary written after the registration's ops.npy (no ops.npy: not checked)."""
+    """Refuse a binary written after the registration's ops.npy (no ops.npy: not checked):
+    another registration wrote it, or the folder was copied without keeping file times."""
     if not ops_file.is_file():
         return
     lag = binary.stat().st_mtime - ops_file.stat().st_mtime
     if lag > BINARY_AFTER_OPS_TOLERANCE_S:
         raise RuntimeError(
-            f"{binary} was written {lag:.0f} s after {ops_file}, so it holds another "
-            "registration's frames (e.g. a registration into another save_folder of this "
-            "variant overwrote it); register this one again"
+            f"{binary} was written {lag:.0f} s after {ops_file}. Either another registration "
+            "into a save_folder of this variant wrote over it (register this one again), or "
+            "the folder was copied without keeping file times (copy it again with cp -p or "
+            "rsync -t)"
         )
 
 
