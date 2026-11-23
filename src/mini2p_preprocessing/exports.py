@@ -256,6 +256,21 @@ def export_all_mean_images(
     return path
 
 
+def scaled_with_record(raw: np.ndarray, contrast: Contrast) -> tuple[np.ndarray, dict]:
+    """The image scaled to 0-1 for display, and the record of how: the percentiles and
+    gamma asked for, and the black and white values they gave on this image."""
+    display, black, white = scale_contrast(
+        raw, contrast.black_percentile, contrast.white_percentile, contrast.gamma
+    )
+    return display, {
+        "black_percentile": contrast.black_percentile,
+        "white_percentile": contrast.white_percentile,
+        "gamma": contrast.gamma,
+        "black_value": float(black),
+        "white_value": float(white),
+    }
+
+
 def save_contrast_choice(
     plane_dir: Path,
     green_raw: np.ndarray,
@@ -265,12 +280,8 @@ def save_contrast_choice(
 ) -> dict[str, Path]:
     """Save hand-tuned display images beside ops.npy, plus the unscaled means as TIFFs."""
     plane_dir = Path(plane_dir)
-    green_display, green_black, green_white = scale_contrast(
-        green_raw, green.black_percentile, green.white_percentile, green.gamma
-    )
-    red_display, red_black, red_white = scale_contrast(
-        red_raw, red.black_percentile, red.white_percentile, red.gamma
-    )
+    green_display, green_record = scaled_with_record(green_raw, green)
+    red_display, red_record = scaled_with_record(red_raw, red)
     paths = {
         "green PNG": plane_dir / "meanImg_green_contrast.png",
         "red PNG": plane_dir / "meanImg_red_contrast.png",
@@ -284,24 +295,32 @@ def save_contrast_choice(
     plt.imsave(paths["overlay PNG"], red_green_overlay(red_display, green_display), vmin=0, vmax=1)
     tifffile.imwrite(paths["green raw TIFF"], np.asarray(green_raw, dtype=np.float32))
     tifffile.imwrite(paths["red raw TIFF"], np.asarray(red_raw, dtype=np.float32))
-    record = {
-        name: {
-            "black_percentile": c.black_percentile,
-            "white_percentile": c.white_percentile,
-            "gamma": c.gamma,
-            "black_value": black,
-            "white_value": white,
-        }
-        for name, c, black, white in [
-            ("green", green, green_black, green_white),
-            ("red", red, red_black, red_white),
-        ]
-    }
+    record = {"green": green_record, "red": red_record}
     paths["settings JSON"].write_text(json.dumps(record, indent=2))
     return paths
 
 
 CROPPED_RECORD_JSON = "meanImg_cropped.json"
+
+
+def crop_within(region: tuple[slice, slice], shape: tuple[int, int]) -> tuple[slice, slice]:
+    """*region* as plain-int, step-1 slices that lie inside an image of *shape*.
+
+    Raises:
+        ValueError: If a slice has a step, a negative or out-of-range bound, or leaves nothing.
+    """
+    checked = []
+    for part, size in zip(region, shape, strict=True):
+        start = 0 if part.start is None else int(part.start)
+        stop = size if part.stop is None else int(part.stop)
+        if part.step not in (None, 1):
+            raise ValueError(f"The crop {region} must not skip pixels (step {part.step})")
+        if start < 0 or stop > size:
+            raise ValueError(f"The crop {region} reaches outside the {tuple(shape)} image")
+        if stop <= start:
+            raise ValueError(f"The crop {region} leaves nothing of a {tuple(shape)} image")
+        checked.append(slice(start, stop))
+    return checked[0], checked[1]
 
 
 def save_cropped_contrast_choice(
@@ -316,42 +335,35 @@ def save_cropped_contrast_choice(
 
     The contrast percentiles are taken over the cropped image, so the wrapped band the crop
     removes does not set them. The record keeps the crop (Python slices of the full frame,
-    end excluded) and each channel's contrast.
+    end excluded) and each channel's contrast. Everything is checked before anything is
+    written.
     """
     plane_dir = Path(plane_dir)
-    rows, cols = region
     full_shape = np.shape(green_raw)
     if np.shape(red_raw) != full_shape or len(full_shape) != 2:
         raise ValueError(
             f"The green and red mean images must be 2-D and of one shape: "
             f"{np.shape(green_raw)}, {np.shape(red_raw)}"
         )
-    paths = {"crop JSON": plane_dir / CROPPED_RECORD_JSON}
+    rows, cols = crop_within(region, full_shape)
     record = {
         "rows": [rows.start, rows.stop],
         "columns": [cols.start, cols.stop],
-        "full_shape": list(full_shape),
+        "full_shape": [int(n) for n in full_shape],
         "note": "rows/columns: the crop of the full registered frame (Python slice, end excluded)",
     }
+    cropped, displays = {}, {}
     for name, raw, contrast in (("green", green_raw, green), ("red", red_raw, red)):
-        cropped = np.asarray(raw)[rows, cols]
-        if cropped.size == 0:
-            raise ValueError(f"The crop {region} leaves nothing of a {full_shape} image")
-        display, black, white = scale_contrast(
-            cropped, contrast.black_percentile, contrast.white_percentile, contrast.gamma
-        )
+        cropped[name] = np.asarray(raw)[rows, cols]
+        displays[name], record[name] = scaled_with_record(cropped[name], contrast)
+    text = json.dumps(record, indent=2)
+    paths = {"crop JSON": plane_dir / CROPPED_RECORD_JSON}
+    for name in ("green", "red"):
         paths[f"{name} PNG"] = plane_dir / f"meanImg_cropped_{name}_contrast.png"
         paths[f"{name} raw TIFF"] = plane_dir / f"meanImg_cropped_{name}_raw.tif"
-        plt.imsave(paths[f"{name} PNG"], display, cmap="gray", vmin=0, vmax=1)
-        tifffile.imwrite(paths[f"{name} raw TIFF"], cropped.astype(np.float32))
-        record[name] = {
-            "black_percentile": contrast.black_percentile,
-            "white_percentile": contrast.white_percentile,
-            "gamma": contrast.gamma,
-            "black_value": black,
-            "white_value": white,
-        }
-    paths["crop JSON"].write_text(json.dumps(record, indent=2))
+        plt.imsave(paths[f"{name} PNG"], displays[name], cmap="gray", vmin=0, vmax=1)
+        tifffile.imwrite(paths[f"{name} raw TIFF"], cropped[name].astype(np.float32))
+    paths["crop JSON"].write_text(text)
     return paths
 
 

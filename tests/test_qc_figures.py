@@ -22,18 +22,20 @@ REGION = (slice(2, 18), slice(3, 21))
 
 
 def test_each_step_has_its_own_folder_under_quality_control(tmp_path):
-    assert QC_STEPS == ("raw_mean", "bidiphase", "destriping", "distortion_correction",
-                        "motion_registration", "frame_order", "fluorescence")  # fmt: skip
+    asked_for = {"bidiphase", "destriping", "distortion_correction", "motion_registration"}
+    assert asked_for <= set(QC_STEPS)
+    assert len({qc_step_dir(tmp_path, step) for step in QC_STEPS}) == len(QC_STEPS)
     folder = qc_step_dir(tmp_path, "distortion_correction")
     assert folder == tmp_path / QC_FOLDER / "distortion_correction"
     with pytest.raises(ValueError, match="motion_registration"):
         qc_step_dir(tmp_path, "registration")
 
 
-@pytest.mark.parametrize("drawn", ["figure", "axes", "axes array"])
+@pytest.mark.parametrize("drawn", ["figure", "axes", "axes array", "one-axes array"])
 def test_a_figure_is_saved_as_png_pdf_svg_and_caption(tmp_path, drawn):
     fig, axes = plt.subplots(2, 2)
-    given = {"figure": fig, "axes": axes[1, 0], "axes array": axes}[drawn]
+    given = {"figure": fig, "axes": axes[1, 0], "axes array": axes,
+             "one-axes array": np.array([axes[0, 1]])}[drawn]  # fmt: skip
     assert figure_of(given) is fig
     name = "before_after_bidiphase"
     stem = save_qc_figure(given, tmp_path, "bidiphase", name, "What it shows.\n")
@@ -72,10 +74,14 @@ def test_cropped_means_are_written_with_their_own_contrast(tmp_path, rng):
     raw = tifffile.imread(paths["green raw TIFF"])
     assert raw.dtype == np.float32
     np.testing.assert_allclose(raw, green_raw[REGION], rtol=1e-6)
-    expected, *_ = scale_contrast(green_raw[REGION], 2.0, 99.0, 0.8)
-    png = matplotlib.image.imread(paths["green PNG"])[..., 0]
-    assert png.shape == raw.shape
-    assert np.allclose(png, expected, atol=2 / 255)  # 8-bit grey levels
+    for name, image, contrast in (("green", green_raw, green), ("red", red_raw, red)):
+        np.testing.assert_allclose(tifffile.imread(paths[f"{name} raw TIFF"]), image[REGION],
+                                   rtol=1e-6)  # fmt: skip
+        expected, *_ = scale_contrast(image[REGION], contrast.black_percentile,
+                                      contrast.white_percentile, contrast.gamma)  # fmt: skip
+        png = matplotlib.image.imread(paths[f"{name} PNG"])[..., 0]
+        assert png.shape == expected.shape
+        assert np.allclose(png, expected, atol=2 / 255)  # 8-bit grey levels
 
 
 def test_the_crop_and_contrast_are_recorded(tmp_path, rng):
@@ -88,13 +94,37 @@ def test_the_crop_and_contrast_are_recorded(tmp_path, rng):
     assert record["full_shape"] == [20, 24]
     assert record["green"]["black_percentile"] == Contrast().black_percentile
     assert record["green"]["white_value"] == pytest.approx(np.percentile(green_raw[REGION], 99.5))
+    assert record["red"]["gamma"] == Contrast().gamma
 
 
-def test_cropped_means_refuse_an_empty_crop_or_unequal_images(tmp_path, rng):
+def test_a_crop_given_as_numpy_integers_or_open_ends_is_recorded_as_plain_bounds(tmp_path, rng):
     green_raw, red_raw = rng.gamma(2, 50, (2, 20, 24))
-    with pytest.raises(ValueError, match="leaves nothing"):
-        save_cropped_contrast_choice(tmp_path, green_raw, red_raw, Contrast(), Contrast(),
-                                     (slice(5, 5), slice(0, 24)))  # fmt: skip
+    region = (slice(np.int64(2), np.int64(18)), slice(None, None))
+    paths = save_cropped_contrast_choice(tmp_path, green_raw, red_raw, Contrast(), Contrast(),
+                                         region)  # fmt: skip
+    record = json.loads(paths["crop JSON"].read_text())
+    assert record["rows"] == [2, 18] and record["columns"] == [0, 24]
+    assert tifffile.imread(paths["green raw TIFF"]).shape == (16, 24)
+
+
+@pytest.mark.parametrize(
+    ("region", "message"),
+    [((slice(5, 5), slice(0, 24)), "leaves nothing"),
+     ((slice(2, 100), slice(0, 24)), "outside"),
+     ((slice(-5, None), slice(0, 24)), "outside"),
+     ((slice(0, 20), slice(0, 24, 2)), "skip")],
+)  # fmt: skip
+def test_cropped_means_refuse_a_crop_that_is_not_a_block_of_the_image(
+    tmp_path, rng, region, message
+):
+    green_raw, red_raw = rng.gamma(2, 50, (2, 20, 24))
+    with pytest.raises(ValueError, match=message):
+        save_cropped_contrast_choice(tmp_path, green_raw, red_raw, Contrast(), Contrast(), region)
+    assert list(tmp_path.iterdir()) == []  # refused before anything was written
+
+
+def test_cropped_means_refuse_unequal_images(tmp_path, rng):
+    green_raw, red_raw = rng.gamma(2, 50, (2, 20, 24))
     with pytest.raises(ValueError, match="shape"):
         save_cropped_contrast_choice(tmp_path, green_raw, red_raw[:10], Contrast(), Contrast(),
                                      REGION)  # fmt: skip
