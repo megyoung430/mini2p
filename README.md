@@ -173,6 +173,48 @@ extracted from such a binary are not checked. Update mini2p everywhere that regi
 same folders (laptop, cluster): an older version would still write a second registration's
 binaries over the first one's.
 
+### Comparing the registrations of a sweep
+
+`mini2p-compare-registrations` measures every `<save_folder>/plane0` of one `aligned_<channel>/`
+folder the same way, on the same frames and in the crop no registration's shifts wrap into,
+without cell segmentation:
+
+```bash
+uv run mini2p-compare-registrations /path/to/run-02/without_distortion_correction/with_destriping/aligned_structural
+```
+
+- **Alignment** (1000 evenly spaced frames, `--frames`): frame-to-mean correlation (median
+  and 5th percentile), residual subpixel shift and mean-image crispness of each channel;
+  Suite2p's regDX (when it computed it) and bad frames.
+- **Signal** (5 contiguous blocks of 600 frames, `--blocks`, `--block-frames`; 4 px patches,
+  `--patch-px`; high-passed over 10 s, `--detrend-s`): green peak SNR (largest fluctuations
+  over frame-to-frame noise), green noise level (Rupprecht et al. 2021, %/√Hz), the green
+  local correlation image (each pixel against its 8 neighbours) and its contrast, red
+  fluctuation (the red signal should not change, so this is motion left in it), and the
+  correlation between green and red fluctuations (shared motion).
+- **Putative cells** (the 71R / AB08 / M measure, `cell_snr.py`; first 4.3 min,
+  `--cell-minutes`, 0 for the whole recording): the 200 strongest cell-scale peaks of Suite2p's
+  green mean image (`--cells`; geometry for a 512 px scan, `--scan-px`), each a disc-minus-
+  annulus trace in 0.5 s bins. Green resting SNR (how far cells sit above their surroundings,
+  over noise), large transients per minute (rising crossings of 4.5 SD after a 16 s
+  high-pass), the same on flipped traces (the noise count), cells with at least one, and the
+  count in red at the same places, which should be at the noise count (above it = motion).
+
+Red is the fairer test of motion. Motion left in a movie also raises green peak SNR, local
+correlation and transient counts, so compare the green measures only among registrations the
+red measures find equally well aligned. Nonrigid registration interpolates each frame by its
+own subpixel shifts, while rigid registration moves frames by whole pixels; interpolation
+alone changes every measure that depends on pixel noise (fluctuation, noise level, local
+correlation, crispness, frame-to-mean r, resting SNR), in either direction. So compare those
+within one mode (e.g. smooth_sigma or norm_frames among rigid registrations), and between
+rigid and nonrigid rely on residual shift and on transient counts against the flipped and red
+counts. Suite2p computes regDX with each registration's own smooth_sigma. The alignment and
+signal measures use the crop no compared registration wraps into, so numbers compare within
+one comparison only. The table, the measures figure and the images (red mean, green
+local correlation) are saved in `<aligned folder>/registration_comparison/`; `--overwrite`
+replaces an earlier comparison. It reads the registrations only; on a cluster node it takes a
+few minutes per registration.
+
 ### Re-running, extraction and outputs
 
 `[batch] rerun_completed_before = <time>` registers again every run that finished

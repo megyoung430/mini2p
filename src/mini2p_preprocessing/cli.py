@@ -5,7 +5,8 @@ distortion correction and registration; ``mini2p-extract --config ... --plane-di
 --seg ...`` extracts fluorescence from Cellpose masks into a Suite2p plane folder;
 ``mini2p-movie --config ...`` writes the movies of a run's preprocessing stages set in the
 config's ``[movies]`` section (any setting can be overridden, e.g. ``--session 224``);
-``mini2p-natex --config ... --plane-dir ...`` runs NATEX's calcium processing on a plane.
+``mini2p-natex --config ... --plane-dir ...`` runs NATEX's calcium processing on a plane;
+``mini2p-compare-registrations <aligned folder>`` compares the registrations of a sweep.
 """
 
 from __future__ import annotations
@@ -16,12 +17,25 @@ import types
 import typing
 from pathlib import Path
 
+from .cell_snr import N_CELLS, SCAN_PX
 from .config import load_settings, with_destriping
 from .extraction import run_cellpose_extraction
 from .movies import MovieSettings, load_movie_settings, make_movies
 from .natex import load_natex_settings, run_natex
 from .pipeline import run_pipeline
 from .raw_previews import plan_previews, run_previews
+from .registration_comparison import (
+    BLOCK_FRAMES,
+    CELL_MINUTES,
+    DETREND_S,
+    N_BLOCKS,
+    N_FRAMES,
+    PATCH_PX,
+    TABLE_NAME,
+    output_stems,
+    prepare_comparison,
+    run_comparison,
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -223,6 +237,75 @@ def raw_means_main(argv: list[str] | None = None) -> None:
         print(f"FAILED {row['tiff']}: {row['error']}")
     if failed:
         raise SystemExit(1)
+
+
+def compare_registrations_main(argv: list[str] | None = None) -> None:
+    """Alignment and signal quality of every registration of one recording, side by side."""
+    parser = argparse.ArgumentParser(
+        description="Measure every <save_folder>/plane0 in an aligned_<channel> folder the "
+        "same way (alignment, and signal quality without cell segmentation) and save a "
+        f"table and figures in <aligned folder>/registration_comparison/{TABLE_NAME}.*"
+    )
+    parser.add_argument("aligned_folder", type=Path, help="aligned_<channel> folder")
+    parser.add_argument("--frames", type=int, default=N_FRAMES,
+                        help="evenly spaced frames for the alignment measures")  # fmt: skip
+    parser.add_argument("--blocks", type=int, default=N_BLOCKS,
+                        help="contiguous blocks for the signal measures")  # fmt: skip
+    parser.add_argument("--block-frames", type=int, default=BLOCK_FRAMES,
+                        help="frames per block (shorter if the blocks do not fit)")  # fmt: skip
+    parser.add_argument("--patch-px", type=int, default=PATCH_PX,
+                        help="side of the pixel patches the signal measures use")  # fmt: skip
+    parser.add_argument("--detrend-s", type=float, default=DETREND_S,
+                        help="high-pass window of the signal measures (s)")  # fmt: skip
+    parser.add_argument("--cell-minutes", type=float, default=CELL_MINUTES,
+                        help="first minutes for the putative-cell SNR and transients "
+                        "(0: the whole recording)")  # fmt: skip
+    parser.add_argument("--scan-px", type=int, default=SCAN_PX,
+                        help="scan width in px (sets the putative-cell geometry)")  # fmt: skip
+    parser.add_argument(
+        "--cells", type=int, default=N_CELLS, help="putative cells per registration"
+    )
+    parser.add_argument("--overwrite", action="store_true", help="replace an earlier comparison")
+    args = parser.parse_args(argv)
+    if args.cell_minutes < 0:
+        parser.error("--cell-minutes must be 0 (whole recording) or positive")
+    for name in ("frames", "blocks", "block_frames", "patch_px", "scan_px", "cells"):
+        if getattr(args, name) < 1:
+            parser.error(f"--{name.replace('_', '-')} must be at least 1")
+    if args.detrend_s <= 0:
+        parser.error("--detrend-s must be positive")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
+    try:  # only the request is checked here; errors while measuring raise as they are
+        planes, plan = prepare_comparison(
+            args.aligned_folder, args.frames, args.blocks, args.block_frames, args.overwrite,
+            args.cell_minutes or None, args.scan_px, args.cells,
+        )  # fmt: skip
+    except (ValueError, KeyError, FileNotFoundError, FileExistsError) as error:
+        parser.error(str(error))
+    rows = run_comparison(args.aligned_folder, planes, plan, args.patch_px, args.detrend_s)
+    print_summary(rows)
+    print(f"Saved {output_stems(args.aligned_folder)[0].parent}")
+
+
+SUMMARY_COLUMNS = [
+    "registration", "red_corr_median", "red_residual_shift_px", "red_fluctuation_pct",
+    "green_local_corr_contrast", "green_noise_level", "green_cell_resting_snr_median",
+    "green_cell_transients_per_min", "green_cell_transients_flipped_per_min",
+    "red_cell_transients_per_min",
+]  # fmt: skip
+
+
+def print_summary(rows: list[dict]) -> None:
+    """The main measures, one registration per line."""
+    first = max(len(row["registration"]) for row in rows + [{"registration": "registration"}])
+    widths = [max(len(column), 10) for column in SUMMARY_COLUMNS[1:]]
+    header = [f"{'registration':<{first}}"]
+    print(
+        "  ".join(header + [f"{c:>{w}}" for c, w in zip(SUMMARY_COLUMNS[1:], widths, strict=True)])
+    )
+    for row in rows:
+        values = [f"{row[c]:>{w}.4g}" for c, w in zip(SUMMARY_COLUMNS[1:], widths, strict=True)]
+        print("  ".join([f"{row['registration']:<{first}}"] + values))
 
 
 if __name__ == "__main__":
