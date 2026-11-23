@@ -360,8 +360,8 @@ def nested_suite2p(keep_raw=False):
         paths = {key: str(binaries / name) for key, name in names.items()}
         for path in paths.values():
             Path(path).write_bytes(b"frames")
-        np.save(plane / "db.npy", dict(paths))
-        np.save(plane / "ops.npy", {**paths, "nframes": 2})
+        np.save(plane / "db.npy", {**paths, "fast_disk": str(binaries)})
+        np.save(plane / "ops.npy", {**paths, "fast_disk": str(binaries), "nframes": 2})
 
     return run
 
@@ -381,9 +381,13 @@ def test_a_sweep_registration_keeps_its_binaries_in_its_own_plane0(tmp_path, mon
     db = np.load(plane / "db.npy", allow_pickle=True).item()
     for key in ("reg_file", "reg_file_chan2"):
         assert Path(ops[key]).parent == plane and Path(db[key]).parent == plane
+    assert ops["fast_disk"] == str(plane) == db["fast_disk"]  # the folder holding them
     record = json.loads((plane.parent / MOTION_ALIGNMENT_RECORD).read_text())
     assert Path(record["binaries"]["reg_file"]["path"]).parent == plane
     assert ops["nframes"] == 2  # the rest of ops is kept
+    from mini2p_preprocessing.registration import resolve_registered_binary
+
+    assert resolve_registered_binary(ops, plane, "reg_file", "data.bin") == plane / "data.bin"
 
 
 def test_binaries_on_a_fast_disk_stay_there(tmp_path, monkeypatch):

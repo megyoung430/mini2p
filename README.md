@@ -160,7 +160,7 @@ results, binaries, `motion_alignment.json` and registration QC plots (see "QC no
 outputs"). Suite2p always writes binaries to a `suite2p/plane0` folder, so for a `save_folder`
 other than `suite2p` they are written to `<save_folder>/suite2p/plane0/` and then moved into
 `<save_folder>/plane0/`, beside the results, with `ops.npy` and `db.npy` updated (with
-`fast_disk` set they stay on the local disk). Registrations made between PR #36 and this keep
+`fast_disk` set they stay on the local disk). Registrations made between PR #36 and PR #37 keep
 theirs in `<save_folder>/suite2p/plane0/`, where they are still found. Re-registering a
 `save_folder` clears only that folder.
 

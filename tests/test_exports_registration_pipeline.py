@@ -466,8 +466,9 @@ def test_a_registration_never_reads_another_registrations_binary(tmp_path):
 
 
 def registration(aligned, save_folder, record=True):
-    """A registration as this version leaves it (record=True: its motion_alignment.json) or as
-    earlier versions did (no record; a non-default save_folder's binary in suite2p/plane0)."""
+    """A registration with its own record (record=True; a non-default save_folder's binary in
+    the <save_folder>/suite2p/plane0 layout of PR #36) or as versions before PR #36 left it
+    (no record; a non-default save_folder's binary in the variant's suite2p/plane0)."""
     from mini2p_preprocessing.registration import MOTION_ALIGNMENT_RECORD
 
     plane = aligned / save_folder / "plane0"

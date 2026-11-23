@@ -278,7 +278,7 @@ def run_registration(
 
     run_s2p(settings=build_suite2p_settings(settings), db=db)
     plane_dir = registration_dir / save_folder / "plane0"
-    if settings.registration.fast_disk is None and save_folder != DEFAULT_SAVE_FOLDER:
+    if db.get("fast_disk") == str(registration_dir / save_folder):  # set by build_suite2p_db
         move_binaries_into_plane(plane_dir)
     record = alignment_record(choice, identity) | {"binaries": binaries_identity(plane_dir)}
     write_alignment_record(registration_dir / save_folder, record)
@@ -387,11 +387,19 @@ def move_binaries_into_plane(plane_dir: Path) -> None:
         record = np.load(record_file, allow_pickle=True).item()
         for key in BINARY_KEYS:
             path = Path(record[key]) if record.get(key) else None
-            if path is None or path.parent != nested:
+            if path is None or path.parent == plane_dir:
+                continue
+            if path.parent != nested:
+                log.warning("%s: %s is %s, not in %s; left where it is", record_file, key,
+                            path, nested)  # fmt: skip
                 continue
             if path.is_file():
                 path.replace(plane_dir / path.name)
+            elif not (plane_dir / path.name).is_file():
+                log.warning("%s: %s %s does not exist", record_file, key, path)
             record[key] = str(plane_dir / path.name)
+        if record.get("fast_disk") == str(nested):  # the folder holding the binaries
+            record["fast_disk"] = str(plane_dir)
         partial = record_file.with_name(record_file.stem + ".partial.npy")
         np.save(partial, record, allow_pickle=True)
         partial.replace(record_file)
@@ -474,8 +482,8 @@ BINARY_AFTER_OPS_TOLERANCE_S = 2.0
 
 def resolve_registered_binary(ops: dict, plane_dir: Path, ops_key: str, filename: str) -> Path:
     """This registration's binary: in its plane0, else in <save_folder>/suite2p/plane0 (where
-    Suite2p puts it for a save_folder other than the default), else where ops records it
-    (fast_disk). Never another registration's.
+    registrations into a save_folder other than the default kept it between PR #36 and PR
+    #37), else where ops records it (fast_disk). Never another registration's.
 
     Raises:
         FileNotFoundError: If there is no such binary.
