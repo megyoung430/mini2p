@@ -66,6 +66,7 @@ def build_suite2p_settings(settings: PipelineSettings) -> dict:
             "norm_frames": reg.norm_frames,
             "nimg_init": reg.nimg_init,
             "th_badframes": reg.th_badframes,
+            "smooth_sigma": reg.smooth_sigma,
             "two_step_registration": reg.two_step_registration,
             "batch_size": reg.batch_size,
         }

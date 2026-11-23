@@ -65,6 +65,8 @@ nonrigid = true
 norm_frames = false
 nimg_init = 1000
 th_badframes = 0.7
+smooth_sigma = 1.15           # Gaussian XY smoothing (px) before registering; ~1 for 2P,
+                              # 3.0 worked for noisy Cohort 2 (1-channel) sessions, 3-5 for 1P
 two_step_registration = true
 batch_size = 500
 keep_raw_binary = false

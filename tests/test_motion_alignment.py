@@ -207,6 +207,20 @@ def test_suite2p_settings_need_a_resolved_channel():
     assert settings().registration_channel is None
 
 
+def test_spatial_smoothing_reaches_suite2p_and_defaults_to_the_original_runs():
+    assert settings().registration.smooth_sigma == 1.15
+    built = build_suite2p_settings(settings(motion_alignment_source="functional"))
+    assert built["registration"]["smooth_sigma"] == 1.15
+    noisy = settings(motion_alignment_source="functional", smooth_sigma=3.0)
+    assert build_suite2p_settings(noisy)["registration"]["smooth_sigma"] == 3.0
+
+
+@pytest.mark.parametrize("sigma", [0, -1.0])
+def test_spatial_smoothing_must_be_positive(sigma):
+    with pytest.raises(ValidationError, match="smooth_sigma"):
+        settings(smooth_sigma=sigma)
+
+
 def registered_on_both(tmp_path):
     out, tiff = variant_with_phase_record(tmp_path, 0.8)
     for source in ("structural", "functional"):

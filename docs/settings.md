@@ -160,6 +160,7 @@ the length of the QC notebook's stage-by-stage stretch; setting the manual table
 | `norm_frames` | `false` | Suite2p's `norm_frames`: clip frames to the reference's intensity range before computing shifts. |
 | `nimg_init` | `1000` | Frames, spread over the recording, used to build the reference image. |
 | `th_badframes` | `0.7` | Suite2p's threshold for flagging frames whose registration failed. |
+| `smooth_sigma` | `1.15` | Gaussian smoothing in x and y, in px, that Suite2p applies to the frames and reference before registering. Around 1 suits 2P recordings (1.15 is Suite2p's default and what the original runs used); 3.0 worked well for noisy one-channel Cohort 2 sessions; 3–5 may suit 1P recordings. Changes the registration: register again. |
 | `two_step_registration` | `true` | Register twice, the second time to a reference built from the once-registered frames. Suite2p only does this when the unregistered binary is kept, so with `keep_raw_binary = false` (the default) registration runs once (README, known issues). |
 | `batch_size` | `500` | Frames registered at once (memory only). |
 | `keep_raw_binary` | `false` | Keep Suite2p's unregistered binary as well (another ~4 GB per channel). Needed for `two_step_registration` to take effect. |
