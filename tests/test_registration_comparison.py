@@ -28,7 +28,8 @@ from mini2p_preprocessing.registration_comparison import (
 )
 
 FS = 7.5
-LY = LX = 40
+LY = LX = 64
+CELLS = {"cell_minutes": None, "scan_px": 256, "n_cells": 10}  # small frames, few cells
 N_FRAMES = 300
 
 
@@ -166,6 +167,7 @@ def write_registration(aligned, name, green, red, nonrigid=False):
         "nframes": len(green), "Ly": LY, "Lx": LX, "fs": FS,
         "yoff": np.zeros(len(green)), "xoff": np.zeros(len(green)),
         "badframes": np.zeros(len(green), bool),
+        "meanImg": green.mean(axis=0),
         "registration": {"nonrigid": nonrigid, "smooth_sigma": 1.15, "norm_frames": False},
         "reg_file": str(plane / "data.bin"), "reg_file_chan2": str(plane / "data_chan2.bin"),
     }  # fmt: skip
@@ -177,7 +179,7 @@ def sweep(tmp_path, rng, n_frames=N_FRAMES):
     """Two registrations of one recording: one aligned, one with motion left in it."""
     red_image, green_image = 300 + 600 * texture(rng), 100 + 300 * texture(rng)
     cell = np.zeros((LY, LX))
-    cell[18:23, 18:23] = 1
+    cell[30:35, 30:35] = 1
     activity = transients(rng, n_frames)
     green = (
         green_image + 400 * activity[:, None, None] * cell + rng.normal(0, 5, (n_frames, LY, LX))
@@ -194,7 +196,7 @@ def sweep(tmp_path, rng, n_frames=N_FRAMES):
 
 def test_the_aligned_registration_wins_and_everything_is_saved(tmp_path, rng):
     aligned = sweep(tmp_path, rng)
-    rows = compare_registrations(aligned, n_frames=100, n_blocks=2, block_frames=150)
+    rows = compare_registrations(aligned, n_frames=100, n_blocks=2, block_frames=150, **CELLS)
     good, wobbly = rows
     assert (good["registration"], wobbly["nonrigid"]) == ("suite2p_good", True)
     assert good["red_corr_median"] > wobbly["red_corr_median"]
@@ -202,6 +204,8 @@ def test_the_aligned_registration_wins_and_everything_is_saved(tmp_path, rng):
     assert good["red_crispness"] > wobbly["red_crispness"]
     assert good["red_fluctuation_pct"] < wobbly["red_fluctuation_pct"]
     assert good["green_local_corr_contrast"] > wobbly["green_local_corr_contrast"]
+    assert np.isfinite(good["green_cell_resting_snr_median"])
+    assert good["red_cell_transients_per_min"] <= wobbly["red_cell_transients_per_min"]
     table, images = output_stems(aligned)
     with open(table.with_suffix(".csv")) as handle:
         names = [r["registration"] for r in csv.DictReader(handle)]
@@ -210,8 +214,10 @@ def test_the_aligned_registration_wins_and_everything_is_saved(tmp_path, rng):
         for suffix in (".png", ".pdf", ".svg", ".caption.txt"):
             assert stem.with_name(stem.name + suffix).is_file()
     with pytest.raises(FileExistsError):
-        compare_registrations(aligned, n_frames=100, n_blocks=2, block_frames=150)
-    compare_registrations(aligned, n_frames=100, n_blocks=2, block_frames=150, overwrite=True)
+        compare_registrations(aligned, n_frames=100, n_blocks=2, block_frames=150, **CELLS)
+    compare_registrations(
+        aligned, n_frames=100, n_blocks=2, block_frames=150, overwrite=True, **CELLS
+    )
 
 
 def test_registrations_of_different_recordings_are_refused(tmp_path, rng):
@@ -219,12 +225,13 @@ def test_registrations_of_different_recordings_are_refused(tmp_path, rng):
     frames = np.zeros((N_FRAMES - 10, LY, LX))
     write_registration(aligned, "suite2p_other", frames, frames)
     with pytest.raises(ValueError, match="nframes"):
-        compare_registrations(aligned, n_frames=100, n_blocks=2, block_frames=100)
+        compare_registrations(aligned, n_frames=100, n_blocks=2, block_frames=100, **CELLS)
 
 
 def test_the_command_prints_the_summary_and_reports_bad_requests(tmp_path, rng, capsys):
     aligned = sweep(tmp_path, rng)
-    args = [str(aligned), "--frames", "50", "--blocks", "2", "--block-frames", "100"]
+    args = [str(aligned), "--frames", "50", "--blocks", "2", "--block-frames", "100",
+            "--cell-minutes", "0", "--scan-px", "256", "--cells", "10"]  # fmt: skip
     compare_registrations_main(args)
     out = capsys.readouterr().out
     assert "suite2p_good" in out and "suite2p_wobbly" in out

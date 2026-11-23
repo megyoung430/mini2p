@@ -25,6 +25,7 @@ from .pipeline import run_pipeline
 from .raw_previews import plan_previews, run_previews
 from .registration_comparison import (
     BLOCK_FRAMES,
+    CELL_MINUTES,
     DETREND_S,
     N_BLOCKS,
     N_FRAMES,
@@ -254,9 +255,17 @@ def compare_registrations_main(argv: list[str] | None = None) -> None:
                         help="side of the pixel patches the signal measures use")  # fmt: skip
     parser.add_argument("--detrend-s", type=float, default=DETREND_S,
                         help="high-pass window of the signal measures (s)")  # fmt: skip
+    parser.add_argument("--cell-minutes", type=float, default=CELL_MINUTES,
+                        help="first minutes for the putative-cell SNR and transients "
+                        "(0: the whole recording)")  # fmt: skip
+    parser.add_argument("--scan-px", type=int, default=512,
+                        help="scan width in px (sets the putative-cell geometry)")  # fmt: skip
+    parser.add_argument("--cells", type=int, default=200, help="putative cells per registration")
     parser.add_argument("--overwrite", action="store_true", help="replace an earlier comparison")
     args = parser.parse_args(argv)
-    for name in ("frames", "blocks", "block_frames", "patch_px"):
+    if args.cell_minutes < 0:
+        parser.error("--cell-minutes must be 0 (whole recording) or positive")
+    for name in ("frames", "blocks", "block_frames", "patch_px", "scan_px", "cells"):
         if getattr(args, name) < 1:
             parser.error(f"--{name.replace('_', '-')} must be at least 1")
     if args.detrend_s <= 0:
@@ -265,7 +274,8 @@ def compare_registrations_main(argv: list[str] | None = None) -> None:
     try:
         rows = compare_registrations(
             args.aligned_folder, args.frames, args.blocks, args.block_frames, args.patch_px,
-            args.detrend_s, args.overwrite,
+            args.detrend_s, args.overwrite, args.cell_minutes or None, args.scan_px,
+            args.cells,
         )  # fmt: skip
     except (ValueError, KeyError, FileNotFoundError, FileExistsError) as error:
         parser.error(str(error))
@@ -274,9 +284,10 @@ def compare_registrations_main(argv: list[str] | None = None) -> None:
 
 
 SUMMARY_COLUMNS = [
-    "registration", "red_corr_median", "red_residual_shift_px", "red_crispness",
-    "red_fluctuation_pct", "green_peak_snr_p95", "green_local_corr_contrast",
-    "green_noise_level", "green_red_corr_median",
+    "registration", "red_corr_median", "red_residual_shift_px", "red_fluctuation_pct",
+    "green_local_corr_contrast", "green_noise_level", "green_cell_resting_snr_median",
+    "green_cell_transients_per_min", "green_cell_transients_flipped_per_min",
+    "red_cell_transients_per_min",
 ]  # fmt: skip
 
 

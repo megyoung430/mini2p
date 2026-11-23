@@ -192,6 +192,13 @@ uv run mini2p-compare-registrations /path/to/run-02/without_distortion_correctio
   local correlation image (each pixel against its 8 neighbours) and its contrast, red
   fluctuation (the red signal should not change, so this is motion left in it), and the
   correlation between green and red fluctuations (shared motion).
+- **Putative cells** (the 71R / AB08 / M measure, `cell_snr.py`; first 4.3 min,
+  `--cell-minutes`, 0 for the whole recording): the 200 strongest cell-scale peaks of Suite2p's
+  green mean image (`--cells`; geometry for a 512 px scan, `--scan-px`), each a disc-minus-
+  annulus trace in 0.5 s bins. Green resting SNR (how far cells sit above their surroundings,
+  over noise), large transients per minute (rising crossings of 4.5 SD after a 16 s
+  high-pass), the same on flipped traces (the noise count), cells with at least one, and the
+  count in red at the same places, which should be at the noise count (above it = motion).
 
 Red is the fairer test of motion. Motion left in a movie also raises green peak SNR and local
 correlation, so compare the green signal measures only among registrations the red measures

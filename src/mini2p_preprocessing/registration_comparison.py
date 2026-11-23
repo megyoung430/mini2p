@@ -33,6 +33,12 @@ single pixels, each high-passed over ``detrend_s`` to remove bleaching and drift
 - green-red correlation: the median correlation of a patch's green and red fluctuations.
   Lower = less of what moves the red (motion, brain movement in z) left in the green.
 
+Putative cells, as in the 71R / AB08 / M comparison (``cell_snr``): the 200 strongest
+cell-scale peaks of Suite2p's green mean image, each a disc-minus-annulus trace in 0.5 s bins
+over the first ``cell_minutes``; green resting SNR (contrast over noise), large transients per
+minute (and on flipped traces, the noise count), cells with at least one; and the same count
+in red at the same places, which should be at the noise count (above it = motion or light).
+
 Red (structural) is the fairer test of motion, as its signal does not change with activity.
 Read the green signal measures only among registrations the red measures find equally well
 aligned: motion left in a movie raises a pixel's correlation with its neighbours and a patch's
@@ -53,6 +59,7 @@ import numpy as np
 from scipy.ndimage import gaussian_filter, uniform_filter, uniform_filter1d
 from skimage.registration import phase_cross_correlation
 
+from . import cell_snr
 from .plots import QC_FONTS, SERIES_COLORS
 from .qc import unwrapped_region
 from .raw_previews import save_preview
@@ -70,6 +77,8 @@ BLOCK_FRAMES = 600
 MIN_BLOCK_FRAMES = 50
 PATCH_PX = 4
 DETREND_S = 10.0  # keeps calcium transients (seconds), removes bleaching and drift
+CELL_MINUTES = 4.3  # as in the 71R / AB08 comparison
+CHUNK_FRAMES = 600  # frames read at a time for the putative-cell traces
 SIGNAL_SMOOTH_FRAMES = 3
 PEAK_PERCENTILE = 99
 BASELINE_PERCENTILE = 20  # F0 of the noise level
@@ -157,6 +166,12 @@ def shift_jitter(ops: dict) -> float:
     dy = np.diff(np.asarray(ops["yoff"], float))
     dx = np.diff(np.asarray(ops["xoff"], float))
     return float(np.median(np.hypot(dy, dx))) if dy.size else float("nan")
+
+
+def reg_dx(ops: dict) -> float:
+    """Suite2p's registration metric (regDX) averaged, or NaN when it was not computed."""
+    value = ops.get("regDX")
+    return float(np.mean(value)) if value is not None and np.size(value) else float("nan")
 
 
 def registration_settings(ops: dict) -> dict:
@@ -306,6 +321,9 @@ class Plan:
     frames: np.ndarray
     blocks: list[slice]
     fs_hz: float
+    cell_frames: int  # the first frames, a whole number of bins, for the putative cells
+    scan_px: int = cell_snr.SCAN_PX
+    n_cells: int = cell_snr.N_CELLS
 
 
 def find_registrations(aligned_folder: Path) -> list[Path]:
@@ -332,20 +350,75 @@ def only_value(opses: Sequence[dict], key: str, planes: Sequence[Path]):
     return values.pop()
 
 
+def cell_frame_count(total: int, fs_hz: float, minutes: float | None) -> int:
+    """The first frames (a whole number of bins) of *minutes*, or of the whole recording."""
+    wanted = total if minutes is None else int(minutes * 60 * fs_hz)
+    if wanted > total:
+        raise ValueError(f"{minutes} min is {wanted} frames; the recording has {total}")
+    fpb = cell_snr.frames_per_bin(fs_hz)
+    if wanted // fpb < 3:
+        raise ValueError(f"{minutes} min is fewer than 3 bins of {fpb} frames")
+    return wanted // fpb * fpb
+
+
 def plan_comparison(
-    planes: Sequence[Path], n_frames: int, n_blocks: int, block_frames: int
+    planes: Sequence[Path],
+    n_frames: int,
+    n_blocks: int,
+    block_frames: int,
+    cell_minutes: float | None = CELL_MINUTES,
+    scan_px: int = cell_snr.SCAN_PX,
+    n_cells: int = cell_snr.N_CELLS,
 ) -> Plan:
     """The shared crop, sampled frames and blocks of these registrations."""
     opses = [load_ops(plane) for plane in planes]
     total = int(only_value(opses, "nframes", planes))
     for key in ("Ly", "Lx"):
         only_value(opses, key, planes)
+    fs_hz = float(only_value(opses, "fs", planes))
     return Plan(
         crop=common_crop([unwrapped_region(ops) for ops in opses]),
         frames=sample_frames(total, n_frames),
         blocks=block_slices(total, n_blocks, block_frames),
-        fs_hz=float(only_value(opses, "fs", planes)),
+        fs_hz=fs_hz,
+        cell_frames=cell_frame_count(total, fs_hz, cell_minutes),
+        scan_px=scan_px,
+        n_cells=n_cells,
     )
+
+
+def movie_chunks(movie, crop: tuple[slice, slice], n_frames: int, chunk_frames: int):
+    """The first *n_frames* of a (frames, rows, columns) movie in the crop, in chunks of
+    *chunk_frames* (the last may be shorter)."""
+    for start in range(0, n_frames, chunk_frames):
+        stop = min(start + chunk_frames, n_frames)
+        yield np.asarray(movie[start:stop])[:, crop[0], crop[1]]
+
+
+def putative_cell_measures(outputs, plan: Plan) -> dict:
+    """Resting SNR and transients of putative cells picked on Suite2p's green mean image, in
+    green, and transients at the same places in red."""
+    rows, columns = plan.crop
+    geometry = cell_snr.scaled_geometry(plan.scan_px)
+    if "meanImg" not in outputs.ops:
+        raise KeyError("ops has no 'meanImg' (Suite2p's green mean image) to pick cells on")
+    mean_image = np.asarray(outputs.ops["meanImg"], np.float64)[rows, columns]
+    cells = cell_snr.pick_cells(mean_image, geometry, plan.n_cells)
+    shape = mean_image.shape
+    disc_weights = cell_snr.roi_weights(cells, shape, 0, geometry["disc_r"])
+    ring_weights = cell_snr.roi_weights(cells, shape, geometry["ring_in"], geometry["ring_out"])
+    weights = [disc_weights, ring_weights]
+    fpb = cell_snr.frames_per_bin(plan.fs_hz)
+    chunk = max(fpb, CHUNK_FRAMES // fpb * fpb)
+    minutes = plan.cell_frames / plan.fs_hz / 60
+    row = {}
+    for name in ("functional", "structural"):
+        chunks = movie_chunks(getattr(outputs, name), plan.crop, plan.cell_frames, chunk)
+        disc, ring = cell_snr.binned_traces(chunks, weights, fpb)
+        measures = cell_snr.cell_measures(disc, ring, fpb / plan.fs_hz)
+        row |= {f"{SHORT[name]}_cell_{key}": value
+                for key, value in cell_snr.summary(measures, minutes).items()}  # fmt: skip
+    return row
 
 
 def measure_registration(
@@ -358,6 +431,7 @@ def measure_registration(
     row = {"registration": Path(plane).parent.name, **registration_settings(outputs.ops)}
     row["bad_frames"] = int(np.sum(outputs.ops.get("badframes", [])))
     row["rigid_shift_jitter_px"] = shift_jitter(outputs.ops)
+    row["suite2p_regDX"] = reg_dx(outputs.ops)
     means = {}
     for name in CHANNELS:
         sampled = np.asarray(getattr(outputs, name)[plan.frames])[:, rows, columns]
@@ -369,7 +443,7 @@ def measure_registration(
         for block in plan.blocks
     ]  # fmt: skip
     signal, correlation_image = signal_measures(blocks, plan.fs_hz, detrend_s, patch_px)
-    row |= signal
+    row |= signal | putative_cell_measures(outputs, plan)
     return row, {"red_mean": means["structural"], "green_local_corr": correlation_image}
 
 
@@ -393,6 +467,9 @@ def compare_registrations(
     patch_px: int = PATCH_PX,
     detrend_s: float = DETREND_S,
     overwrite: bool = False,
+    cell_minutes: float | None = CELL_MINUTES,
+    scan_px: int = cell_snr.SCAN_PX,
+    n_cells: int = cell_snr.N_CELLS,
 ) -> list[dict]:
     """Measure every registration in *aligned_folder* and save the table, the measures
     figure and the image figure in ``<aligned_folder>/registration_comparison/``. Reads the
@@ -401,7 +478,7 @@ def compare_registrations(
     if table_stem.with_suffix(".csv").exists() and not overwrite:
         raise FileExistsError(f"{table_stem}.csv exists; pass overwrite to replace it")
     planes = find_registrations(aligned_folder)
-    plan = plan_comparison(planes, n_frames, n_blocks, block_frames)
+    plan = plan_comparison(planes, n_frames, n_blocks, block_frames, cell_minutes, scan_px, n_cells)
     rows, images = [], []
     for plane in planes:
         logger.info("Measuring %s", plane.parent.name)
@@ -439,9 +516,14 @@ PANELS = [
      ("bad_frames", "Bad Frames", "lower")],
     [("green_peak_snr_median", "Green Peak SNR, Median", "higher"),
      ("green_peak_snr_p95", "Green Peak SNR, 95th Percentile", "higher"),
-     ("green_residual_shift_px", "Green Residual Shift (px)", "lower"),
+     ("green_residual_shift_median_px", "Green Residual Shift, Median (px)", "lower"),
      ("green_local_corr_contrast", "Green Local Correlation Contrast", "higher"),
      ("green_noise_level", "Green Noise Level (%/√Hz)", "lower")],
+    [("green_cell_resting_snr_median", "Green Resting SNR, Median", "higher"),
+     ("green_cell_transients_per_min", "Green Transients / Min", "higher"),
+     ("green_cell_transients_flipped_per_min", "Green Flipped Transients / Min (Noise)", "lower"),
+     ("green_cell_cells_with_transient", "Cells With >= 1 Transient", "higher"),
+     ("red_cell_transients_per_min", "Red Transients / Min (Motion)", "lower")],
 ]  # fmt: skip
 
 
@@ -528,7 +610,10 @@ def caption_details(aligned_folder: Path, plan: Plan, patch_px: int, detrend_s: 
         "n": len(plan.frames), "rows": f"{rows.start}-{rows.stop - 1}",
         "columns": f"{columns.start}-{columns.stop - 1}", "sigma": SMOOTH_PX,
         "n_blocks": len(plan.blocks), "block_frames": lengths.pop(), "patch": patch_px,
-        "detrend": detrend_s, "fs": plan.fs_hz,
+        "detrend": detrend_s, "fs": plan.fs_hz, "n_cells": plan.n_cells,
+        "cell_minutes": plan.cell_frames / plan.fs_hz / 60, "scan_px": plan.scan_px,
+        "bin_s": cell_snr.frames_per_bin(plan.fs_hz) / plan.fs_hz,
+        "threshold": cell_snr.TRANSIENT_SD, "highpass": cell_snr.HIGHPASS_S,
     }  # fmt: skip
 
 
@@ -554,6 +639,16 @@ correlation that interpolation alone gives neighbouring pixels); noise level (Ru
 al. 2021), median absolute frame-to-frame change of ΔF/F (F0: 20th percentile) over \
 sqrt(frame rate), median over the brighter half of the patches; F0 includes any detector \
 offset, so compare registrations, not recordings.
+Putative cells (bottom row; the measure of the 71R / AB08 / M comparison): the {n_cells} \
+strongest local maxima of the cell-scale structure (difference of Gaussians) of Suite2p's \
+green mean image, geometry for a {scan_px} px scan; trace = disc minus surrounding annulus in \
+{bin_s:.2g} s bins over the first {cell_minutes:.1f} min, without bins where the brightness \
+around every cell jumps; noise = robust SD of successive bin differences / sqrt 2. Resting \
+SNR: a cell's mean excess over its surroundings over its noise (median across cells; contrast, \
+not activity). Transients: rising crossings of {threshold:g} SD after removing a Gaussian \
+running mean (sigma {highpass:g} s), summed over cells, per minute; flipped: the same on \
+sign-flipped traces (noise count); red: the same in red at the same places (should be at the \
+noise count; above it = motion or stray light).
 Red is the structural channel (activity-independent, the fairer test of motion); green the \
 functional one. Motion also raises green peak SNR and local correlation, so compare green \
 signal measures only among registrations the red measures find equally well aligned. Y-axes \
