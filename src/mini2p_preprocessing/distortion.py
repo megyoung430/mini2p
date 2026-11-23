@@ -1,25 +1,23 @@
 """Fixed-calibration distortion correction applied before Suite2p registration.
 
-The calibration maths (``load_transform``, ``make_maps``, ``crop_bounds``) lives in
-``distortion_correct_full_recording.py``, shared with the SLURM worker, and is
-loaded from ``DistortionSettings.calibration_script_dir``.
+The calibration maths (``load_transform``, ``make_maps``, ``crop_bounds``) is in
+``calibration``.
 """
 
 from __future__ import annotations
 
 import gc
-import importlib
 import json
 import logging
-import sys
 from dataclasses import dataclass
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import tifffile
 from scipy.ndimage import map_coordinates
 
+from . import calibration as calibration_maths
 from .config import DistortionSettings, PipelineSettings
 from .progress import PROGRESS_EVERY_S, ProgressLog
 from .tiff_io import (
@@ -34,7 +32,6 @@ from .tiff_io import (
 )
 
 log = logging.getLogger(__name__)
-CALIBRATION_SCRIPT = "distortion_correct_full_recording.py"
 
 
 @dataclass(frozen=True)
@@ -101,38 +98,14 @@ def distortion_metadata(
 # ---- I/O --------------------------------------------------------------------------
 
 
-def load_calibration_module(script_dir: Path | None) -> ModuleType:
-    """Import the shared calibration script; None searches ./scripts then ./.
-
-    The folder goes on sys.path and the script is imported by name, so it can
-    import its own sibling modules exactly as it does in the SLURM worker.
-    """
-    candidates = [Path(script_dir)] if script_dir else [Path.cwd() / "scripts", Path.cwd()]
-    module_name = Path(CALIBRATION_SCRIPT).stem
-    for folder in candidates:
-        script = folder / CALIBRATION_SCRIPT
-        if script.is_file():
-            cached = sys.modules.get(module_name)
-            if cached is not None and Path(cached.__file__).resolve() != script.resolve():
-                del sys.modules[module_name]  # a different folder was loaded earlier
-            if str(folder) not in sys.path:
-                sys.path.insert(0, str(folder))
-            return importlib.import_module(module_name)
-    raise FileNotFoundError(
-        f"Could not find {CALIBRATION_SCRIPT} in {[str(c) for c in candidates]}; "
-        "set distortion.calibration_script_dir"
-    )
-
-
 def build_distortion_maps(
     distortion: DistortionSettings,
     image_shape: tuple[int, int],
-    calibration: ModuleType | None = None,
+    calibration: ModuleType | SimpleNamespace = calibration_maths,
 ) -> DistortionMaps:
-    """Load the calibration and build the map; pass ``calibration`` to skip the import."""
+    """Load the calibration and build the map; tests pass a stand-in ``calibration``."""
     if distortion.transform_mat is None:
         raise ValueError("distortion.transform_mat is not set")
-    calibration = calibration or load_calibration_module(distortion.calibration_script_dir)
     transform, matched_z, schema, point_count = calibration.load_transform(
         distortion.transform_mat, distortion.z_um
     )
@@ -157,7 +130,7 @@ def write_distortion_corrected(
     input_tiff: Path,
     output_tiff: Path,
     settings: PipelineSettings,
-    calibration: ModuleType | None = None,
+    calibration: ModuleType | SimpleNamespace = calibration_maths,
 ) -> DistortionMaps:
     """Write the distortion-corrected TIFF and its .distortion.json sidecar."""
     output_tiff = Path(output_tiff)

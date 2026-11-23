@@ -39,6 +39,10 @@ packages = ["src/mini2p_preprocessing"]
 [tool.ruff]
 line-length = 100
 
+[tool.ruff.format]
+# a verbatim copy of an external script, kept as written so it can be diffed against it
+exclude = ["tests/reference/distortion_correct_full_recording.py"]
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import tomllib
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+log = logging.getLogger(__name__)
 
 ChannelRole = Literal["structural", "functional"]
 # "auto": structural where the bidiphase step trusted it often enough, else functional.
@@ -147,13 +150,25 @@ class DistortionSettings(_Frozen):
     # Required: registering undistorted data by accident must not be a silent default.
     mode: Literal["local_batched", "cluster_full", "off"]
     transform_mat: Path | None = None
-    # Folder holding distortion_correct_full_recording.py; None searches ./scripts then ./
-    calibration_script_dir: Path | None = None
     z_um: float = 0.0
     interpolation_order: int = Field(1, ge=0, le=5)
     crop_black_borders: bool = True
     crop_padding_px: int = Field(1, ge=0)
     batch_frames: int = Field(500, ge=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _ignore_script_folder(cls, data):
+        # Configs written for the external calibration script name its folder. The maths is
+        # now in the package, so the setting has no effect: dropping it with a warning
+        # keeps those configs loading.
+        if isinstance(data, dict) and "calibration_script_dir" in data:
+            data = {k: v for k, v in data.items() if k != "calibration_script_dir"}
+            log.warning(
+                "distortion.calibration_script_dir is no longer used (the calibration is "
+                "part of mini2p); delete it from the config"
+            )
+        return data
 
     @model_validator(mode="after")
     def _local_mode_needs_transform(self) -> DistortionSettings:
