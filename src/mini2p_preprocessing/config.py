@@ -320,14 +320,15 @@ def settings_from_record(text: str) -> PipelineSettings:
     """Settings from a run's ``pipeline_settings.json``.
 
     Records written before ``phase.method`` existed describe chunked runs, so a record
-    without it is read as ``method = "chunked"`` rather than today's default.
+    without it is read as ``method = "chunked"`` rather than today's default, and a
+    ``distortion.calibration_script_dir`` is dropped.
     """
     record = json.loads(text)
     record.setdefault("phase", {}).setdefault("method", "chunked")
     # Records from before "auto" existed aligned on the then-default functional channel.
     record.setdefault("registration", {}).setdefault("motion_alignment_source", "functional")
-    # Records name the calibration script's folder, which no longer has any effect; a
-    # record is not edited, so this is no reason to warn.
+    # Records written by earlier versions name a calibration_script_dir: it has no effect,
+    # and a record is not edited, so it is dropped without a warning.
     record.get("distortion", {}).pop("calibration_script_dir", None)
     return PipelineSettings.model_validate(record)
 

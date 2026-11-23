@@ -183,16 +183,16 @@ def test_a_config_toml_with_the_old_setting_loads_with_a_warning(tmp_path, caplo
     assert "calibration_script_dir" in caplog.text
 
 
-def test_run_records_with_the_old_setting_load_quietly(caplog):
-    # every pipeline_settings.json written before the port has the key, set or null
-    for value in ("/Users/me/scripts", None):
-        record = PipelineSettings.model_validate({"distortion": {"mode": "off"}}).model_dump(
-            mode="json"
-        )
-        record["distortion"]["calibration_script_dir"] = value
-        with caplog.at_level("WARNING"):
-            settings = settings_from_record(json.dumps(record))
-        assert settings.distortion.mode == "off"
+@pytest.mark.parametrize("value", ["/Users/me/scripts", None])
+def test_run_records_with_the_old_setting_load_quietly(caplog, value):
+    # every pipeline_settings.json written by earlier versions has the key, set or null
+    record = PipelineSettings.model_validate({"distortion": {"mode": "off"}}).model_dump(
+        mode="json"
+    )
+    record["distortion"]["calibration_script_dir"] = value
+    with caplog.at_level("WARNING"):
+        settings = settings_from_record(json.dumps(record))
+    assert settings.distortion.mode == "off"
     assert "calibration_script_dir" not in caplog.text
 
 
