@@ -333,15 +333,15 @@ output folder:
 | Folder | Plots |
 |---|---|
 | `raw_mean/` | mean of the first frames of the raw TIFF |
-| `bidiphase/` | phase per frame (or per chunk and its score curve), before/after bidiphase, manual chunk offsets tried |
+| `bidiphase/` | phase per frame (or per chunk and its score curve), before/after bidiphase |
 | `destriping/` | before/after destriping |
 | `distortion_correction/` | before/after distortion correction |
-| `motion_registration/` | before/after registration, shift traces, nonrigid offsets, registered means and their crops, focus QC, chosen contrast |
+| `motion_registration/` | before/after registration, shift traces, nonrigid offsets, registered means and their crops, focus QC, chosen contrast (full frame and cropped) |
 | `frame_order/` | every stage's frames against the acquired TIFF |
-| `fluorescence/` | photon-free levels, F0 overview, mask alignment, background, each ROI viewed, top ROIs |
+| `fluorescence/` | photon-free levels, F0 overview, mask alignment, background, top ROIs |
 
-Plots behind a slider (manual chunk offset, one ROI at a time) are saved each time it shows a
-new view. Registration-dependent plots are overwritten when the same variant is registered
+Plots behind a slider (manual chunk offset, contrast preview, one ROI at a time) are not
+saved; the contrast you choose is. Registration-dependent plots are overwritten when the same variant is registered
 again; each caption names the plane folder it was drawn from.
 
 The mean images stay beside `ops.npy`: `meanImg_{green,red}_contrast.png` and
