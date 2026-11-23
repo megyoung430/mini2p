@@ -257,18 +257,37 @@ def align_to_plane(
     labels: np.ndarray, mask_image: Path, ops: dict, settings: PipelineSettings
 ) -> tuple[np.ndarray, dict]:
     """Shift masks drawn on ``mask_image`` onto this plane's own mean image."""
+    return align_masks(
+        labels, load_reference_image(mask_image), ops, settings.fluorescence,
+        settings.registration.diameter_px,
+    )  # fmt: skip
+
+
+def align_masks(
+    labels: np.ndarray,
+    mask_image: np.ndarray,
+    ops: dict,
+    fl: FluorescenceSettings,
+    diameter_px: int,
+) -> tuple[np.ndarray, dict]:
+    """Shift masks drawn on *mask_image* onto the plane's own mean image (``ops['meanImg']``)
+    with the ``[fluorescence]`` mask limits, logging the shift and any masks dropped.
+
+    Raises:
+        KeyError: If ops has no mean image.
+        ValueError: If one shift cannot align the masks (``alignment.align_labels``).
+    """
     if "meanImg" not in ops:
         raise KeyError("ops.npy has no 'meanImg' to align the masks to; was it registered?")
-    fl = settings.fluorescence
     aligned, report = align_labels(
         labels,
-        load_reference_image(mask_image),
+        mask_image,
         np.asarray(ops["meanImg"], dtype=np.float32),
         max_shift_px=fl.mask_max_shift_px,
         tolerance_px=fl.mask_shift_tolerance_px,
         min_correlation=fl.mask_min_correlation,
         min_retained_fraction=fl.mask_min_retained_fraction,
-        background_sigma_px=2.0 * settings.registration.diameter_px,
+        background_sigma_px=2.0 * diameter_px,
     )
     log.info(
         "Masks shifted by dy=%d, dx=%d px (rank correlation %.3f -> %.3f)",

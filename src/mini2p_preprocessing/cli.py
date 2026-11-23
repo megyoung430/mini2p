@@ -243,8 +243,9 @@ def compare_registrations_main(argv: list[str] | None = None) -> None:
     """Alignment and signal quality of every registration of one recording, side by side."""
     parser = argparse.ArgumentParser(
         description="Measure every <save_folder>/plane0 in an aligned_<channel> folder the "
-        "same way (alignment, and signal quality without cell segmentation) and save a "
-        f"table and figures in <aligned folder>/registration_comparison/{TABLE_NAME}.*"
+        "same way (alignment, signal quality, and SNR and transients of Cellpose masks or of "
+        "putative cells) and save a table and figures in "
+        f"<aligned folder>/registration_comparison/{TABLE_NAME}.*"
     )
     parser.add_argument("aligned_folder", type=Path, help="aligned_<channel> folder")
     parser.add_argument("--frames", type=int, default=N_FRAMES,
@@ -258,13 +259,22 @@ def compare_registrations_main(argv: list[str] | None = None) -> None:
     parser.add_argument("--detrend-s", type=float, default=DETREND_S,
                         help="high-pass window of the signal measures (s)")  # fmt: skip
     parser.add_argument("--cell-minutes", type=float, default=CELL_MINUTES,
-                        help="first minutes for the putative-cell SNR and transients "
+                        help="first minutes for the cells' SNR and transients "
                         "(0: the whole recording)")  # fmt: skip
     parser.add_argument("--scan-px", type=int, default=SCAN_PX,
-                        help="scan width in px (sets the putative-cell geometry)")  # fmt: skip
+                        help="scan width in px (sets the cells' disc and ring sizes)")  # fmt: skip
     parser.add_argument(
         "--cells", type=int, default=N_CELLS, help="putative cells per registration"
     )
+    parser.add_argument("--seg", type=Path, help="Cellpose *_seg.npy whose masks are the cells "
+                        "(default: the one in the nearest cell_segmentation/ folder at or above "
+                        "the aligned folder, within its run-XX folder)")  # fmt: skip
+    parser.add_argument("--mask-image", type=Path, help="image the masks were drawn on "
+                        "(default: the PNG or TIFF named like the _seg.npy)")  # fmt: skip
+    parser.add_argument("--putative-cells", action="store_true",
+                        help="use putative cells even when a segmentation is found")  # fmt: skip
+    parser.add_argument("--config", type=Path, help="pipeline TOML whose [fluorescence] mask "
+                        "limits and cell diameter align the masks (default: defaults)")  # fmt: skip
     parser.add_argument("--overwrite", action="store_true", help="replace an earlier comparison")
     args = parser.parse_args(argv)
     if args.cell_minutes < 0:
@@ -276,19 +286,23 @@ def compare_registrations_main(argv: list[str] | None = None) -> None:
         parser.error("--detrend-s must be positive")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
     try:  # only the request is checked here; errors while measuring raise as they are
+        settings = load_settings(args.config) if args.config else None
         planes, plan = prepare_comparison(
             args.aligned_folder, args.frames, args.blocks, args.block_frames, args.overwrite,
-            args.cell_minutes or None, args.scan_px, args.cells,
+            args.cell_minutes or None, args.scan_px, args.cells, args.seg, args.mask_image,
+            args.putative_cells, settings.fluorescence if settings else None,
+            settings.registration.diameter_px if settings else None,
         )  # fmt: skip
     except (ValueError, KeyError, FileNotFoundError, FileExistsError) as error:
         parser.error(str(error))
     rows = run_comparison(args.aligned_folder, planes, plan, args.patch_px, args.detrend_s)
+    print(f"Cells: {rows[0]['n_cells']} {rows[0]['cells']}")
     print_summary(rows)
     print(f"Saved {output_stems(args.aligned_folder)[0].parent}")
 
 
 SUMMARY_COLUMNS = [
-    "registration", "red_corr_median", "red_residual_shift_px", "red_fluctuation_pct",
+    "registration", "n_cells", "red_corr_median", "red_residual_shift_px", "red_fluctuation_pct",
     "green_local_corr_contrast", "green_noise_level", "green_cell_resting_snr_median",
     "green_cell_transients_per_min", "green_cell_transients_flipped_per_min",
     "red_cell_transients_per_min",

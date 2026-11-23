@@ -199,6 +199,18 @@ uv run mini2p-compare-registrations /path/to/run-02/without_distortion_correctio
   over noise), large transients per minute (rising crossings of 4.5 SD after a 16 s
   high-pass), the same on flipped traces (the noise count), cells with at least one, and the
   count in red at the same places, which should be at the noise count (above it = motion).
+- **Segmented cells instead**: put a Cellpose `*_seg.npy` and the image its masks were drawn
+  on (same name, `.png` or `.tif`) in a `cell_segmentation/` folder at or above the aligned
+  folder within its run, e.g. `run-02/preprocessing_sweep/cell_segmentation/` (the nearest
+  such folder is used, none above `run-XX/`, and files named `*vessel*` or `*background*` are
+  ignored), or pass `--seg` (and `--mask-image`). The
+  masks are shifted onto each registration's own mean image, since each registration aligns
+  to its own reference (the shift is in the table as `mask_dy`, `mask_dx`; pass `--config` to
+  align with your `[fluorescence]` mask limits and cell diameter). Every registration is
+  measured on the same masks: those every registration keeps, each with room for its ring
+  inside the crop; the caption counts the rest. Masks that one shift cannot align stop the
+  comparison before anything is measured. Each cell's trace is its mask minus a ring around
+  it outside every mask; the measures are the same. `--putative-cells` ignores a segmentation.
 
 Red is the fairer test of motion. Motion left in a movie also raises green peak SNR, local
 correlation and transient counts, so compare the green measures only among registrations the
@@ -208,10 +220,12 @@ alone changes every measure that depends on pixel noise (fluctuation, noise leve
 correlation, crispness, frame-to-mean r, resting SNR), in either direction. So compare those
 within one mode (e.g. smooth_sigma or norm_frames among rigid registrations), and between
 rigid and nonrigid rely on residual shift and on transient counts against the flipped and red
-counts. Suite2p computes regDX with each registration's own smooth_sigma. The alignment and
+counts. Local correlation compares only between rigid registrations: under nonrigid
+registration the interpolation varies across Suite2p's block grid, which changes with the
+settings. Suite2p computes regDX with each registration's own smooth_sigma. The alignment and
 signal measures use the crop no compared registration wraps into, so numbers compare within
-one comparison only. The table, the measures figure and the images (red mean, green
-local correlation) are saved in `<aligned folder>/registration_comparison/`; `--overwrite`
+one comparison only. The table, the measures figure and the images (red and green mean of
+each registration) are saved in `<aligned folder>/registration_comparison/`; `--overwrite`
 replaces an earlier comparison. It reads the registrations only; on a cluster node it takes a
 few minutes per registration.
 

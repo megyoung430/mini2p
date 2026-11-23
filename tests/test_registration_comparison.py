@@ -6,9 +6,11 @@ import csv
 
 import numpy as np
 import pytest
+import tifffile
 from scipy.ndimage import gaussian_filter, shift
 
 from mini2p_preprocessing.cli import compare_registrations_main
+from mini2p_preprocessing.config import FluorescenceSettings
 from mini2p_preprocessing.registration_comparison import (
     block_slices,
     bright_half_median,
@@ -16,8 +18,10 @@ from mini2p_preprocessing.registration_comparison import (
     common_crop,
     compare_registrations,
     crispness,
+    find_segmentation,
     frame_alignment,
     local_correlation_image,
+    mask_image_for,
     noise_level,
     output_stems,
     patch_traces,
@@ -263,3 +267,111 @@ def test_the_command_prints_the_summary_and_reports_bad_requests(tmp_path, rng, 
         compare_registrations_main(args)  # exists, no --overwrite
     with pytest.raises(SystemExit):
         compare_registrations_main([str(tmp_path / "nothing")])
+
+
+def test_the_image_figure_shows_each_registrations_red_and_green_mean(rng):
+    from mini2p_preprocessing.registration_comparison import plot_images
+
+    images = [{"red_mean": texture(rng), "green_mean": texture(rng)} for _ in range(3)]
+    axes = plot_images(["a\n(rigid)", "b\n(rigid)", "c\n(nonrigid)"], images)
+    assert axes.shape == (2, 3)
+    assert [ax.get_ylabel() for ax in axes[:, 0]] == ["Red Mean", "Green Mean"]
+    shown = axes[1, 2].images[0].get_array()
+    assert np.allclose(shown, images[2]["green_mean"])
+
+
+# ---- segmented cells ---------------------------------------------------------------
+
+
+def write_segmentation(folder, labels, image, name="mean"):
+    folder.mkdir(parents=True, exist_ok=True)
+    np.save(folder / f"{name}_seg.npy", {"masks": labels, "filename": f"{name}.tif"})
+    tifffile.imwrite(folder / f"{name}.tif", image.astype(np.float32))
+    return folder / f"{name}_seg.npy"
+
+
+def cell_labels():
+    labels = np.zeros((LY, LX), int)
+    for label, (row, column) in enumerate([(30, 30), (12, 12), (12, 46), (46, 14)], start=1):
+        labels[row : row + 5, column : column + 5] = label
+    return labels
+
+
+def test_the_segmentation_is_looked_for_up_to_the_run_folder_only(tmp_path):
+    run = tmp_path / "run-02"
+    aligned = run / "sweep" / "variant" / "aligned_structural"
+    aligned.mkdir(parents=True)
+    write_segmentation(tmp_path / "cell_segmentation", cell_labels(), np.ones((LY, LX)))
+    assert find_segmentation(aligned) is None  # above the run folder
+    seg = write_segmentation(run / "sweep" / "cell_segmentation", cell_labels(), np.ones((LY, LX)))
+    assert find_segmentation(aligned) == seg
+    write_segmentation(seg.parent, cell_labels(), np.ones((LY, LX)), "mean_blood_vessel")
+    assert find_segmentation(aligned) == seg  # a vessel segmentation is not cells
+    write_segmentation(seg.parent, cell_labels(), np.ones((LY, LX)), "other")
+    with pytest.raises(ValueError, match="Several"):
+        find_segmentation(aligned)
+    empty = run / "sweep" / "variant" / "cell_segmentation"
+    empty.mkdir()
+    assert find_segmentation(aligned) is None  # the nearest folder decides, even empty
+    outside_runs = tmp_path / "loose" / "aligned_structural"
+    outside_runs.mkdir(parents=True)
+    assert find_segmentation(outside_runs) is None
+
+
+def test_the_mask_image_is_found_beside_the_segmentation(tmp_path):
+    seg = write_segmentation(tmp_path / "cells", cell_labels(), np.ones((LY, LX)))
+    loaded = np.load(seg, allow_pickle=True).item()
+    assert mask_image_for(seg, loaded) == seg.parent / "mean.tif"
+    (seg.parent / "mean.tif").unlink()
+    with pytest.raises(FileNotFoundError, match="--mask-image"):
+        mask_image_for(seg, loaded)
+
+
+def test_the_same_segmented_cells_are_aligned_onto_each_registration(tmp_path, rng):
+    aligned = sweep(tmp_path, rng)
+    good = aligned / "suite2p_good" / "plane0"
+    green = np.fromfile(good / "data.bin", np.int16).reshape(-1, LY, LX)
+    red = np.fromfile(good / "data_chan2.bin", np.int16).reshape(-1, LY, LX)
+    write_registration(aligned, "suite2p_shifted", *(np.roll(m, (2, 1), axis=(1, 2))
+                                                     for m in (green, red)))  # fmt: skip
+    labels = cell_labels()
+    labels[0:4, 30:34] = 9  # its ring leaves the frame: left out everywhere
+    seg = write_segmentation(tmp_path / "cells", labels, green.mean(axis=0))
+    rows = compare_registrations(aligned, n_frames=100, n_blocks=2, block_frames=150,
+                                 cell_minutes=None, seg_file=seg)  # fmt: skip
+    by_name = {r["registration"]: r for r in rows}
+    assert {r["n_cells"] for r in rows} == {4}
+    assert all(r["cells"] == "cellpose mean_seg.npy" for r in rows)
+    assert (by_name["suite2p_good"]["mask_dy"], by_name["suite2p_good"]["mask_dx"]) == (0, 0)
+    shifted = by_name["suite2p_shifted"]
+    assert (shifted["mask_dy"], shifted["mask_dx"]) == (2, 1)
+    assert np.isfinite(shifted["green_cell_resting_snr_median"])
+    caption = output_stems(aligned)[0].with_name("registration_comparison.caption.txt").read_text()
+    assert "4 Cellpose masks" in caption and "1 outside region" in caption
+    strict = FluorescenceSettings(mask_max_shift_px=1)  # the (2, 1) shift is now too far
+    with pytest.raises(ValueError, match="mask_max_shift_px"):
+        compare_registrations(aligned, n_frames=100, n_blocks=2, block_frames=150,
+                              cell_minutes=None, seg_file=seg, overwrite=True,
+                              fluorescence=strict)  # fmt: skip
+
+
+def test_the_command_finds_the_segmentation_and_can_ignore_it(tmp_path, rng, capsys):
+    aligned = sweep(tmp_path / "run-01", rng)
+    green = np.fromfile(aligned / "suite2p_good" / "plane0" / "data.bin", np.int16)
+    write_segmentation(tmp_path / "run-01" / "cell_segmentation", cell_labels(),
+                       green.reshape(-1, LY, LX).mean(axis=0))  # fmt: skip
+    base = [str(aligned), "--frames", "50", "--blocks", "2", "--block-frames", "100",
+            "--cell-minutes", "0", "--scan-px", "256", "--cells", "10"]  # fmt: skip
+    compare_registrations_main(base)
+    assert "Cells: 4 cellpose mean_seg.npy" in capsys.readouterr().out
+    compare_registrations_main([*base, "--overwrite", "--putative-cells"])
+    assert "Cells: 10 putative" in capsys.readouterr().out
+
+
+def test_masks_and_their_image_must_match_and_cannot_be_combined_with_putative(tmp_path, rng):
+    aligned = sweep(tmp_path, rng)
+    seg = write_segmentation(tmp_path / "elsewhere", cell_labels(), np.ones((LY + 2, LX)))
+    with pytest.raises(ValueError, match="masks are"):
+        compare_registrations(aligned, seg_file=seg, cell_minutes=None)
+    with pytest.raises(ValueError, match="not both"):
+        compare_registrations(aligned, seg_file=seg, putative=True, cell_minutes=None)
