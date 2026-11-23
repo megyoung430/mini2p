@@ -165,7 +165,7 @@ the length of the QC notebook's stage-by-stage stretch; setting the manual table
 | `batch_size` | `500` | Frames registered at once (memory only). |
 | `keep_raw_binary` | `false` | Keep Suite2p's unregistered binary as well (another ~4 GB per channel). Needed for `two_step_registration` to take effect. |
 | `save_folder` | `"suite2p"` | Name of Suite2p's output folder. It is cleared when re-registering. Another name keeps a second registration of the variant beside the first (e.g. `suite2p_rigid_sigma3`); its binaries (`data.bin`, `data_chan2.bin`) then go in `<save_folder>/suite2p/plane0/` inside it, because Suite2p always writes them to a `suite2p/plane0` folder. |
-| `fast_disk` | none | A local folder (e.g. on the laptop's SSD) for Suite2p's working binaries. Much faster and more reliable than a network share; results still go beside the run. |
+| `fast_disk` | none | A local folder (e.g. on the laptop's SSD) for Suite2p's working binaries, one subfolder per run, variant, alignment and (other than `suite2p`) `save_folder`. Much faster and more reliable than a network share; results still go beside the run. Re-registering does not clear it. |
 | `run_roi_detection` | `false` | Run Suite2p's own ROI detection. Off, because ROIs come from Cellpose masks. |
 | `motion_alignment_source` | `"auto"` | Channel the motion is measured on: `"structural"`, `"functional"`, or `"auto"`: structural where the per-frame phase step trusted it for at least `auto_structural_min_fraction` of frames, else functional. |
 | `auto_structural_min_fraction` | `0.5` | That fraction, for `"auto"`. |

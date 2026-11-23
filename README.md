@@ -145,9 +145,20 @@ Suite2p writes each run's registered movie (`data.bin`, `data_chan2.bin`, about 
 for a 7,000-frame two-channel run) and rereads it several times while registering. Over a
 network share this is slow and can fail with `OSError: [Errno 5] Input/output error`. Set
 `[registration] fast_disk` to a local folder: the binaries go to
-`<fast_disk>/<session>_funcimg_<run>_<variant>/`, everything else still goes beside the run,
-and `ops["reg_file"]` records where the binary is. Cellpose extraction reads the binary, so
-keep a run's folder until it has been extracted.
+`<fast_disk>/<session>_funcimg_<run>_<variant>_aligned_<channel>/` (with `_<save_folder>` added
+for a `save_folder` other than `suite2p`), everything else still goes beside the run, and
+`ops["reg_file"]` records where the binary is. Cellpose extraction reads the binary, so keep a
+run's folder until it has been extracted. Re-registering does not clear these local folders.
+
+### Several registrations of one variant
+
+Each `[registration] save_folder` of a variant is a registration of its own, with its own
+results, binaries, `motion_alignment.json` and QC plots. Suite2p always writes binaries to a
+`suite2p/plane0` folder, so for a `save_folder` other than `suite2p` they go in
+`<save_folder>/suite2p/plane0/`. Registrations made before this, in a `save_folder` other than
+`suite2p`, wrote their binaries over those of the variant's `suite2p` registration. Loading a
+registration whose binary was written after its `ops.npy` (by another registration) now stops
+with an error: register both again.
 
 ### Re-running, extraction and outputs
 

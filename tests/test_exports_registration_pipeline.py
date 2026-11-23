@@ -389,9 +389,12 @@ def suite2p_binary_dir(db: dict) -> Path:
     return Path(init_dbs(dict(db))[0]["reg_file"]).parent
 
 
-def test_each_save_folder_keeps_its_binaries_inside_it(tmp_path):
-    # Suite2p writes its binaries in <fast_disk>/suite2p/plane0 whatever save_folder is, so a
-    # second registration of the variant used to overwrite the first one's data.bin
+@pytest.mark.parametrize("keep_raw", [False, True])
+def test_each_save_folder_keeps_its_binaries_inside_it(tmp_path, keep_raw):
+    # Suite2p writes its binaries in <fast_disk>/suite2p/plane0 whatever save_folder is; each
+    # registration of a variant must still have binaries of its own
+    from suite2p.io.utils import init_dbs
+
     from mini2p_preprocessing.registration import build_suite2p_db
 
     output_dir = tmp_path / "run-02" / "without_distortion_correction" / "with_destriping"
@@ -399,15 +402,18 @@ def test_each_save_folder_keeps_its_binaries_inside_it(tmp_path):
     aligned = output_dir / "aligned_structural"
     folders = {}
     for save_folder in ("suite2p", "suite2p_rigid_sigma3", "suite2p_withoutnonrigid_sigma1.15"):
-        settings = PipelineSettings.model_validate(
-            {
-                **STRUCTURAL,
-                "registration": {**STRUCTURAL["registration"], "save_folder": save_folder},
-            }  # fmt: skip
-        )
-        binaries = suite2p_binary_dir(build_suite2p_db(output_dir, tiff, settings))
-        assert binaries.is_relative_to(aligned / save_folder)
-        folders[save_folder] = binaries
+        registration = {
+            **STRUCTURAL["registration"],
+            "save_folder": save_folder,
+            "keep_raw_binary": keep_raw,
+        }
+        settings = PipelineSettings.model_validate({**STRUCTURAL, "registration": registration})
+        (db,) = init_dbs(dict(build_suite2p_db(output_dir, tiff, settings)))
+        keys = ("reg_file", "reg_file_chan2", "raw_file", "raw_file_chan2")
+        files = [Path(db[key]) for key in keys if key in db]
+        assert len(files) == (4 if keep_raw else 2)
+        assert all(f.is_relative_to(aligned / save_folder) for f in files)
+        folders[save_folder] = files[0].parent
     assert folders["suite2p"] == aligned / "suite2p" / "plane0"  # unchanged for the default
     assert len(set(folders.values())) == len(folders)
 
@@ -432,8 +438,9 @@ def test_fast_disk_binaries_are_kept_apart_per_save_folder(tmp_path):
         return build_suite2p_db(output_dir, tiff, settings)
 
     default, other = db("suite2p"), db("suite2p_rigid_sigma3")
-    assert not default["fast_disk"].endswith("suite2p")  # the default keeps its old name
-    assert other["fast_disk"] == default["fast_disk"] + "_suite2p_rigid_sigma3"
+    name = "ses-223_date-20260807_funcimg_run-02_with_destriping_aligned_structural"
+    assert default["fast_disk"] == str(tmp_path / "local" / name)  # the default's name is kept
+    assert other["fast_disk"] == str(tmp_path / "local" / f"{name}_suite2p_rigid_sigma3")
     assert suite2p_binary_dir(default) != suite2p_binary_dir(other)
 
 
@@ -451,3 +458,25 @@ def test_a_registration_never_reads_another_registrations_binary(tmp_path):
     own.parent.mkdir(parents=True)
     own.write_bytes(b"this registration")
     assert resolve_registered_binary({}, plane, "reg_file", "data.bin") == own
+
+
+def test_a_binary_written_after_its_registration_is_refused(tmp_path):
+    # registrations from before each save_folder kept its own binaries: a sweep's ops points
+    # at the default registration's data.bin, which the default (or another sweep) rewrote
+    import os
+
+    from mini2p_preprocessing.registration import resolve_registered_binary
+
+    aligned = tmp_path / "with_destriping" / "aligned_structural"
+    shared = aligned / "suite2p" / "plane0" / "data.bin"
+    sweep = aligned / "suite2p_sigma1.15" / "plane0"
+    for plane in (shared.parent, sweep):
+        plane.mkdir(parents=True)
+        np.save(plane / "ops.npy", {"reg_file": str(shared)})
+    shared.write_bytes(b"frames")
+    now = shared.stat().st_mtime
+    os.utime(sweep / "ops.npy", (now - 600, now - 600))  # the sweep registered 10 min earlier
+    with pytest.raises(RuntimeError, match="another registration"):
+        resolve_registered_binary({"reg_file": str(shared)}, sweep, "reg_file", "data.bin")
+    os.utime(shared.parent / "ops.npy", (now + 1, now + 1))  # its own registration: fine
+    assert resolve_registered_binary({}, shared.parent, "reg_file", "data.bin") == shared

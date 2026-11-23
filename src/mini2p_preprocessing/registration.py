@@ -14,6 +14,7 @@ import tifffile
 
 from .config import (
     ALIGNMENT_SUBDIRS,
+    DEFAULT_SAVE_FOLDER,
     VARIANT_SUBDIRS,
     ChannelRole,
     PipelineSettings,
@@ -22,10 +23,6 @@ from .config import (
 )
 
 log = logging.getLogger(__name__)
-# Suite2p puts its binaries in <fast_disk>/suite2p/plane0; with this save_folder and no
-# fast_disk that is the results folder itself.
-DEFAULT_SAVE_FOLDER = "suite2p"
-
 MOTION_ALIGNMENT_RECORD = "motion_alignment.json"  # in <save_folder>/: why that channel
 
 
@@ -116,7 +113,9 @@ def build_suite2p_db(
     return db
 
 
-def fast_disk_for(registration_dir: Path, fast_disk: Path, save_folder: str = "suite2p") -> Path:
+def fast_disk_for(
+    registration_dir: Path, fast_disk: Path, save_folder: str = DEFAULT_SAVE_FOLDER
+) -> Path:
     """This registration's folder under *fast_disk*, named after its session, run, variant,
     alignment (``registration_dir`` is ``<variant>/aligned_<source>``) and, other than the
     default, its save_folder."""
@@ -411,17 +410,42 @@ class RegisteredOutputs:
     structural: np.memmap  # Suite2p's data_chan2.bin
 
 
+# Allowed lag of ops.npy behind its binaries: Suite2p saves ops.npy only after closing them.
+BINARY_AFTER_OPS_TOLERANCE_S = 2.0
+
+
 def resolve_registered_binary(ops: dict, plane_dir: Path, ops_key: str, filename: str) -> Path:
     """This registration's binary: the path recorded in ops (fast_disk binaries sit outside
     save_folder), else in its plane0, else in <save_folder>/suite2p/plane0, where Suite2p
-    puts it for a save_folder other than the default. Never another registration's."""
+    puts it for a save_folder other than the default. Never another registration's.
+
+    Raises:
+        FileNotFoundError: If there is no such binary.
+        RuntimeError: If the binary was written after the registration's ops.npy, i.e. by
+            another registration (before each save_folder kept its own binaries, a second
+            save_folder of a variant wrote its binaries over the default registration's).
+    """
     plane_dir = Path(plane_dir)
     candidates = [Path(ops[ops_key])] if ops.get(ops_key) else []
     candidates += [plane_dir / filename, plane_dir.parent / "suite2p" / "plane0" / filename]
     for candidate in candidates:
         if candidate.is_file():
+            check_binary_belongs(candidate, plane_dir / "ops.npy")
             return candidate
     raise FileNotFoundError(f"Could not find {filename}; checked {[str(c) for c in candidates]}")
+
+
+def check_binary_belongs(binary: Path, ops_file: Path) -> None:
+    """Refuse a binary written after the registration's ops.npy (no ops.npy: not checked)."""
+    if not ops_file.is_file():
+        return
+    lag = binary.stat().st_mtime - ops_file.stat().st_mtime
+    if lag > BINARY_AFTER_OPS_TOLERANCE_S:
+        raise RuntimeError(
+            f"{binary} was written {lag:.0f} s after {ops_file}, so it holds another "
+            "registration's frames (e.g. a registration into another save_folder of this "
+            "variant overwrote it); register this one again"
+        )
 
 
 def load_registered_outputs(plane_dir: Path) -> RegisteredOutputs:
