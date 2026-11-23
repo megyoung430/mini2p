@@ -301,6 +301,60 @@ def save_contrast_choice(
     return paths
 
 
+CROPPED_RECORD_JSON = "meanImg_cropped.json"
+
+
+def save_cropped_contrast_choice(
+    plane_dir: Path,
+    green_raw: np.ndarray,
+    red_raw: np.ndarray,
+    green: Contrast,
+    red: Contrast,
+    region: tuple[slice, slice],
+) -> dict[str, Path]:
+    """The mean images cropped to *region*, beside ops.npy: display PNGs and raw TIFFs.
+
+    The contrast percentiles are taken over the cropped image, so the wrapped band the crop
+    removes does not set them. The record keeps the crop (Python slices of the full frame,
+    end excluded) and each channel's contrast.
+    """
+    plane_dir = Path(plane_dir)
+    rows, cols = region
+    full_shape = np.shape(green_raw)
+    if np.shape(red_raw) != full_shape or len(full_shape) != 2:
+        raise ValueError(
+            f"The green and red mean images must be 2-D and of one shape: "
+            f"{np.shape(green_raw)}, {np.shape(red_raw)}"
+        )
+    paths = {"crop JSON": plane_dir / CROPPED_RECORD_JSON}
+    record = {
+        "rows": [rows.start, rows.stop],
+        "columns": [cols.start, cols.stop],
+        "full_shape": list(full_shape),
+        "note": "rows/columns: the crop of the full registered frame (Python slice, end excluded)",
+    }
+    for name, raw, contrast in (("green", green_raw, green), ("red", red_raw, red)):
+        cropped = np.asarray(raw)[rows, cols]
+        if cropped.size == 0:
+            raise ValueError(f"The crop {region} leaves nothing of a {full_shape} image")
+        display, black, white = scale_contrast(
+            cropped, contrast.black_percentile, contrast.white_percentile, contrast.gamma
+        )
+        paths[f"{name} PNG"] = plane_dir / f"meanImg_cropped_{name}_contrast.png"
+        paths[f"{name} raw TIFF"] = plane_dir / f"meanImg_cropped_{name}_raw.tif"
+        plt.imsave(paths[f"{name} PNG"], display, cmap="gray", vmin=0, vmax=1)
+        tifffile.imwrite(paths[f"{name} raw TIFF"], cropped.astype(np.float32))
+        record[name] = {
+            "black_percentile": contrast.black_percentile,
+            "white_percentile": contrast.white_percentile,
+            "gamma": contrast.gamma,
+            "black_value": black,
+            "white_value": white,
+        }
+    paths["crop JSON"].write_text(json.dumps(record, indent=2))
+    return paths
+
+
 def _saved_contrast_record(plane_dir: Path) -> dict:
     path = Path(plane_dir) / CHOSEN_SETTINGS_JSON
     if not path.is_file():

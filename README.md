@@ -71,7 +71,7 @@ uv run mini2p-raw-means --config config/pipeline.toml --frames 500 --subject-dir
 Only the first frames of each TIFF are read: about 0.5 GB per 512 x 512, 2-channel TIFF for
 500 frames, so many TIFFs on a network share take a while; on the cluster, run it next to
 the data. The QC notebook's first section shows the same figure for its one recording, in
-its run folder.
+its `quality_control/raw_mean/` folder.
 
 ### A recording stopped mid-frame
 
@@ -323,6 +323,33 @@ on purpose: a cell with events in fewer than ~0.1 % of frames loses them all to 
 so its event count is 0. NATEX's tracking analysis (DeepLabCut), its combination with imaging,
 its detection of one cell in several planes, and its GUI are not ported.
 
+## QC notebook outputs
+
+The QC notebook (`notebooks/qc_single_run.ipynb`) saves every plot it draws in the variant
+folder it works on (e.g. `run-01/with_distortion_correction/with_destriping/`), under
+`quality_control/<step>/`, as png, pdf and svg with a `.caption.txt` naming the recording and
+output folder:
+
+| Folder | Plots |
+|---|---|
+| `raw_mean/` | mean of the first frames of the raw TIFF |
+| `bidiphase/` | phase per frame (or per chunk and its score curve), before/after bidiphase, manual chunk offsets tried |
+| `destriping/` | before/after destriping |
+| `distortion_correction/` | before/after distortion correction |
+| `motion_registration/` | before/after registration, shift traces, nonrigid offsets, registered means and their crops, focus QC, chosen contrast |
+| `frame_order/` | every stage's frames against the acquired TIFF |
+| `fluorescence/` | photon-free levels, F0 overview, mask alignment, background, each ROI viewed, top ROIs |
+
+Plots behind a slider (manual chunk offset, one ROI at a time) are saved each time it shows a
+new view. Registration-dependent plots are overwritten when the same variant is registered
+again; each caption names the plane folder it was drawn from.
+
+The mean images stay beside `ops.npy`: `meanImg_{green,red}_contrast.png` and
+`meanImg_{green,red}_raw.tif` (the whole frame), and `meanImg_cropped_{green,red}_contrast.png`
+and `meanImg_cropped_{green,red}_raw.tif`, cropped to the region no frame's registration shifts
+wrap into, with the contrast percentiles taken over the cropped image. The crop and contrast
+are recorded in `meanImg_cropped.json`.
+
 ## From registration to ΔF/F0
 
 1. **Register:** the pipeline above (bidiphase, optional destriping, distortion, Suite2p).
@@ -367,7 +394,7 @@ background traces of each channel before ΔF/F0 (`photon_free.py`, `photon_free_
   level measured on the binaries by ~8 counts. One level per frame suffices: bands of
   columns or rows differ from it by a fixed 3–5 counts at most.
 - **Cached** in `photon_free_levels.npz` in the plane folder; the per-frame plot is saved
-  as `photon_free_levels.{png,pdf,svg}` with a caption.
+  in `quality_control/fluorescence/` as `photon_free_levels.{png,pdf,svg}` with a caption.
 - **Refused settings:** destriping with `preserve_frame_mean = false` (it already removes
   each column's mean) and distortion correction with `crop_black_borders = false` (its
   zero-filled borders carry no offset).
@@ -506,6 +533,7 @@ the manual overrides apply only to it). A run's `pipeline_settings.json` without
 | `pipeline.py`, `cli.py` | I/O | one recording end to end |
 | `batch.py` | analysis + I/O | run planning (pure `decide_action`), manifests, workers |
 | `qc.py`, `contrast.py`, `plots.py` | analysis / plotting | QC computations; figures accept `ax` |
+| `qc_figures.py` | I/O | where the QC notebook saves its plots (`quality_control/<step>/`) |
 | `exports.py` | I/O | fixed-contrast exports and review PDFs |
 | `rois.py` | analysis | Cellpose labels ↔ Suite2p `stat`, ROI outlines |
 | `alignment.py` | analysis | rigid shift of Cellpose masks between two mean images |
