@@ -28,14 +28,23 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict
+from pydantic import AwareDatetime, BaseModel, ConfigDict, model_validator
 
-from .config import distortion_corrected, load_settings, settings_from_toml, variant_subdir
+from .config import (
+    DISTORTION_SUBDIRS,
+    WITH_DESTRIPING_SUBDIR,
+    WITHOUT_DESTRIPING_SUBDIR,
+    distortion_corrected,
+    load_settings,
+    settings_from_toml,
+    variant_subdir,
+)
 from .progress import ProgressLog
 
 log = logging.getLogger(__name__)
 MANIFEST_NAME = "source_tiff.json"
 SESSION_PATTERN = re.compile(r"^ses-(\d+)_")
+RUN_NAME = re.compile(r"run-\d{2,}")
 ACQUISITION_PATTERN = re.compile(r"(\d+)$")
 Action = Literal["run", "skip", "conflict"]
 
@@ -47,9 +56,12 @@ class BatchSettings(BaseModel):
     derivatives_subject_dir: Path
     session_first: int
     session_last: int
-    source_substring: str
+    # Picks the TIFFs to run by name, numbered run-01, run-02, ... by acquisition counter;
+    # "" takes every TIFF. Not used with aligned_runs_csv.
+    source_substring: str = ""
     # CSV from magnitude-bandit-analysis's scripts/funcimg/list_aligned_runs.py: only the
-    # TIFFs it marks aligned are run. Sessions missing from the range are then allowed.
+    # TIFFs it marks aligned are run, each into the run-XX it gives (numbered over the
+    # session's aligned TIFFs). Sessions missing from the range are then allowed.
     aligned_runs_csv: Path | None = None
     destripe: bool = False
     stop_on_error: bool = True
@@ -61,6 +73,16 @@ class BatchSettings(BaseModel):
     # Cellpose masks for run-XX and the image they were drawn on, relative to run-XX/.
     cellpose_seg: str = "suite2p/plane0/meanImg_green_functional_contrast_seg.npy"
     cellpose_image: str = "suite2p/plane0/meanImg_green_functional_contrast.png"
+
+    @model_validator(mode="after")
+    def _one_way_to_choose_tiffs(self) -> BatchSettings:
+        """The CSV and a source substring would each choose and number the TIFFs."""
+        if self.aligned_runs_csv is not None and self.source_substring:
+            raise ValueError(
+                "set source_substring or aligned_runs_csv, not both: with the CSV, it decides "
+                "which TIFFs are runs and their numbers"
+            )
+        return self
 
 
 def load_batch_settings(path: Path) -> BatchSettings:
@@ -106,7 +128,7 @@ class AlignedRun:
     """One row of the aligned-runs CSV: whether a raw TIFF can be put on pyControl time."""
 
     session_name: str  # the raw session folder's name, ses-<number>_...
-    run_name: str  # run-XX as the listing numbered the TIFF
+    run_name: str  # its run-XX, numbered over the session's aligned TIFFs; "" if not aligned
     aligned: bool
     reason: str  # why it cannot be aligned; empty when it can
 
@@ -117,22 +139,14 @@ ALIGNED_RUNS_COLUMNS = ("session", "run", "tiff", "aligned", "reason")
 # ---- analysis: pure planning decisions --------------------------------------------
 
 
-def alignment_decision(
-    listed: AlignedRun | None, run_name: str, csv_name: str
-) -> tuple[Action, str] | None:
-    """What the aligned-runs CSV says about one planned TIFF: None to leave the plan's
-    decision, ``skip`` for a TIFF it does not mark aligned, or ``conflict`` when it numbers
-    the TIFF differently, since then the two repositories disagree on which run is which."""
+def listed_run(listed: AlignedRun | None, csv_name: str) -> tuple[str, str]:
+    """The run folder the aligned-runs CSV gives a TIFF, and an empty reason; or no run
+    folder and why the TIFF is skipped (not listed, or not aligned to behavior)."""
     if listed is None:
-        return "skip", f"not in {csv_name}"
-    if listed.run_name != run_name:
-        return "conflict", (
-            f"{csv_name} numbers this TIFF {listed.run_name}, the batch {run_name}; the TIFFs "
-            "of the session differ between them"
-        )
+        return "", f"not in {csv_name}"
     if not listed.aligned:
-        return "skip", f"not aligned to behavior: {listed.reason}"
-    return None
+        return "", f"not aligned to behavior: {listed.reason}"
+    return listed.run_name, ""
 
 
 def acquisition_key(tiff_path: Path) -> tuple:
@@ -271,7 +285,16 @@ def load_aligned_runs(path: Path) -> dict[Path, AlignedRun]:
         tiff = Path(row["tiff"]).resolve()
         if tiff in runs:
             raise ValueError(f"{path} lists {tiff} twice")
-        runs[tiff] = AlignedRun(row["session"], row["run"], row["aligned"] == "True", row["reason"])
+        aligned = row["aligned"] == "True"
+        if aligned and not RUN_NAME.fullmatch(row["run"]):
+            raise ValueError(f"{path}: aligned {tiff.name} has run {row['run']!r}, not run-<NN>")
+        runs[tiff] = AlignedRun(
+            row["session"], row["run"] if aligned else "", aligned, row["reason"]
+        )
+    numbered = [(r.session_name, r.run_name) for r in runs.values() if r.aligned]
+    repeated = sorted({key for key in numbered if numbered.count(key) > 1})
+    if repeated:
+        raise ValueError(f"{path} gives one run folder to several TIFFs: {repeated}")
     return runs
 
 
@@ -305,16 +328,29 @@ def read_existing_run(run_dir: Path) -> ExistingRun | None:
     return None
 
 
+def variant_folders(run_folder: Path) -> list[Path]:
+    """The folders of ``run-XX/`` that mini2p writes and whose records count: ``run-XX/``
+    itself, its destriping variants, and those inside each distortion folder. Anything else
+    there (e.g. an earlier round of preprocessing moved into a folder of its own) is not
+    looked at."""
+    run_folder = Path(run_folder)
+    destriping = (WITHOUT_DESTRIPING_SUBDIR, WITH_DESTRIPING_SUBDIR)
+    return [
+        run_folder,
+        *(run_folder / d for d in destriping),
+        *(run_folder / a / d for a in DISTORTION_SUBDIRS for d in destriping),
+    ]
+
+
 def run_folders_by_source(funcimg_dir: Path) -> dict[Path, set[str]]:
-    """For each raw TIFF with output under ``funcimg_dir/run-*`` (in ``run-XX/`` itself or
-    any variant folder, old or new layout), the names of the run folders holding it."""
+    """For each raw TIFF with output under ``funcimg_dir/run-*`` (in any of
+    :func:`variant_folders`), the names of the run folders holding it."""
     found: dict[Path, set[str]] = {}
     for run_folder in sorted(Path(funcimg_dir).glob("run-*")) if Path(funcimg_dir).is_dir() else []:
         if not run_folder.is_dir():
             continue
-        candidates = [run_folder, *run_folder.glob("*/"), *run_folder.glob("*/*/")]
-        for folder in candidates:
-            if folder.name in ("suite2p",) or folder.name.startswith("aligned_"):
+        for folder in variant_folders(run_folder):
+            if not folder.is_dir():
                 continue
             existing = read_existing_run(folder)
             if existing is not None:
@@ -436,11 +472,21 @@ def plan_batch(batch: BatchSettings, *, corrected: bool) -> list[PlannedRun]:
         # ... recorded in any of its variants: run folders are paired by number alone.
         folders_by_source = run_folders_by_source(derivative_funcimg)
         for index, source in enumerate(sources, start=1):
-            run_name = f"run-{index:02d}"
+            resolved = source.resolve()
+            identity = source_identity(source)
+            if aligned is None:
+                run_name = f"run-{index:02d}"
+            else:
+                run_name, skipped = listed_run(aligned.get(resolved), batch.aligned_runs_csv.name)
+                if not run_name:
+                    plan.append(
+                        PlannedRun(
+                            session, source, "", derivative_funcimg, identity, "skip", skipped
+                        )
+                    )
+                    continue
             run_folder = derivative_funcimg / run_name
             run_dir = run_folder / subdir
-            identity = source_identity(source)
-            resolved = source.resolve()
             here = read_existing_run(run_folder) if run_folder.is_dir() else None
             blocked = (
                 run_folder_conflict(here, resolved)
@@ -461,10 +507,6 @@ def plan_batch(batch: BatchSettings, *, corrected: bool) -> list[PlannedRun]:
                     batch.rerun_completed_before,
                     job_ended=running_job_ended(run_dir),
                 )
-            if aligned is not None and action != "conflict":
-                listed = aligned.get(resolved)
-                override = alignment_decision(listed, run_name, batch.aligned_runs_csv.name)
-                action, reason = override or (action, reason)
             plan.append(PlannedRun(session, source, run_name, run_dir, identity, action, reason))
     if aligned is not None:
         check_listing_covered(aligned, plan, batch)
