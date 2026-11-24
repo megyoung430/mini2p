@@ -168,11 +168,14 @@ recorded in its run folder's `source_tiff.json` as in the notebook's batch.
    session in acquisition order. Point `[batch] aligned_runs_csv` at the CSV (and leave
    `source_substring` unset): the batch then runs only those TIFFs, each into the run folder
    the CSV gives it, says why each other TIFF is skipped, and allows gaps in the session
-   range. It refuses a CSV that gives one run folder to two TIFFs, marks aligned a TIFF the
-   batch cannot find, or lists none of a session's TIFFs (list the runs again after recording
-   more sessions). Output numbered another way before (by `source_substring`) belongs
-   outside `funcimg/run-*`, e.g. in `funcimg/preprocessing-first-round/`: a TIFF already in
-   another run folder is a conflict.
+   range. The CSV's numbers hold only for the files that existed when it was written, so
+   list the runs again after adding sessions, TIFFs, DAQ or behavior files: the plan
+   refuses a CSV that does not list a session's TIFF, gives one run folder to two TIFFs,
+   marks aligned a TIFF the batch cannot find, or was written by the older listing script.
+   Output numbered another way before (by `source_substring`) belongs outside
+   `funcimg/run-*`, e.g. in `funcimg/preprocessing-first-round/`: the plan refuses a run
+   folder the CSV does not assign, a TIFF already in another run folder, and a
+   `frame_times.npz` made from another TIFF.
 2. **Check the plan:** `uv run mini2p-batch plan --config config/pipeline.toml`.
 3. **Prepare:** `uv run mini2p-batch prepare --config config/pipeline.toml` freezes the
    config to `batch_config_<time>.toml`, writes `batch_tasks_<time>.json` beside it (one row

@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 from pydantic import AwareDatetime, BaseModel, ConfigDict, model_validator
 
 from .config import (
@@ -57,8 +58,8 @@ class BatchSettings(BaseModel):
     session_first: int
     session_last: int
     # Picks the TIFFs to run by name, numbered run-01, run-02, ... by acquisition counter;
-    # "" takes every TIFF. Not used with aligned_runs_csv.
-    source_substring: str = ""
+    # "" takes every TIFF. Leave it out with aligned_runs_csv.
+    source_substring: str | None = None
     # CSV from magnitude-bandit-analysis's scripts/funcimg/list_aligned_runs.py: only the
     # TIFFs it marks aligned are run, each into the run-XX it gives (numbered over the
     # session's aligned TIFFs). Sessions missing from the range are then allowed.
@@ -76,11 +77,15 @@ class BatchSettings(BaseModel):
 
     @model_validator(mode="after")
     def _one_way_to_choose_tiffs(self) -> BatchSettings:
-        """The CSV and a source substring would each choose and number the TIFFs."""
-        if self.aligned_runs_csv is not None and self.source_substring:
+        """Exactly one of the CSV and a source substring chooses and numbers the TIFFs."""
+        if self.aligned_runs_csv is not None and self.source_substring is not None:
             raise ValueError(
                 "set source_substring or aligned_runs_csv, not both: with the CSV, it decides "
                 "which TIFFs are runs and their numbers"
+            )
+        if self.aligned_runs_csv is None and self.source_substring is None:
+            raise ValueError(
+                'set aligned_runs_csv, or source_substring ("" to take every TIFF of a session)'
             )
         return self
 
@@ -133,20 +138,25 @@ class AlignedRun:
     reason: str  # why it cannot be aligned; empty when it can
 
 
-ALIGNED_RUNS_COLUMNS = ("session", "run", "tiff", "aligned", "reason")
+# tiff_start, tiff_timepoints and daq_frames mark the listing that numbers runs over the
+# aligned TIFFs; an older listing numbered them otherwise and is refused.
+ALIGNED_RUNS_COLUMNS = (
+    "session", "run", "tiff", "aligned", "reason", "tiff_start", "tiff_timepoints", "daq_frames",
+)  # fmt: skip
 
 
 # ---- analysis: pure planning decisions --------------------------------------------
 
 
-def listed_run(listed: AlignedRun | None, csv_name: str) -> tuple[str, str]:
-    """The run folder the aligned-runs CSV gives a TIFF, and an empty reason; or no run
-    folder and why the TIFF is skipped (not listed, or not aligned to behavior)."""
+def listed_run(listed: AlignedRun | None, csv_name: str) -> tuple[Action, str, str]:
+    """What the aligned-runs CSV says of a TIFF: ``("run", run folder, "")``, ``("skip",
+    "", why)`` for one it lists as not aligned, or ``("conflict", "", why)`` for one it
+    does not list: recorded after the listing, whose numbers may then be stale."""
     if listed is None:
-        return "", f"not in {csv_name}"
+        return "conflict", "", f"not in {csv_name}: list the runs again"
     if not listed.aligned:
-        return "", f"not aligned to behavior: {listed.reason}"
-    return listed.run_name, ""
+        return "skip", "", f"not aligned to behavior: {listed.reason}"
+    return "run", listed.run_name, ""
 
 
 def acquisition_key(tiff_path: Path) -> tuple:
@@ -168,6 +178,23 @@ def run_folder_conflict(here: ExistingRun | None, source: Path) -> str | None:
     return (
         f"{here.run_dir.name}/ holds output of {here.source.name} ({here.evidence}), "
         "a different TIFF; check the run numbering"
+    )
+
+
+def stale_frame_times(run_folder: Path, source: Path) -> str | None:
+    """Why ``run-XX/frame_times.npz`` (magnitude-bandit-analysis's pyControl time of each
+    frame) blocks this TIFF, or None: it was made from another TIFF, e.g. left from an
+    earlier numbering of the runs."""
+    path = Path(run_folder) / "frame_times.npz"
+    if not path.is_file():
+        return None
+    with np.load(path) as saved:
+        made_from = Path(str(saved["tiff"])).name if "tiff" in saved.files else None
+    if made_from == Path(source).name:
+        return None
+    return (
+        f"{Path(run_folder).name}/frame_times.npz was made from {made_from}, not "
+        f"{Path(source).name}: move the earlier run folder out of funcimg/"
     )
 
 
@@ -460,7 +487,7 @@ def plan_batch(batch: BatchSettings, *, corrected: bool) -> list[PlannedRun]:
         batch.session_last,
         allow_gaps=aligned is not None,
     ):
-        sources = session_sources(session_dir, batch.source_substring)
+        sources = session_sources(session_dir, batch.source_substring or "")
         derivative_funcimg = batch.derivatives_subject_dir / session_dir.name / "funcimg"
         # The same raw TIFF may already sit under a different run number.
         existing_by_source = {}
@@ -477,12 +504,12 @@ def plan_batch(batch: BatchSettings, *, corrected: bool) -> list[PlannedRun]:
             if aligned is None:
                 run_name = f"run-{index:02d}"
             else:
-                run_name, skipped = listed_run(aligned.get(resolved), batch.aligned_runs_csv.name)
-                if not run_name:
+                listed, run_name, why = listed_run(
+                    aligned.get(resolved), batch.aligned_runs_csv.name
+                )
+                if listed != "run":
                     plan.append(
-                        PlannedRun(
-                            session, source, "", derivative_funcimg, identity, "skip", skipped
-                        )
+                        PlannedRun(session, source, "", derivative_funcimg, identity, listed, why)
                     )
                     continue
             run_folder = derivative_funcimg / run_name
@@ -490,6 +517,7 @@ def plan_batch(batch: BatchSettings, *, corrected: bool) -> list[PlannedRun]:
             here = read_existing_run(run_folder) if run_folder.is_dir() else None
             blocked = (
                 run_folder_conflict(here, resolved)
+                or stale_frame_times(run_folder, source)
                 or numbering_shift(run_name, folders_by_source.get(resolved, set()))
                 or old_layout(run_dir)
             )
@@ -510,7 +538,32 @@ def plan_batch(batch: BatchSettings, *, corrected: bool) -> list[PlannedRun]:
             plan.append(PlannedRun(session, source, run_name, run_dir, identity, action, reason))
     if aligned is not None:
         check_listing_covered(aligned, plan, batch)
+        check_no_leftover_runs(plan, batch)
     return plan
+
+
+def check_no_leftover_runs(plan: list[PlannedRun], batch: BatchSettings) -> None:
+    """Refuse ``run-*`` folders of a planned session that the aligned-runs CSV gives no
+    TIFF: left from an earlier numbering, they would be read as runs of this one.
+
+    Raises:
+        ValueError: Naming the first few.
+    """
+    leftover = []
+    for session in sorted({p.session for p in plan}):
+        rows = [p for p in plan if p.session == session]
+        funcimg = rows[0].run_dir if not rows[0].run_name else rows[0].run_dir.parents[2]
+        assigned = {p.run_name for p in rows if p.run_name}
+        existing = (
+            {d.name for d in funcimg.glob("run-*") if d.is_dir()} if funcimg.is_dir() else set()
+        )
+        leftover += [str(funcimg / name) for name in sorted(existing - assigned)]
+    if leftover:
+        raise ValueError(
+            f"{len(leftover)} run folder(s) that {batch.aligned_runs_csv.name} gives no TIFF "
+            f"(e.g. {leftover[:3]}): move earlier runs out of funcimg/, e.g. into "
+            "funcimg/preprocessing-first-round/"
+        )
 
 
 def session_sources(session_dir: Path, source_substring: str) -> list[Path]:

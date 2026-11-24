@@ -12,6 +12,7 @@ from mini2p_preprocessing import batch as batch_module
 from mini2p_preprocessing.batch import (
     MANIFEST_NAME,
     AlignedRun,
+    BatchSettings,
     listed_run,
     load_aligned_runs,
     load_batch_settings,
@@ -35,9 +36,12 @@ def write_listing(path: Path, rows: list[tuple]) -> Path:
     """rows: (session, run, tiff, aligned, reason), as list_aligned_runs.py writes them."""
     with path.open("w", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["session", "run", "tiff", "h5", "tsv", "aligned", "reason"])
+        writer.writerow(
+            ["session", "run", "tiff", "h5", "tsv", "aligned", "reason",
+             "tiff_start", "tiff_timepoints", "daq_frames"]
+        )  # fmt: skip
         for session, run, tiff, aligned, reason in rows:
-            writer.writerow([session, run, str(tiff), "", "", aligned, reason])
+            writer.writerow([session, run, str(tiff), "", "", aligned, reason, "", 100, 100])
     return path
 
 
@@ -128,13 +132,6 @@ def test_without_a_listing_a_missing_session_still_stops_the_plan(config):
         plan_batch(batch, corrected=True)
 
 
-def test_a_new_tiff_of_a_listed_session_is_skipped_as_not_listed(config):
-    raw = load_batch_settings(config).raw_subject_dir
-    (raw / "ses-007_date-x" / "funcimg" / "71rtask_00005.tif").write_bytes(b"tif")
-    plan = plan_of(config)
-    assert (plan[-1].action, plan[-1].reason) == ("skip", "not in aligned_runs.csv")
-
-
 def test_a_session_the_listing_does_not_cover_is_refused(config):
     raw = load_batch_settings(config).raw_subject_dir
     make_raw_tree(raw, {6: ["71rtask_00009.tif"]})  # recorded after the listing
@@ -154,27 +151,11 @@ def test_a_listing_giving_one_run_folder_to_two_tiffs_is_refused(config):
         plan_of(config)
 
 
-def test_an_aligned_tiff_without_a_run_name_is_refused(tmp_path):
-    bad = tmp_path / "bad.csv"
-    bad.write_text("session,run,tiff,aligned,reason\nses-005_x,,/a.tif,True,\n")
-    with pytest.raises(ValueError, match="not run-<NN>"):
-        load_aligned_runs(bad)
-
-
 def test_the_listing_and_a_source_substring_are_not_both_allowed(config):
     with pytest.raises(ValueError, match="not both"):
         load_batch_settings(config).model_validate(
             {**load_batch_settings(config).model_dump(), "source_substring": "71rtask"}
         )
-
-
-def test_the_decision_follows_the_listing():
-    assert listed_run(None, "a.csv") == ("", "not in a.csv")
-    assert listed_run(AlignedRun("ses-005_x", "", False, "no tsv"), "a.csv") == (
-        "",
-        "not aligned to behavior: no tsv",
-    )
-    assert listed_run(AlignedRun("ses-005_x", "run-03", True, ""), "a.csv") == ("run-03", "")
 
 
 def test_output_already_under_another_run_number_conflicts(config, monkeypatch):
@@ -195,19 +176,6 @@ def test_a_listing_from_other_raw_data_is_refused(config, tmp_path):
     )
     with pytest.raises(ValueError, match="did not find"):
         plan_of(config)
-
-
-def test_listings_with_a_missing_column_a_bad_flag_or_session_are_refused(tmp_path):
-    bad = tmp_path / "bad.csv"
-    bad.write_text("session,run,tiff,aligned\nses-005_x,run-01,/a.tif,True\n")
-    with pytest.raises(ValueError, match="reason"):
-        load_aligned_runs(bad)
-    bad.write_text("session,run,tiff,aligned,reason\nses-005_x,run-01,/a.tif,yes,\n")
-    with pytest.raises(ValueError, match="True or False"):
-        load_aligned_runs(bad)
-    bad.write_text("session,run,tiff,aligned,reason\nses-test_x,run-01,/a.tif,True,\n")
-    with pytest.raises(ValueError, match="ses-<number>"):
-        load_aligned_runs(bad)
 
 
 def test_apple_double_files_are_not_counted_as_tiffs_without_a_listing(config):
@@ -421,15 +389,96 @@ def test_the_command_reports_a_bad_config_as_a_usage_error(tmp_path, capsys):
     assert "no [batch] table" in capsys.readouterr().err
 
 
-def test_an_earlier_round_moved_inside_a_run_folder_is_not_looked_at(config):
-    """Old output kept in run-XX/preprocessing-first-round/, numbered the old way."""
-    der = load_batch_settings(config).derivatives_subject_dir
+def test_a_tiff_recorded_after_the_listing_stops_the_launch(config):
     raw = load_batch_settings(config).raw_subject_dir
-    old = der / "ses-005_date-x" / "funcimg" / "run-02" / "preprocessing-first-round"
+    (raw / "ses-007_date-x" / "funcimg" / "71rtask_00005.tif").write_bytes(b"tif")
+    plan = plan_of(config)
+    assert (plan[-1].action, plan[-1].reason) == (
+        "conflict",
+        "not in aligned_runs.csv: list the runs again",
+    )
+
+
+def test_an_aligned_tiff_without_a_run_name_is_refused(tmp_path):
+    bad = tmp_path / "bad.csv"
+    bad.write_text(
+        "session,run,tiff,aligned,reason,tiff_start,tiff_timepoints,daq_frames\nses-005_x,,/a.tif,True,,,100,100\n"
+    )
+    with pytest.raises(ValueError, match="not run-<NN>"):
+        load_aligned_runs(bad)
+
+
+def test_the_decision_follows_the_listing():
+    assert listed_run(None, "a.csv") == ("conflict", "", "not in a.csv: list the runs again")
+    assert listed_run(AlignedRun("ses-005_x", "", False, "no tsv"), "a.csv") == (
+        "skip",
+        "",
+        "not aligned to behavior: no tsv",
+    )
+    assert listed_run(AlignedRun("ses-005_x", "run-03", True, ""), "a.csv") == ("run", "run-03", "")
+
+
+@pytest.mark.parametrize(
+    "text, message",
+    [
+        ("session,run,tiff,aligned,reason\nses-005_x,run-01,/a.tif,True,\n", "tiff_start"),
+        (
+            "session,run,tiff,aligned,reason,tiff_start,tiff_timepoints,daq_frames\nses-005_x,run-01,/a.tif,yes,,,1,1\n",
+            "True or False",
+        ),
+        (
+            "session,run,tiff,aligned,reason,tiff_start,tiff_timepoints,daq_frames\nses-test_x,run-01,/a.tif,True,,,1,1\n",
+            "ses-<number>",
+        ),
+    ],
+)
+def test_bad_or_older_listings_are_refused(tmp_path, text, message):
+    bad = tmp_path / "bad.csv"
+    bad.write_text(text)
+    with pytest.raises(ValueError, match=message):
+        load_aligned_runs(bad)
+
+
+def test_a_config_must_say_how_tiffs_are_chosen(config):
+    fields = load_batch_settings(config).model_dump()
+    with pytest.raises(ValueError, match="set aligned_runs_csv, or source_substring"):
+        BatchSettings.model_validate({**fields, "aligned_runs_csv": None})
+    assert BatchSettings.model_validate(
+        {**fields, "aligned_runs_csv": None, "source_substring": ""}
+    )
+
+
+def earlier_round(config, *, where: str) -> Path:
+    """Old output of 71rtask_00002 under run-02, the old numbering, kept *where*."""
+    der = load_batch_settings(config).derivatives_subject_dir / "ses-005_date-x" / "funcimg"
+    raw = load_batch_settings(config).raw_subject_dir / "ses-005_date-x" / "funcimg"
+    run_folder = der / where / "run-02" if where else der / "run-02"
     for variant in ("without_destriping", "with_destriping"):
-        (old / variant).mkdir(parents=True)
-        source = raw / "ses-005_date-x" / "funcimg" / "71rtask_00002.tif"  # now run-01
-        (old / variant / MANIFEST_NAME).write_text(
-            json.dumps({"source_tiff": str(source.resolve()), "status": "complete"})
+        (run_folder / variant).mkdir(parents=True)
+        (run_folder / variant / MANIFEST_NAME).write_text(
+            json.dumps(
+                {"source_tiff": str((raw / "71rtask_00002.tif").resolve()), "status": "complete"}
+            )
         )
+    return run_folder
+
+
+def test_an_earlier_round_moved_out_of_the_run_folders_is_not_looked_at(config):
+    earlier_round(config, where="preprocessing-first-round")
     assert [p.action for p in plan_of(config)] == ["skip", "run", "run", "run"]
+
+
+def test_run_folders_the_listing_does_not_assign_are_refused(config):
+    earlier_round(config, where="")  # left in funcimg/run-02; the listing gives no run-02
+    with pytest.raises(ValueError, match="gives no TIFF.*run-02"):
+        plan_of(config)
+
+
+def test_frame_times_left_from_another_tiff_block_the_run(config):
+    import numpy as np
+
+    der = load_batch_settings(config).derivatives_subject_dir / "ses-005_date-x" / "funcimg"
+    (der / "run-01").mkdir(parents=True)
+    np.savez(der / "run-01" / "frame_times.npz", time_s=np.zeros(3), tiff="/raw/71rtask_00001.tif")
+    plan = plan_of(config)
+    assert plan[1].action == "conflict" and "made from 71rtask_00001.tif" in plan[1].reason
