@@ -188,13 +188,17 @@ def stale_frame_times(run_folder: Path, source: Path) -> str | None:
     path = Path(run_folder) / "frame_times.npz"
     if not path.is_file():
         return None
-    with np.load(path) as saved:
-        made_from = Path(str(saved["tiff"])).name if "tiff" in saved.files else None
+    try:
+        with np.load(path) as saved:
+            made_from = Path(str(saved["tiff"])).name if "tiff" in saved.files else None
+    except (OSError, ValueError) as error:
+        return f"{path} cannot be read ({error}): move it aside"
     if made_from == Path(source).name:
         return None
+    what = f"was made from {made_from}" if made_from else "does not record its TIFF"
     return (
-        f"{Path(run_folder).name}/frame_times.npz was made from {made_from}, not "
-        f"{Path(source).name}: move the earlier run folder out of funcimg/"
+        f"{Path(run_folder).name}/frame_times.npz {what}, not {Path(source).name}: move the "
+        "earlier run folder out of funcimg/"
     )
 
 
@@ -552,7 +556,7 @@ def check_no_leftover_runs(plan: list[PlannedRun], batch: BatchSettings) -> None
     leftover = []
     for session in sorted({p.session for p in plan}):
         rows = [p for p in plan if p.session == session]
-        funcimg = rows[0].run_dir if not rows[0].run_name else rows[0].run_dir.parents[2]
+        funcimg = batch.derivatives_subject_dir / rows[0].source.parent.parent.name / "funcimg"
         assigned = {p.run_name for p in rows if p.run_name}
         existing = (
             {d.name for d in funcimg.glob("run-*") if d.is_dir()} if funcimg.is_dir() else set()
