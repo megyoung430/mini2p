@@ -212,7 +212,8 @@ def test_segmentation_registration_in_run_folder_is_left_alone(tmp_path):
         (runs / run / MANIFEST_NAME).write_text(json.dumps({"source_tiff": str(first_source)}))
     for destripe in (False, True):
         plan = plan_batch(batch.model_copy(update={"destripe": destripe}), corrected=True)
-        assert plan[0].action == "run"  # run-01/ registered the same TIFF
+        # run-01/ registered the same TIFF, but run-02/ holds it too: a shifted numbering
+        assert plan[0].action == "conflict" and "already in run-02" in plan[0].reason
         assert plan[1].action == "conflict"  # run-02/ belongs to run-01's TIFF
         assert "71rtask_00001.tif" in plan[1].reason
 

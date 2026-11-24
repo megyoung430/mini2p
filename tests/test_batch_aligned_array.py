@@ -86,6 +86,15 @@ def config(tmp_path):
     return write_config(tmp_path / "pipeline.toml", raw, tmp_path / "der", listing)
 
 
+def squeue(stdout: str = "", returncode: int = 0, stderr: str = ""):
+    """A stand-in for ``_squeue`` returning what squeue would print."""
+    result = subprocess.CompletedProcess([], returncode, stdout, stderr)
+    return lambda *args: result
+
+
+INVALID_JOB = squeue(returncode=1, stderr="slurm_load_jobs error: Invalid job id specified")
+
+
 def plan_of(config: Path):
     return plan_batch(load_batch_settings(config), corrected=True)
 
@@ -211,12 +220,19 @@ def test_prepare_writes_one_task_per_pending_run_with_the_frozen_config(config):
     assert len(launch.pending) == 3
 
 
-def test_prepare_refuses_while_array_jobs_are_queued(config, monkeypatch):
+def test_prepare_refuses_while_this_mouse_s_array_jobs_are_queued(config, monkeypatch):
     monkeypatch.setenv("USER", "me")
-    monkeypatch.setattr(batch_module, "_squeue", lambda *args: ["4711_3", "4711_4"])
+    der = load_batch_settings(config).derivatives_subject_dir
+    monkeypatch.setattr(batch_module, "_squeue", squeue(f"4711_3|{der}\n4711_4|{der}\n"))
     with pytest.raises(RuntimeError, match="still queued or running"):
         prepare_array(config)
     assert prepare_array(config, allow_queued=True)[0] is not None
+
+
+def test_another_mouse_s_queued_jobs_do_not_block_prepare(config, monkeypatch):
+    monkeypatch.setenv("USER", "me")
+    monkeypatch.setattr(batch_module, "_squeue", squeue("4711_3|/der/other_mouse\n"))
+    assert prepare_array(config)[0] is not None
 
 
 def test_prepare_refuses_a_node_local_fast_disk(config, tmp_path):
@@ -248,10 +264,27 @@ def test_a_row_another_live_job_is_running_is_skipped(config, monkeypatch):
     run_dir = Path(tasks_of(tasks_path)["runs"][0]["run_dir"])
     run_dir.mkdir(parents=True)
     (run_dir / MANIFEST_NAME).write_text(json.dumps({"status": "running", "slurm_job_id": "99"}))
-    monkeypatch.setattr(batch_module, "_squeue", lambda *args: ["99"])
+    monkeypatch.setattr(batch_module, "_squeue", squeue("RUNNING\n"))
     assert run_array_task(tasks_path, 1) == "skipped: SLURM job 99 is running it"
-    monkeypatch.setattr(batch_module, "_squeue", lambda *args: [])  # job 99 has ended
+    monkeypatch.setattr(batch_module, "_squeue", INVALID_JOB)  # SLURM has forgotten job 99
     assert run_array_task(tasks_path, 1) == "complete"
+
+
+@pytest.mark.parametrize(
+    "answer, alive",
+    [
+        (squeue("PENDING\n"), True),
+        (squeue("COMPLETING\n"), True),
+        (squeue("TIMEOUT\n"), False),  # listed for a while after it ended
+        (squeue("OUT_OF_MEMORY\n"), False),
+        (INVALID_JOB, False),
+        (squeue(returncode=1, stderr="slurm_load_jobs error: Socket timed out"), None),
+        (lambda *args: None, None),  # no squeue on this machine
+    ],
+)
+def test_job_liveness_follows_the_state_squeue_reports(monkeypatch, answer, alive):
+    monkeypatch.setattr(batch_module, "_squeue", answer)
+    assert batch_module.slurm_job_alive("99") is alive
 
 
 def test_a_run_whose_job_ended_while_running_is_planned_again(config, monkeypatch):
@@ -261,18 +294,42 @@ def test_a_run_whose_job_ended_while_running_is_planned_again(config, monkeypatc
     run_dir.mkdir(parents=True)
     manifest = {"source_tiff": row["source"], **row["identity"], "status": "running"}
     (run_dir / MANIFEST_NAME).write_text(json.dumps({**manifest, "slurm_job_id": "99"}))
-    monkeypatch.setattr(batch_module, "_squeue", lambda *args: ["99"])  # still running
+    monkeypatch.setattr(batch_module, "_squeue", squeue("RUNNING\n"))
     assert plan_of(config)[1].action == "skip"
-    monkeypatch.setattr(batch_module, "_squeue", lambda *args: [])  # killed, e.g. time limit
+    monkeypatch.setattr(batch_module, "_squeue", INVALID_JOB)  # killed, e.g. out of memory
     assert plan_of(config)[1].action == "run"
 
 
-def test_completion_by_another_launch_is_not_taken_for_this_one(config, monkeypatch):
+def test_a_later_launch_s_result_is_not_replaced_by_an_older_task(config, monkeypatch):
     stub_worker(monkeypatch)
     first, _ = prepare_array(config)
     second, _ = prepare_array(config)
     run_array_task(second, 1)
-    assert run_array_task(first, 1) == "complete"  # different frozen config: not "done"
+    assert run_array_task(first, 1).startswith("skipped: a later launch")
+    run_dir = Path(tasks_of(first)["runs"][0]["run_dir"])
+    manifest = json.loads((run_dir / MANIFEST_NAME).read_text())
+    assert manifest["pipeline_config"] == tasks_of(second)["config"]
+
+
+def test_a_tiff_recorded_in_another_variant_under_another_number_conflicts(config, monkeypatch):
+    stub_worker(monkeypatch)
+    tasks_path, _ = prepare_array(config)  # with_destriping
+    run_array_task(tasks_path, 1)  # 71rtask_00002 -> run-02/.../with_destriping
+    raw = load_batch_settings(config).raw_subject_dir
+    (raw / "ses-005_date-x" / "funcimg" / "71rtask_00001.tif").unlink()  # 00002 becomes run-01
+    batch = load_batch_settings(config).model_copy(
+        update={"aligned_runs_csv": None, "session_last": 5, "destripe": False}
+    )
+    plan = plan_batch(batch, corrected=True)  # without_destriping: nothing recorded there yet
+    assert plan[0].action == "conflict" and "already in run-02" in plan[0].reason
+
+
+def test_manifests_are_replaced_whole(config, monkeypatch, tmp_path):
+    stub_worker(monkeypatch)
+    tasks_path, _ = prepare_array(config)
+    run_array_task(tasks_path, 1)
+    run_dir = Path(tasks_of(tasks_path)["runs"][0]["run_dir"])
+    assert [p.name for p in run_dir.iterdir() if p.name.endswith(".partial")] == []
 
 
 def test_a_failed_task_is_recorded_and_runs_again_when_resubmitted(config, monkeypatch):
@@ -333,7 +390,10 @@ def test_the_command_prints_skips_the_sbatch_line_and_reads_the_slurm_index(
     batch_main(["prepare", "--config", str(config)])
     out = capsys.readouterr().out
     assert "skip    1: not aligned to behavior: no behavior file" in out
-    assert f"MINI2P_ENV={sys.prefix} sbatch --array=1-3 scripts/slurm/batch_array.sh" in out
+    der = load_batch_settings(config).derivatives_subject_dir
+    assert (
+        f'MINI2P_ENV={sys.prefix} sbatch --array=1-3 --comment="{der}" scripts/slurm/batch_array.sh'
+    ) in out
     tasks = next(load_batch_settings(config).derivatives_subject_dir.glob("batch_tasks_*.json"))
     stub_worker(monkeypatch)
     monkeypatch.setenv("SLURM_ARRAY_TASK_ID", "3")

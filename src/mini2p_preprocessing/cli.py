@@ -388,8 +388,12 @@ def _batch_prepare(args: argparse.Namespace, parser: argparse.ArgumentParser) ->
     print(f"{n_tasks} runs to do; task list {tasks}")
     print(
         "Submit this task list (the newest one, if you prepare again) from the repo folder:\n"
-        f"  mkdir -p slurm_logs && MINI2P_ENV={sys.prefix} "
-        f"sbatch --array=1-{n_tasks} {BATCH_ARRAY_SCRIPT} {tasks}"
+        f"  mkdir -p slurm_logs && MINI2P_ENV={sys.prefix} sbatch --array=1-{n_tasks} "
+        f'--comment="{tasks.parent}" {BATCH_ARRAY_SCRIPT} {tasks}'
+    )
+    print(
+        "(the --comment ties the jobs to this mouse's derivatives folder, so the next "
+        "prepare for it waits for them)"
     )
 
 

@@ -2,13 +2,15 @@
 # One SLURM array job per pending TIFF of a mini2p batch.
 #
 #   mini2p-batch prepare --config <pipeline.toml>      # prints the line below, filled in
-#   mkdir -p slurm_logs && MINI2P_ENV=<env> sbatch --array=1-<N> scripts/slurm/batch_array.sh <tasks.json>
+#   mkdir -p slurm_logs && MINI2P_ENV=<env> sbatch --array=1-<N> --comment="<derivatives dir>" \
+#       scripts/slurm/batch_array.sh <tasks.json>
 #
 # Submit from the repo folder: each job's log is slurm_logs/batch_<array id>_<task>.out there
 # (SLURM fails a job without a log if slurm_logs/ is missing); the pipeline's own log is
 # preprocess.log in the run folder. Add %<k> to the array (--array=1-40%8) to run at most k
 # at once. To retry failed tasks, resubmit only those (--array=3,5); a task whose row this
-# launch already completed, or that another live job is running, is skipped.
+# launch (or a later one) already completed, or that another live job is running, is
+# skipped. The --comment lets the next prepare for the same mouse wait for these jobs.
 #
 #SBATCH --job-name=mini2p-batch
 #SBATCH --partition=cpu

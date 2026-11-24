@@ -157,6 +157,18 @@ def run_folder_conflict(here: ExistingRun | None, source: Path) -> str | None:
     )
 
 
+def numbering_shift(run_name: str, recorded_in: set[str]) -> str | None:
+    """Why a TIFF cannot become *run_name* when output of it is already recorded in the
+    run folders *recorded_in* (any variant), or None: the run numbers have shifted."""
+    elsewhere = sorted(recorded_in - {run_name})
+    if not elsewhere:
+        return None
+    return (
+        f"this TIFF is already in {', '.join(elsewhere)} (another variant there): the run "
+        f"numbering has shifted, so {run_name} would name a second run folder for it"
+    )
+
+
 def old_layout(variant_dir: Path) -> str | None:
     """Why a variant folder from before the aligned_<channel>/ layout cannot be reused: its
     registration is in <variant>/suite2p, which nothing reads any more."""
@@ -263,6 +275,14 @@ def load_aligned_runs(path: Path) -> dict[Path, AlignedRun]:
     return runs
 
 
+def _write_json(path: Path, data: dict) -> None:
+    """Write *data* to *path* whole or not at all, so a killed job never leaves a
+    half-written manifest that would stop every later plan."""
+    partial = path.with_name(f".{path.name}.{os.getpid()}.partial")
+    partial.write_text(json.dumps(data, indent=2))
+    os.replace(partial, path)
+
+
 def _read_json(path: Path) -> dict | None:
     """Parsed JSON, or None if the file does not exist; a corrupt file raises."""
     if not path.is_file():
@@ -283,6 +303,23 @@ def read_existing_run(run_dir: Path) -> ExistingRun | None:
         if phase and phase.get("input_tiff"):
             return ExistingRun(run_dir, Path(phase["input_tiff"]).resolve(), phase, "phase sidecar")
     return None
+
+
+def run_folders_by_source(funcimg_dir: Path) -> dict[Path, set[str]]:
+    """For each raw TIFF with output under ``funcimg_dir/run-*`` (in ``run-XX/`` itself or
+    any variant folder, old or new layout), the names of the run folders holding it."""
+    found: dict[Path, set[str]] = {}
+    for run_folder in sorted(Path(funcimg_dir).glob("run-*")) if Path(funcimg_dir).is_dir() else []:
+        if not run_folder.is_dir():
+            continue
+        candidates = [run_folder, *run_folder.glob("*/"), *run_folder.glob("*/*/")]
+        for folder in candidates:
+            if folder.name in ("suite2p",) or folder.name.startswith("aligned_"):
+                continue
+            existing = read_existing_run(folder)
+            if existing is not None:
+                found.setdefault(existing.source, set()).add(run_folder.name)
+    return found
 
 
 def run_state(variant_dir: Path, since: datetime | None) -> str:
@@ -396,6 +433,8 @@ def plan_batch(batch: BatchSettings, *, corrected: bool) -> list[PlannedRun]:
                 found = read_existing_run(existing_run / subdir) if existing_run.is_dir() else None
                 if found is not None:
                     existing_by_source[found.source] = found
+        # ... recorded in any of its variants: run folders are paired by number alone.
+        folders_by_source = run_folders_by_source(derivative_funcimg)
         for index, source in enumerate(sources, start=1):
             run_name = f"run-{index:02d}"
             run_folder = derivative_funcimg / run_name
@@ -403,7 +442,11 @@ def plan_batch(batch: BatchSettings, *, corrected: bool) -> list[PlannedRun]:
             identity = source_identity(source)
             resolved = source.resolve()
             here = read_existing_run(run_folder) if run_folder.is_dir() else None
-            blocked = run_folder_conflict(here, resolved) or old_layout(run_dir)
+            blocked = (
+                run_folder_conflict(here, resolved)
+                or numbering_shift(run_name, folders_by_source.get(resolved, set()))
+                or old_layout(run_dir)
+            )
             if blocked:
                 action, reason = "conflict", blocked
             else:
@@ -534,7 +577,7 @@ def run_one(row: PlannedRun, config_path: Path, destripe: bool) -> None:
         "worker_log": str(log_path),
         **slurm_ids(),
     }
-    manifest_path.write_text(json.dumps(manifest, indent=2))
+    _write_json(manifest_path, manifest)
     try:
         with log_path.open("w") as worker_log:
             subprocess.run(
@@ -543,14 +586,14 @@ def run_one(row: PlannedRun, config_path: Path, destripe: bool) -> None:
     except subprocess.CalledProcessError as exc:
         tail = "\n".join(log_path.read_text().splitlines()[-80:]) if log_path.exists() else ""
         manifest.update(status="failed", finished_utc=_now(), error=repr(exc), error_tail=tail)
-        manifest_path.write_text(json.dumps(manifest, indent=2))
+        _write_json(manifest_path, manifest)
         raise
     except KeyboardInterrupt:
         manifest.update(status="interrupted", finished_utc=_now())
-        manifest_path.write_text(json.dumps(manifest, indent=2))
+        _write_json(manifest_path, manifest)
         raise
     manifest.update(status="complete", finished_utc=_now())
-    manifest_path.write_text(json.dumps(manifest, indent=2))
+    _write_json(manifest_path, manifest)
 
 
 def snapshot_config(config: Path | bytes, destination_dir: Path) -> Path:
@@ -647,22 +690,38 @@ def slurm_ids() -> dict:
     return {key: os.environ[env] for key, env in names.items() if env in os.environ}
 
 
-def _squeue(*args: str) -> list[str] | None:
-    """Lines of ``squeue -h`` with *args*, or None where SLURM is not available."""
+# States in which a job may still write to its run folder.
+LIVE_STATES = {
+    "PENDING", "CONFIGURING", "RUNNING", "COMPLETING", "SUSPENDED", "REQUEUED",
+    "REQUEUE_HOLD", "REQUEUE_FED", "RESIZING", "SIGNALING", "STAGE_OUT", "STOPPED",
+}  # fmt: skip
+
+
+def _squeue(*args: str) -> subprocess.CompletedProcess | None:
+    """``squeue -h`` with *args*, or None where SLURM is not available."""
     if shutil.which("squeue") is None:
         return None
-    result = subprocess.run(["squeue", "-h", *args], capture_output=True, text=True)
-    if result.returncode != 0:
-        return None
-    return [line for line in result.stdout.splitlines() if line.strip()]
+    return subprocess.run(["squeue", "-h", *args], capture_output=True, text=True)
 
 
 def slurm_job_alive(job_id: str) -> bool | None:
-    """Whether SLURM still lists *job_id* (pending or running); None if it cannot tell."""
-    lines = _squeue("-j", str(job_id), "-o", "%i")
-    if lines is None:
+    """Whether SLURM job *job_id* may still be writing: pending, running or finishing.
+
+    A job SLURM no longer knows ("Invalid job id", some minutes after it ends) has ended,
+    as has one listed in a final state. None if SLURM cannot be asked (no ``squeue``, or
+    it fails otherwise), and a warning is logged.
+    """
+    result = _squeue("-j", str(job_id), "-o", "%T")
+    if result is None:
+        log.warning("Cannot ask SLURM about job %s: no squeue here", job_id)
         return None
-    return bool(lines)
+    if result.returncode != 0:
+        if "invalid job id" in (result.stderr + result.stdout).lower():
+            return False
+        log.warning("Cannot ask SLURM about job %s: %s", job_id, result.stderr.strip())
+        return None
+    states = {line.strip().upper() for line in result.stdout.splitlines() if line.strip()}
+    return bool(states & LIVE_STATES)
 
 
 def running_job_ended(run_dir: Path) -> bool:
@@ -674,11 +733,20 @@ def running_job_ended(run_dir: Path) -> bool:
     return slurm_job_alive(manifest["slurm_job_id"]) is False
 
 
-def queued_array_jobs() -> list[str]:
-    """Job ids of this user's batch array jobs that SLURM still lists (empty without SLURM)."""
+def queued_array_jobs(derivatives_dir: Path) -> list[str] | None:
+    """Job ids of this user's batch array jobs, submitted for *derivatives_dir* (their
+    ``--comment``, as ``prepare`` prints it), that SLURM still lists; None if SLURM cannot
+    be asked."""
     user = os.environ.get("USER", "")
-    lines = _squeue("-u", user, "-n", ARRAY_JOB_NAME, "-o", "%i") if user else None
-    return lines or []
+    result = _squeue("-u", user, "-n", ARRAY_JOB_NAME, "-o", "%i|%k") if user else None
+    if result is None or result.returncode != 0:
+        return None
+    wanted = str(Path(derivatives_dir))
+    return [
+        job
+        for job, _, comment in (line.partition("|") for line in result.stdout.splitlines())
+        if job.strip() and comment.strip() == wanted
+    ]
 
 
 def node_local_fast_disk(settings) -> Path | None:
@@ -709,15 +777,18 @@ def prepare_array(config_path: Path, allow_queued: bool = False) -> tuple[Path |
         ValueError: If ``fast_disk`` is a node-private folder, where each job's binaries
             would be stranded; and as :func:`_launch`.
     """
-    queued = queued_array_jobs()
-    if queued and not allow_queued:
-        raise RuntimeError(
-            f"{len(queued)} {ARRAY_JOB_NAME} job(s) are still queued or running "
-            f"({', '.join(queued[:5])}); wait for them, or cancel them, before preparing again"
-        )
     config_bytes = Path(config_path).read_bytes()
     document = tomllib.loads(config_bytes.decode())
     batch = batch_settings_from_toml(document, config_path)
+    queued = queued_array_jobs(batch.derivatives_subject_dir)
+    if queued is None:
+        log.warning("Could not ask SLURM for queued batch jobs; not checked")
+    elif queued and not allow_queued:
+        raise RuntimeError(
+            f"{len(queued)} {ARRAY_JOB_NAME} job(s) for {batch.derivatives_subject_dir} are "
+            f"still queued or running ({', '.join(queued[:5])}); wait for them, or cancel "
+            "them, before preparing again"
+        )
     local = node_local_fast_disk(settings_from_toml(document))
     if local is not None:
         raise ValueError(
@@ -773,20 +844,19 @@ def array_task_row(tasks: dict, index: int) -> PlannedRun:
 
 def task_state(manifest: dict | None, tasks: dict, own_job: str | None) -> str | None:
     """Why an array task should not run its row, from the row's manifest, or None to run
-    it: ``"done"`` when this launch (same frozen config, started after the task list was
-    written) completed it, ``"running"`` when another SLURM job that is still alive is
-    running it."""
+    it: ``"done"`` when this launch completed it, ``"superseded"`` when a later launch
+    (another frozen config) completed it since this task list was written, ``"running"``
+    when another SLURM job that may still be alive is running it."""
     if manifest is None:
         return None
     status = manifest.get("status")
     started = manifest.get("started_utc")
     if (
         status == "complete"
-        and manifest.get("pipeline_config") == tasks["config"]
         and started is not None
         and datetime.fromisoformat(started) >= datetime.fromisoformat(tasks["created_utc"])
     ):
-        return "done"
+        return "done" if manifest.get("pipeline_config") == tasks["config"] else "superseded"
     job = manifest.get("slurm_job_id")
     if status == "running" and job is not None and job != own_job:
         return "running" if slurm_job_alive(job) is not False else None
@@ -818,6 +888,8 @@ def run_array_task(tasks_path: Path, index: int) -> str:
     state = task_state(manifest, tasks, os.environ.get("SLURM_JOB_ID"))
     if state == "done":
         return "skipped: already complete in this launch"
+    if state == "superseded":
+        return f"skipped: a later launch ({manifest['pipeline_config']}) completed it"
     if state == "running":
         return f"skipped: SLURM job {manifest['slurm_job_id']} is running it"
     identity = source_identity(row.source)
@@ -840,4 +912,4 @@ def _mark_interrupted(run_dir: Path) -> None:
     manifest_path = Path(run_dir) / MANIFEST_NAME
     manifest = _read_json(manifest_path) or {}
     manifest.update(status="interrupted", finished_utc=_now(), error="terminated (SIGTERM)")
-    manifest_path.write_text(json.dumps(manifest, indent=2))
+    _write_json(manifest_path, manifest)
