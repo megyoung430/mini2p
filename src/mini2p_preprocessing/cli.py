@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import types
 import typing
 from pathlib import Path
@@ -320,6 +321,92 @@ def print_summary(rows: list[dict]) -> None:
     for row in rows:
         values = [f"{row[c]:>{w}.4g}" for c, w in zip(SUMMARY_COLUMNS[1:], widths, strict=True)]
         print("  ".join([f"{row['registration']:<{first}}"] + values))
+
+
+BATCH_ARRAY_SCRIPT = "scripts/slurm/batch_array.sh"
+
+
+def batch_main(argv: list[str] | None = None) -> None:
+    """Plan the batch, or prepare and run it as a SLURM array (one job per TIFF)."""
+    parser = argparse.ArgumentParser(
+        description="The [batch] of a pipeline TOML: 'plan' shows what it would do, 'prepare' "
+        "freezes the config and writes the task list of a SLURM array, and 'task' runs one "
+        f"row of that list (what each job of {BATCH_ARRAY_SCRIPT} does)"
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+    plan = commands.add_parser("plan")
+    plan.add_argument("--config", type=Path, required=True, help="pipeline TOML with [batch]")
+    prepare = commands.add_parser("prepare")
+    prepare.add_argument("--config", type=Path, required=True, help="pipeline TOML with [batch]")
+    prepare.add_argument(
+        "--allow-queued", action="store_true",
+        help="prepare even though batch array jobs are still queued or running",
+    )  # fmt: skip
+    task = commands.add_parser("task")
+    task.add_argument("--tasks", type=Path, required=True, help="batch_tasks_<time>.json")
+    task.add_argument(
+        "--index", type=int, default=None,
+        help="row to run, from 1 (default: $SLURM_ARRAY_TASK_ID)",
+    )  # fmt: skip
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
+    handlers = {"plan": _batch_plan, "prepare": _batch_prepare, "task": _batch_task}
+    handlers[args.command](args, parser)
+
+
+def _batch_plan(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """``mini2p-batch plan``: print what the batch would do with each TIFF."""
+    from .batch import format_plan, load_batch_settings, plan_batch
+    from .config import distortion_corrected
+
+    try:  # only the request is checked here
+        batch = load_batch_settings(args.config)
+        plan = plan_batch(batch, corrected=distortion_corrected(load_settings(args.config)))
+    except (ValueError, FileNotFoundError) as error:  # incl. ValidationError
+        parser.error(str(error))
+    print(format_plan(plan))
+
+
+def _batch_prepare(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """``mini2p-batch prepare``: write the task list, list the skips, print the sbatch line."""
+    import sys
+    from collections import Counter
+
+    from .batch import prepare_array
+
+    try:  # only the request is checked here
+        tasks, launch = prepare_array(args.config, allow_queued=args.allow_queued)
+    except (ValueError, FileNotFoundError, RuntimeError) as error:  # incl. ValidationError
+        parser.error(str(error))
+    skipped = Counter(p.reason for p in launch.plan if p.action == "skip")
+    for reason, count in sorted(skipped.items()):
+        print(f"skip {count:>4}: {reason}")
+    if tasks is None:
+        print("Nothing to run.")
+        return
+    n_tasks = len(launch.pending)
+    print(f"{n_tasks} runs to do; task list {tasks}")
+    print(
+        "Submit this task list (the newest one, if you prepare again) from the repo folder:\n"
+        f"  mkdir -p slurm_logs && MINI2P_ENV={sys.prefix} sbatch --array=1-{n_tasks} "
+        f'--comment="{tasks.parent}" {BATCH_ARRAY_SCRIPT} {tasks}'
+    )
+    print(
+        "(the --comment ties the jobs to this mouse's derivatives folder, so the next "
+        "prepare for it waits for them)"
+    )
+
+
+def _batch_task(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """``mini2p-batch task``: run one row of a task list (the array's index by default)."""
+    from .batch import run_array_task
+
+    index = args.index
+    if index is None:
+        if "SLURM_ARRAY_TASK_ID" not in os.environ:
+            parser.error("give --index, or run inside a SLURM array job")
+        index = int(os.environ["SLURM_ARRAY_TASK_ID"])
+    print(f"Task {index}: {run_array_task(args.tasks, index)}")
 
 
 if __name__ == "__main__":

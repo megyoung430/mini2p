@@ -36,6 +36,8 @@ CLI and the batch workers all read it, so they cannot drift apart.
   with the settings is refused)
 - **Many sessions:** `notebooks/batch_and_exports.ipynb`. Builds a dry-run plan,
   launches one CLI process per pending TIFF, then exports mean images and PDFs.
+- **Many sessions on the cluster, one job per TIFF:** `mini2p-batch prepare`, then
+  `sbatch --array` (see [Batch as a SLURM array](#batch-as-a-slurm-array)).
 - **Sessions the batch has finished, while it runs:** `notebooks/post_batch_sessions.ipynb`,
   in a second kernel. Exports, Cellpose extraction and an alignment review for the chosen
   sessions, only for runs the batch completed since `rerun_completed_before`.
@@ -145,6 +147,59 @@ summary JSON and PDFs carry the variant in their names.
 `run-XX/suite2p/` itself is the registration the Cellpose masks were drawn on, and
 the batch never changes it. The planner only checks that whatever is recorded
 directly in `run-XX/` came from the same TIFF as the run, and flags a conflict if not.
+
+### Batch as a SLURM array
+
+On the cluster, run the batch as a SLURM array: one job per pending TIFF, in parallel, each
+recorded in its run folder's `source_tiff.json` as in the notebook's batch.
+
+1. **Only the TIFFs that align to behavior (optional).** In magnitude-bandit-analysis, on the
+   cluster (the CSV holds paths as the batch will see them), list which of a mouse's TIFFs
+   can be put on pyControl time:
+
+   ```bash
+   uv run --extra funcimg python scripts/funcimg/list_aligned_runs.py \
+       <raw subject dir> 71rtask <derivatives subject dir>/aligned_runs.csv
+   ```
+
+   and point `[batch] aligned_runs_csv` at the CSV. The batch then runs only the TIFFs it
+   marks aligned (the plan says why each other one is skipped) and allows gaps in the
+   session range. Run numbers are unchanged: a skipped TIFF keeps its `run-XX`. The plan
+   refuses a CSV that numbers a TIFF differently from the batch, marks aligned a TIFF the
+   batch cannot find, or lists none of a session's TIFFs (list the runs again after
+   recording more sessions).
+2. **Check the plan:** `uv run mini2p-batch plan --config config/pipeline.toml`.
+3. **Prepare:** `uv run mini2p-batch prepare --config config/pipeline.toml` freezes the
+   config to `batch_config_<time>.toml`, writes `batch_tasks_<time>.json` beside it (one row
+   per pending run), lists what it skips and why, and prints the `sbatch` line to submit.
+   It refuses while this mouse's earlier array jobs are still queued or running
+   (`--allow-queued` to override), since their runs would be planned again; jobs are tied to
+   the mouse by the `--comment` in the printed line. The newest prepare counts as the
+   launch for `post_batch_sessions.ipynb`, so if you prepare again, submit the newest list.
+4. **Submit** the printed line from the repo folder, e.g.
+   `mkdir -p slurm_logs && MINI2P_ENV=<env> sbatch --array=1-<N> --comment="<derivatives dir>" scripts/slurm/batch_array.sh <tasks json>`
+   (`--array=1-<N>%8` runs at most 8 at once). Each job runs `mini2p-batch task` on its row
+   and logs to `slurm_logs/`. Set memory, time and CPUs at the top of
+   `scripts/slurm/batch_array.sh`. It uses the `cpu` partition, where jobs are not
+   preempted as on `cpu_backfill`.
+5. **If some jobs fail,** resubmit only those tasks (`--array=3,5`). A task skips its row if
+   this launch, or a later one, already completed it, or another live job is running it. A job stopped at its
+   time limit marks its run interrupted, and one killed outright (out of memory) is seen to
+   have ended, so a new `prepare` retries both. Retrying a run whose folder exists needs
+   `overwrite = true`.
+
+Leave `[registration] fast_disk` unset on the cluster, or set it to a folder every node
+sees: each job's binaries would otherwise be left on its node. `prepare` refuses the usual
+node-private folders (`/tmp`, `/var/tmp`, `/dev/shm`, `$TMPDIR`) but cannot recognise every
+local scratch disk.
+
+**Run folders numbered differently from now.** The batch numbers a session's TIFFs `run-01`,
+`run-02`, ... and refuses (a conflict in the plan) when a TIFF's output is already in another
+run folder, in any variant: magnitude-bandit-analysis pairs run folders with behavior by
+number alone. Output made while macOS `._*.tif` files still counted as TIFFs can be shifted
+by one this way. Each conflict names the folders; move the misnumbered run folders' contents
+to the run number the plan gives, or delete them and process again. One mouse per config (its own `[batch]`): prepare and submit each
+separately.
 
 ### Suite2p binaries on a local disk
 
