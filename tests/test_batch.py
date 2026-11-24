@@ -44,7 +44,8 @@ def test_acquisition_counter_sorts_numerically():
 
 def test_decisions_cover_every_branch():
     assert decide(run_dir_exists=False) == "run"
-    assert decide(prior_elsewhere=manifest_run("complete", run_dir=Path("/der/run-01"))) == "skip"
+    elsewhere = manifest_run("complete", run_dir=Path("/der/run-01/without_destriping"))
+    assert decide(prior_elsewhere=elsewhere) == "conflict"  # the numbering has shifted
     assert decide(prior_here=None) == "conflict"
     assert decide(prior_here=manifest_run("complete", source=Path("/raw/other.tif"))) == "conflict"
     changed = {"source_size_bytes": 11, "source_mtime_ns": 5}
@@ -63,8 +64,11 @@ def test_decisions_cover_every_branch():
     assert decide(prior_here=finished("2026-10-21T08:59:00+00:00"), rerun_before=cutoff) == "run"
     assert decide(prior_here=finished("2026-10-21T10:01:00+01:00"), rerun_before=cutoff) == "skip"
     assert decide(prior_here=manifest_run("running"), rerun_before=cutoff) == "skip"
-    elsewhere = manifest_run("complete", run_dir=Path("/der/run-01"))
-    assert decide(prior_elsewhere=elsewhere, rerun_before=cutoff) == "skip"
+    assert decide(prior_elsewhere=elsewhere, rerun_before=cutoff) == "conflict"
+    assert decide(prior_here=manifest_run("running"), job_ended=True) == "run"
+    assert decide(prior_here=manifest_run("running"), job_ended=True, retry_incomplete=False) == (
+        "skip"
+    )
 
 
 def make_raw_tree(root: Path, sessions: dict[int, list[str]]) -> Path:

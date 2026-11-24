@@ -153,9 +153,9 @@ directly in `run-XX/` came from the same TIFF as the run, and flags a conflict i
 On the cluster, run the batch as a SLURM array: one job per pending TIFF, in parallel, each
 recorded in its run folder's `source_tiff.json` as in the notebook's batch.
 
-1. **Only the TIFFs that align to behavior (optional).** In magnitude-bandit-analysis, list
-   which of a mouse's TIFFs can be put on pyControl time (the same rsync matching as its
-   frame-times step):
+1. **Only the TIFFs that align to behavior (optional).** In magnitude-bandit-analysis, on the
+   cluster (the CSV holds paths as the batch will see them), list which of a mouse's TIFFs
+   can be put on pyControl time:
 
    ```bash
    uv run --extra funcimg python scripts/funcimg/list_aligned_runs.py \
@@ -163,23 +163,34 @@ recorded in its run folder's `source_tiff.json` as in the notebook's batch.
    ```
 
    and point `[batch] aligned_runs_csv` at the CSV. The batch then runs only the TIFFs it
-   marks aligned (the plan says why each other one is skipped), allows gaps in the
-   session range, and refuses a CSV that numbers a TIFF differently or lists TIFFs it
-   cannot find. Run numbers are unchanged: a skipped TIFF keeps its `run-XX`.
+   marks aligned (the plan says why each other one is skipped) and allows gaps in the
+   session range. Run numbers are unchanged: a skipped TIFF keeps its `run-XX`. The plan
+   refuses a CSV that numbers a TIFF differently from the batch, marks aligned a TIFF the
+   batch cannot find, or lists none of a session's TIFFs (list the runs again after
+   recording more sessions).
 2. **Check the plan:** `uv run mini2p-batch plan --config config/pipeline.toml`.
 3. **Prepare:** `uv run mini2p-batch prepare --config config/pipeline.toml` freezes the
-   config to `batch_config_<time>.toml` and writes `batch_tasks_<time>.json` beside it,
-   one row per pending run, and prints the `sbatch` line.
-4. **Submit**, from the repo folder:
-   `mkdir -p slurm_logs && sbatch --array=1-<N> scripts/slurm/batch_array.sh <tasks json>`
-   (`--array=1-<N>%8` runs at most 8 at once). Each job runs `mini2p-batch task` on its
-   row. Set memory, time and CPUs at the top of `scripts/slurm/batch_array.sh`, and
-   `MINI2P_ENV` if the environment is not `/ceph/python_envs/myoung/mini2p`. It uses the
-   `cpu` partition, where jobs are not preempted as on `cpu_backfill`.
-5. **If some jobs fail**, resubmit the same array: rows this launch already completed are
-   skipped. A new `prepare` plans afresh, as relaunching the notebook's batch does.
+   config to `batch_config_<time>.toml`, writes `batch_tasks_<time>.json` beside it (one row
+   per pending run), lists what it skips and why, and prints the `sbatch` line to submit.
+   It refuses while earlier batch array jobs are still queued or running (`--allow-queued`
+   to override), since their runs would be planned again. The newest prepare counts as the
+   launch for `post_batch_sessions.ipynb`, so if you prepare again, submit the newest list.
+4. **Submit** the printed line from the repo folder, e.g.
+   `mkdir -p slurm_logs && MINI2P_ENV=<env> sbatch --array=1-<N> scripts/slurm/batch_array.sh <tasks json>`
+   (`--array=1-<N>%8` runs at most 8 at once). Each job runs `mini2p-batch task` on its row
+   and logs to `slurm_logs/`. Set memory, time and CPUs at the top of
+   `scripts/slurm/batch_array.sh`. It uses the `cpu` partition, where jobs are not
+   preempted as on `cpu_backfill`.
+5. **If some jobs fail,** resubmit only those tasks (`--array=3,5`). A task skips its row if
+   this launch already completed it or another live job is running it. A job stopped at its
+   time limit marks its run interrupted, and one killed outright (out of memory) is seen to
+   have ended, so a new `prepare` retries both. Retrying a run whose folder exists needs
+   `overwrite = true`.
 
-One mouse per config (its own `[batch]`): prepare and submit each separately.
+Leave `[registration] fast_disk` unset on the cluster, or set it to a folder every node
+sees: `prepare` refuses a node-private one (`/tmp`, `$TMPDIR`), where each job's binaries
+would be left on its node. One mouse per config (its own `[batch]`): prepare and submit each
+separately.
 
 ### Suite2p binaries on a local disk
 

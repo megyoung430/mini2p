@@ -16,7 +16,10 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import tomllib
@@ -61,8 +64,20 @@ class BatchSettings(BaseModel):
 
 
 def load_batch_settings(path: Path) -> BatchSettings:
+    """The ``[batch]`` table of a config.
+
+    Raises:
+        ValueError: If the config has no ``[batch]`` table, or it is invalid.
+    """
     with Path(path).open("rb") as handle:
-        return BatchSettings.model_validate(tomllib.load(handle)["batch"])
+        return batch_settings_from_toml(tomllib.load(handle), path)
+
+
+def batch_settings_from_toml(document: dict, source: Path | str) -> BatchSettings:
+    """The ``[batch]`` table of a parsed config read from *source* (named in errors)."""
+    if "batch" not in document:
+        raise ValueError(f"{source} has no [batch] table")
+    return BatchSettings.model_validate(document["batch"])
 
 
 @dataclass(frozen=True)
@@ -90,7 +105,7 @@ class PlannedRun:
 class AlignedRun:
     """One row of the aligned-runs CSV: whether a raw TIFF can be put on pyControl time."""
 
-    session: str  # the raw session folder's name
+    session_name: str  # the raw session folder's name, ses-<number>_...
     run_name: str  # run-XX as the listing numbered the TIFF
     aligned: bool
     reason: str  # why it cannot be aligned; empty when it can
@@ -162,12 +177,20 @@ def decide_action(
     prior_here: ExistingRun | None,
     retry_incomplete: bool,
     rerun_before: datetime | None,
+    job_ended: bool = False,
 ) -> tuple[Action, str]:
-    """Whether to run, skip or flag one source/run-directory assignment."""
+    """Whether to run, skip or flag one source/run-directory assignment.
+
+    The same TIFF already processed under another ``run-XX`` conflicts: the run numbers
+    have shifted (a TIFF added or removed), so a run folder no longer names its TIFF.
+    *job_ended* says a manifest still marked running belongs to a SLURM job that has ended
+    (killed by a time or memory limit), so the run is retried like a failed one.
+    """
     if prior_elsewhere is not None and prior_elsewhere.run_dir != run_dir:
         return (
-            "skip",
-            f"already assigned to {prior_elsewhere.run_dir.name} ({prior_elsewhere.evidence})",
+            "conflict",
+            f"this TIFF is already in {run_folder_name(prior_elsewhere.run_dir)} "
+            f"({prior_elsewhere.evidence}): the run numbering has shifted; check it",
         )
     if not run_dir_exists:
         return "run", "new source/run assignment"
@@ -198,7 +221,17 @@ def decide_action(
         return "skip", "completed manifest already exists"
     if retry_incomplete and status in {"failed", "interrupted"}:
         return "run", f"retrying manifest status={status}"
+    if retry_incomplete and status == "running" and job_ended:
+        return "run", f"retrying: its SLURM job {meta.get('slurm_job_id')} ended while running"
     return "skip", f"existing manifest status={status or 'unknown'}"
+
+
+def run_folder_name(variant_dir: Path) -> str:
+    """The ``run-XX`` folder a variant folder lies in, for messages."""
+    return next(
+        (part for part in reversed(Path(variant_dir).parts) if part.startswith("run-")),
+        str(variant_dir),
+    )
 
 
 # ---- I/O: discovery and manifests -------------------------------------------------
@@ -221,6 +254,8 @@ def load_aligned_runs(path: Path) -> dict[Path, AlignedRun]:
     for row in rows:
         if row["aligned"] not in ("True", "False"):
             raise ValueError(f"{path}: aligned must be True or False, not {row['aligned']!r}")
+        if not SESSION_PATTERN.match(row["session"]):
+            raise ValueError(f"{path}: {row['session']!r} is not a ses-<number>_... folder name")
         tiff = Path(row["tiff"]).resolve()
         if tiff in runs:
             raise ValueError(f"{path} lists {tiff} twice")
@@ -381,6 +416,7 @@ def plan_batch(batch: BatchSettings, *, corrected: bool) -> list[PlannedRun]:
                     read_existing_run(run_dir) if run_dir.exists() else None,
                     batch.retry_incomplete_runs,
                     batch.rerun_completed_before,
+                    job_ended=running_job_ended(run_dir),
                 )
             if aligned is not None and action != "conflict":
                 listed = aligned.get(resolved)
@@ -411,17 +447,19 @@ def session_sources(session_dir: Path, source_substring: str) -> list[Path]:
 def check_listing_covered(
     aligned: dict[Path, AlignedRun], plan: list[PlannedRun], batch: BatchSettings
 ) -> None:
-    """Refuse an aligned-runs CSV that marks aligned a TIFF of the session range the batch
-    did not find: it was made from other raw data, or the TIFF has gone.
+    """Refuse an aligned-runs CSV that does not cover the planned sessions: one that marks
+    aligned a TIFF of the range the batch did not find (made from other raw data, or the
+    TIFF has gone), or that lists none of a planned session's TIFFs (made before that
+    session was recorded, so its runs would all be skipped unnoticed).
 
     Raises:
-        ValueError: Naming the first few such TIFFs.
+        ValueError: Naming the first few such TIFFs or sessions.
     """
     planned = {p.source.resolve() for p in plan}
 
     def in_range(row: AlignedRun) -> bool:
-        match = SESSION_PATTERN.match(row.session)
-        return bool(match) and batch.session_first <= int(match.group(1)) <= batch.session_last
+        number = int(SESSION_PATTERN.match(row.session_name).group(1))
+        return batch.session_first <= number <= batch.session_last
 
     unplanned = sorted(
         str(tiff)
@@ -433,6 +471,14 @@ def check_listing_covered(
             f"{batch.aligned_runs_csv} marks aligned {len(unplanned)} TIFF(s) the batch did not "
             f"find under {batch.raw_subject_dir} (e.g. {unplanned[:3]}); list the runs again "
             "from this raw folder"
+        )
+    unlisted = sorted(
+        {p.session for p in plan} - {p.session for p in plan if p.source.resolve() in aligned}
+    )
+    if unlisted:
+        raise ValueError(
+            f"{batch.aligned_runs_csv} lists no TIFF of session(s) {unlisted[:5]}, which have "
+            "TIFFs; list the runs again so it covers them"
         )
 
 
@@ -486,6 +532,7 @@ def run_one(row: PlannedRun, config_path: Path, destripe: bool) -> None:
         "pipeline_command": command,
         "pipeline_config": str(config_path),
         "worker_log": str(log_path),
+        **slurm_ids(),
     }
     manifest_path.write_text(json.dumps(manifest, indent=2))
     try:
@@ -517,16 +564,25 @@ def snapshot_config(config: Path | bytes, destination_dir: Path) -> Path:
     return snapshot
 
 
-def _launch(batch: BatchSettings, config_path: Path) -> tuple[list, list, Path | None]:
-    """Plan, check and freeze a launch from one reading of the config, so they cannot
-    disagree: the plan, its pending rows and the frozen config (None if nothing is pending).
+@dataclass(frozen=True)
+class Launch:
+    """A planned launch: the plan, its pending rows and the frozen config (None when
+    nothing is pending)."""
+
+    plan: list[PlannedRun]
+    pending: list[PlannedRun]
+    config: Path | None
+
+
+def _launch(batch: BatchSettings, config_bytes: bytes) -> Launch:
+    """Plan, check and freeze a launch from one reading of the config (*config_bytes*),
+    so they cannot disagree.
 
     Raises:
         RuntimeError: If any run folder conflicts.
         ValueError: If a pending run would replace output and the config sets overwrite =
             false.
     """
-    config_bytes = Path(config_path).read_bytes()
     settings = settings_from_toml(tomllib.loads(config_bytes.decode()))
     plan = plan_batch(batch, corrected=distortion_corrected(settings))
     conflicts = [p for p in plan if p.action == "conflict"]
@@ -535,14 +591,14 @@ def _launch(batch: BatchSettings, config_path: Path) -> tuple[list, list, Path |
         raise RuntimeError(f"Resolve run-directory conflicts before launching:\n{details}")
     pending = [p for p in plan if p.action == "run"]
     if not pending:
-        return plan, pending, None
+        return Launch(plan, pending, None)
     replacing = [p.run_dir for p in pending if p.run_dir.exists()]
     if replacing and not settings.overwrite:
         raise ValueError(
             f"{len(replacing)} run(s) would replace existing output (e.g. {replacing[0]}) but "
             "the config sets overwrite = false"
         )
-    return plan, pending, snapshot_config(config_bytes, batch.derivatives_subject_dir)
+    return Launch(plan, pending, snapshot_config(config_bytes, batch.derivatives_subject_dir))
 
 
 def run_batch(batch: BatchSettings, config_path: Path) -> list[PlannedRun]:
@@ -551,16 +607,16 @@ def run_batch(batch: BatchSettings, config_path: Path) -> list[PlannedRun]:
     Planning here rather than reusing an earlier plan means relaunching after a
     failure never reprocesses runs that completed in the meantime.
     """
-    plan, pending, frozen_config = _launch(batch, config_path)
-    if not pending:
+    launch = _launch(batch, Path(config_path).read_bytes())
+    if not launch.pending:
         log.info("Nothing to run.")
-        return plan
-    log.info("Workers use config snapshot %s", frozen_config)
-    progress = ProgressLog("Batch", len(pending), log.info)
-    for index, row in enumerate(pending, start=1):
-        log.info("[%d/%d] %s -> %s", index, len(pending), row.source, row.run_dir)
+        return launch.plan
+    log.info("Workers use config snapshot %s", launch.config)
+    progress = ProgressLog("Batch", len(launch.pending), log.info)
+    for index, row in enumerate(launch.pending, start=1):
+        log.info("[%d/%d] %s -> %s", index, len(launch.pending), row.source, row.run_dir)
         try:
-            run_one(row, frozen_config, batch.destripe)
+            run_one(row, launch.config, batch.destripe)
         except subprocess.CalledProcessError:
             log.error("FAILED: %s (log: %s)", row.source, row.run_dir / "preprocess.log")
             if batch.stop_on_error:
@@ -569,24 +625,111 @@ def run_batch(batch: BatchSettings, config_path: Path) -> list[PlannedRun]:
         else:
             log.info("COMPLETE: %s", row.run_dir)
             progress.step_done()
-    return plan
+    return launch.plan
+
+
+# ---- SLURM ------------------------------------------------------------------------
+
+ARRAY_JOB_NAME = "mini2p-batch"  # the --job-name of scripts/slurm/batch_array.sh
+TASKS_PREFIX = "batch_tasks_"
+# Folders that are private to one compute node: binaries left there cannot be read later.
+NODE_LOCAL_PREFIXES = ("/tmp", "/var/tmp", "/dev/shm")
+
+
+def slurm_ids() -> dict:
+    """The SLURM job (and array task) running this process, for the manifest; empty
+    outside SLURM."""
+    names = {
+        "slurm_job_id": "SLURM_JOB_ID",
+        "slurm_array_job_id": "SLURM_ARRAY_JOB_ID",
+        "slurm_array_task_id": "SLURM_ARRAY_TASK_ID",
+    }
+    return {key: os.environ[env] for key, env in names.items() if env in os.environ}
+
+
+def _squeue(*args: str) -> list[str] | None:
+    """Lines of ``squeue -h`` with *args*, or None where SLURM is not available."""
+    if shutil.which("squeue") is None:
+        return None
+    result = subprocess.run(["squeue", "-h", *args], capture_output=True, text=True)
+    if result.returncode != 0:
+        return None
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+def slurm_job_alive(job_id: str) -> bool | None:
+    """Whether SLURM still lists *job_id* (pending or running); None if it cannot tell."""
+    lines = _squeue("-j", str(job_id), "-o", "%i")
+    if lines is None:
+        return None
+    return bool(lines)
+
+
+def running_job_ended(run_dir: Path) -> bool:
+    """Whether *run_dir*'s manifest says running for a SLURM job that has ended. False if
+    it is not running, records no job, or SLURM cannot be asked (e.g. on a laptop)."""
+    manifest = _read_json(Path(run_dir) / MANIFEST_NAME)
+    if not manifest or manifest.get("status") != "running" or "slurm_job_id" not in manifest:
+        return False
+    return slurm_job_alive(manifest["slurm_job_id"]) is False
+
+
+def queued_array_jobs() -> list[str]:
+    """Job ids of this user's batch array jobs that SLURM still lists (empty without SLURM)."""
+    user = os.environ.get("USER", "")
+    lines = _squeue("-u", user, "-n", ARRAY_JOB_NAME, "-o", "%i") if user else None
+    return lines or []
+
+
+def node_local_fast_disk(settings) -> Path | None:
+    """``[registration] fast_disk`` if it is a node-private folder, else None."""
+    fast_disk = settings.registration.fast_disk
+    if fast_disk is None:
+        return None
+    text = str(fast_disk)
+    tmpdir = os.environ.get("TMPDIR")
+    prefixes = NODE_LOCAL_PREFIXES + ((tmpdir,) if tmpdir else ())
+    return fast_disk if any(text == p or text.startswith(p + "/") for p in prefixes) else None
 
 
 # ---- SLURM array: one job per pending TIFF -----------------------------------------
 
-TASKS_PREFIX = "batch_tasks_"
 
+def prepare_array(config_path: Path, allow_queued: bool = False) -> tuple[Path | None, Launch]:
+    """Plan and freeze a launch of the config's ``[batch]`` as :func:`run_batch` does, and
+    write its pending runs to ``batch_tasks_<UTC time>.json`` beside the frozen config,
+    for a SLURM array whose task ``i`` (1-based) runs row ``i``.
 
-def prepare_array(batch: BatchSettings, config_path: Path) -> Path | None:
-    """Plan and freeze a launch as :func:`run_batch` does, and write its pending runs to
-    ``batch_tasks_<UTC time>.json`` in the derivatives folder for a SLURM array, task ``i``
-    (1-based) running row ``i``. Returns the file, or None if nothing is pending."""
-    _, pending, frozen_config = _launch(batch, config_path)
-    if not pending:
-        return None
+    Returns the task list (None if nothing is pending) and the launch.
+
+    Raises:
+        RuntimeError: If batch array jobs are still queued or running (unless
+            *allow_queued*): their runs have no complete manifest yet, so they would be
+            planned again and two jobs would write one run folder.
+        ValueError: If ``fast_disk`` is a node-private folder, where each job's binaries
+            would be stranded; and as :func:`_launch`.
+    """
+    queued = queued_array_jobs()
+    if queued and not allow_queued:
+        raise RuntimeError(
+            f"{len(queued)} {ARRAY_JOB_NAME} job(s) are still queued or running "
+            f"({', '.join(queued[:5])}); wait for them, or cancel them, before preparing again"
+        )
+    config_bytes = Path(config_path).read_bytes()
+    document = tomllib.loads(config_bytes.decode())
+    batch = batch_settings_from_toml(document, config_path)
+    local = node_local_fast_disk(settings_from_toml(document))
+    if local is not None:
+        raise ValueError(
+            f"[registration] fast_disk = {local} is private to each compute node, so the "
+            "binaries of each job would be left on its node; unset it or use a shared folder"
+        )
+    launch = _launch(batch, config_bytes)
+    if not launch.pending:
+        return None, launch
     tasks = {
         "created_utc": _now(),
-        "config": str(frozen_config),
+        "config": str(launch.config),
         "destripe": batch.destripe,
         "runs": [
             {
@@ -596,15 +739,15 @@ def prepare_array(batch: BatchSettings, config_path: Path) -> Path | None:
                 "run_dir": str(row.run_dir),
                 "identity": row.identity,
             }
-            for row in pending
+            for row in launch.pending
         ],
     }
-    path = frozen_config.with_name(
-        frozen_config.name.replace("batch_config_", TASKS_PREFIX).replace(".toml", ".json")
+    path = launch.config.with_name(
+        launch.config.name.replace("batch_config_", TASKS_PREFIX).replace(".toml", ".json")
     )
     with path.open("x") as handle:  # each launch has its own task list
         json.dump(tasks, handle, indent=2)
-    return path
+    return path, launch
 
 
 def array_task_row(tasks: dict, index: int) -> PlannedRun:
@@ -628,21 +771,42 @@ def array_task_row(tasks: dict, index: int) -> PlannedRun:
     )
 
 
-def done_since(run_dir: Path, created_utc: str) -> bool:
-    """Whether *run_dir* completed a run started at or after *created_utc*: the same
-    launch already did it, so a resubmitted array task leaves it alone."""
-    run = read_existing_run(run_dir) if Path(run_dir).is_dir() else None
-    if run is None or run.evidence != "manifest" or run.metadata.get("status") != "complete":
-        return False
-    started = run.metadata.get("started_utc")
-    return started is not None and datetime.fromisoformat(started) >= datetime.fromisoformat(
-        created_utc
-    )
+def task_state(manifest: dict | None, tasks: dict, own_job: str | None) -> str | None:
+    """Why an array task should not run its row, from the row's manifest, or None to run
+    it: ``"done"`` when this launch (same frozen config, started after the task list was
+    written) completed it, ``"running"`` when another SLURM job that is still alive is
+    running it."""
+    if manifest is None:
+        return None
+    status = manifest.get("status")
+    started = manifest.get("started_utc")
+    if (
+        status == "complete"
+        and manifest.get("pipeline_config") == tasks["config"]
+        and started is not None
+        and datetime.fromisoformat(started) >= datetime.fromisoformat(tasks["created_utc"])
+    ):
+        return "done"
+    job = manifest.get("slurm_job_id")
+    if status == "running" and job is not None and job != own_job:
+        return "running" if slurm_job_alive(job) is not False else None
+    return None
+
+
+class _Terminated(Exception):
+    """SIGTERM reached an array task: SLURM's time limit, or scancel."""
+
+
+def _raise_terminated(signum, frame):
+    """Signal handler: turn SIGTERM into :class:`_Terminated`."""
+    raise _Terminated(f"signal {signum}")
 
 
 def run_array_task(tasks_path: Path, index: int) -> str:
-    """Run row *index* of the task list in *tasks_path*; returns ``"complete"`` or, when
-    this launch has already completed it, ``"skipped"``.
+    """Run row *index* of the task list in *tasks_path*. Returns ``"complete"``, or
+    ``"skipped: ..."`` when this launch already completed the row or another live job is
+    running it. SIGTERM (a time limit, scancel) marks the row interrupted, so the next
+    launch retries it.
 
     Raises:
         ValueError: If the raw TIFF changed since the launch (size or modification time).
@@ -650,12 +814,30 @@ def run_array_task(tasks_path: Path, index: int) -> str:
     """
     tasks = json.loads(Path(tasks_path).read_text())
     row = array_task_row(tasks, index)
-    if done_since(row.run_dir, tasks["created_utc"]):
-        log.info("Already complete in this launch: %s", row.run_dir)
-        return "skipped"
+    manifest = _read_json(row.run_dir / MANIFEST_NAME)
+    state = task_state(manifest, tasks, os.environ.get("SLURM_JOB_ID"))
+    if state == "done":
+        return "skipped: already complete in this launch"
+    if state == "running":
+        return f"skipped: SLURM job {manifest['slurm_job_id']} is running it"
     identity = source_identity(row.source)
     if identity != row.identity:
         raise ValueError(f"{row.source} changed since the launch ({row.identity} -> {identity})")
     log.info("Task %d: %s -> %s", index, row.source, row.run_dir)
-    run_one(row, Path(tasks["config"]), tasks["destripe"])
+    previous = signal.signal(signal.SIGTERM, _raise_terminated)
+    try:
+        run_one(row, Path(tasks["config"]), tasks["destripe"])
+    except _Terminated:
+        _mark_interrupted(row.run_dir)
+        raise
+    finally:
+        signal.signal(signal.SIGTERM, previous)
     return "complete"
+
+
+def _mark_interrupted(run_dir: Path) -> None:
+    """Record in the run's manifest that its task was terminated, so it is retried."""
+    manifest_path = Path(run_dir) / MANIFEST_NAME
+    manifest = _read_json(manifest_path) or {}
+    manifest.update(status="interrupted", finished_utc=_now(), error="terminated (SIGTERM)")
+    manifest_path.write_text(json.dumps(manifest, indent=2))
