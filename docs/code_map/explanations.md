@@ -180,4 +180,7 @@ quickest way to see what a correction did.
 Runs the pipeline over every raw TIFF in a range of sessions. Each TIFF becomes `run-01`, `run-02`,
 … in acquisition order, and each run's variant folder holds a `source_tiff.json` recording which
 TIFF it came from and whether it finished. Relaunching therefore skips finished runs, and a TIFF that would land on
-another TIFF's run folder stops the batch instead of overwriting it.
+another TIFF's run folder stops the batch instead of overwriting it. With `aligned_runs_csv`, only
+the TIFFs that magnitude-bandit-analysis found it can put on pyControl time are run. On the
+cluster the same plan can run as a SLURM array: `prepare_array` writes one task per pending TIFF,
+and each job runs its own with `run_array_task`, so the TIFFs are processed in parallel.

@@ -4,10 +4,16 @@ Raw TIFFs within a session get ``run-01``, ``run-02``, ... from their ScanImage
 acquisition counter. Each run directory holds a ``source_tiff.json`` manifest that
 records which raw file it came from and whether processing finished, so reruns
 skip completed work and stop on conflicting assignments instead of overwriting.
+
+``[batch] aligned_runs_csv`` limits the batch to the TIFFs that can be put on pyControl
+time, as listed by magnitude-bandit-analysis's ``scripts/funcimg/list_aligned_runs.py``.
+The batch runs one TIFF after another (:func:`run_batch`), or as a SLURM array, one job
+per TIFF (:func:`prepare_array`, then :func:`run_array_task` in each job).
 """
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import re
@@ -39,6 +45,9 @@ class BatchSettings(BaseModel):
     session_first: int
     session_last: int
     source_substring: str
+    # CSV from magnitude-bandit-analysis's scripts/funcimg/list_aligned_runs.py: only the
+    # TIFFs it marks aligned are run. Sessions missing from the range are then allowed.
+    aligned_runs_csv: Path | None = None
     destripe: bool = False
     stop_on_error: bool = True
     retry_incomplete_runs: bool = True  # retries failed/interrupted runs
@@ -77,7 +86,38 @@ class PlannedRun:
     reason: str
 
 
+@dataclass(frozen=True)
+class AlignedRun:
+    """One row of the aligned-runs CSV: whether a raw TIFF can be put on pyControl time."""
+
+    session: str  # the raw session folder's name
+    run_name: str  # run-XX as the listing numbered the TIFF
+    aligned: bool
+    reason: str  # why it cannot be aligned; empty when it can
+
+
+ALIGNED_RUNS_COLUMNS = ("session", "run", "tiff", "aligned", "reason")
+
+
 # ---- analysis: pure planning decisions --------------------------------------------
+
+
+def alignment_decision(
+    listed: AlignedRun | None, run_name: str, csv_name: str
+) -> tuple[Action, str] | None:
+    """What the aligned-runs CSV says about one planned TIFF: None to leave the plan's
+    decision, ``skip`` for a TIFF it does not mark aligned, or ``conflict`` when it numbers
+    the TIFF differently, since then the two repositories disagree on which run is which."""
+    if listed is None:
+        return "skip", f"not in {csv_name}"
+    if listed.run_name != run_name:
+        return "conflict", (
+            f"{csv_name} numbers this TIFF {listed.run_name}, the batch {run_name}; the TIFFs "
+            "of the session differ between them"
+        )
+    if not listed.aligned:
+        return "skip", f"not aligned to behavior: {listed.reason}"
+    return None
 
 
 def acquisition_key(tiff_path: Path) -> tuple:
@@ -164,6 +204,30 @@ def decide_action(
 # ---- I/O: discovery and manifests -------------------------------------------------
 
 
+def load_aligned_runs(path: Path) -> dict[Path, AlignedRun]:
+    """The aligned-runs CSV, keyed by each raw TIFF's resolved path.
+
+    Raises:
+        ValueError: If a column is missing, ``aligned`` is not True/False, or a TIFF is
+            listed twice.
+    """
+    with Path(path).open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        missing = [c for c in ALIGNED_RUNS_COLUMNS if c not in (reader.fieldnames or [])]
+        if missing:
+            raise ValueError(f"{path} lacks the columns {missing}")
+        rows = list(reader)
+    runs = {}
+    for row in rows:
+        if row["aligned"] not in ("True", "False"):
+            raise ValueError(f"{path}: aligned must be True or False, not {row['aligned']!r}")
+        tiff = Path(row["tiff"]).resolve()
+        if tiff in runs:
+            raise ValueError(f"{path} lists {tiff} twice")
+        runs[tiff] = AlignedRun(row["session"], row["run"], row["aligned"] == "True", row["reason"])
+    return runs
+
+
 def _read_json(path: Path) -> dict | None:
     """Parsed JSON, or None if the file does not exist; a corrupt file raises."""
     if not path.is_file():
@@ -244,14 +308,18 @@ def source_identity(tiff_path: Path) -> dict:
     }
 
 
-def find_sessions(raw_subject_dir: Path, first: int, last: int) -> list[tuple[int, Path]]:
+def find_sessions(
+    raw_subject_dir: Path, first: int, last: int, allow_gaps: bool = False
+) -> list[tuple[int, Path]]:
+    """The numbered raw sessions from *first* to *last*; a missing number raises unless
+    *allow_gaps*."""
     sessions = sorted(
         (int(m.group(1)), d)
         for d in Path(raw_subject_dir).iterdir()
         if d.is_dir() and (m := SESSION_PATTERN.match(d.name)) and first <= int(m.group(1)) <= last
     )
     missing = sorted(set(range(first, last + 1)) - {n for n, _ in sessions})
-    if missing:
+    if missing and not allow_gaps:
         raise FileNotFoundError(f"Missing raw session directories: {missing}")
     return sessions
 
@@ -276,20 +344,15 @@ def plan_batch(batch: BatchSettings, *, corrected: bool) -> list[PlannedRun]:
     ``run-XX/<variant>``, the variant set by ``batch.destripe`` and *corrected* (the
     config's ``[distortion] mode`` is not "off")."""
     subdir = variant_subdir(batch.destripe, distortion_corrected=corrected)
+    aligned = None if batch.aligned_runs_csv is None else load_aligned_runs(batch.aligned_runs_csv)
     plan = []
     for session, session_dir in find_sessions(
-        batch.raw_subject_dir, batch.session_first, batch.session_last
+        batch.raw_subject_dir,
+        batch.session_first,
+        batch.session_last,
+        allow_gaps=aligned is not None,
     ):
-        sources = sorted(
-            (
-                f
-                for f in (session_dir / "funcimg").iterdir()
-                if f.is_file()
-                and f.suffix.lower() == ".tif"
-                and batch.source_substring.lower() in f.name.lower()
-            ),
-            key=acquisition_key,
-        )
+        sources = session_sources(session_dir, batch.source_substring)
         derivative_funcimg = batch.derivatives_subject_dir / session_dir.name / "funcimg"
         # The same raw TIFF may already sit under a different run number.
         existing_by_source = {}
@@ -319,8 +382,58 @@ def plan_batch(batch: BatchSettings, *, corrected: bool) -> list[PlannedRun]:
                     batch.retry_incomplete_runs,
                     batch.rerun_completed_before,
                 )
+            if aligned is not None and action != "conflict":
+                listed = aligned.get(resolved)
+                override = alignment_decision(listed, run_name, batch.aligned_runs_csv.name)
+                action, reason = override or (action, reason)
             plan.append(PlannedRun(session, source, run_name, run_dir, identity, action, reason))
+    if aligned is not None:
+        check_listing_covered(aligned, plan, batch)
     return plan
+
+
+def session_sources(session_dir: Path, source_substring: str) -> list[Path]:
+    """The session's raw TIFFs (``funcimg/*.tif`` naming *source_substring*, any case), in
+    acquisition order. macOS AppleDouble files (``._*``) are metadata, not TIFFs."""
+    return sorted(
+        (
+            f
+            for f in (Path(session_dir) / "funcimg").iterdir()
+            if f.is_file()
+            and f.suffix.lower() == ".tif"
+            and not f.name.startswith("._")
+            and source_substring.lower() in f.name.lower()
+        ),
+        key=acquisition_key,
+    )
+
+
+def check_listing_covered(
+    aligned: dict[Path, AlignedRun], plan: list[PlannedRun], batch: BatchSettings
+) -> None:
+    """Refuse an aligned-runs CSV that marks aligned a TIFF of the session range the batch
+    did not find: it was made from other raw data, or the TIFF has gone.
+
+    Raises:
+        ValueError: Naming the first few such TIFFs.
+    """
+    planned = {p.source.resolve() for p in plan}
+
+    def in_range(row: AlignedRun) -> bool:
+        match = SESSION_PATTERN.match(row.session)
+        return bool(match) and batch.session_first <= int(match.group(1)) <= batch.session_last
+
+    unplanned = sorted(
+        str(tiff)
+        for tiff, row in aligned.items()
+        if row.aligned and in_range(row) and tiff not in planned
+    )
+    if unplanned:
+        raise ValueError(
+            f"{batch.aligned_runs_csv} marks aligned {len(unplanned)} TIFF(s) the batch did not "
+            f"find under {batch.raw_subject_dir} (e.g. {unplanned[:3]}); list the runs again "
+            "from this raw folder"
+        )
 
 
 def format_plan(plan: list[PlannedRun]) -> str:
@@ -404,13 +517,15 @@ def snapshot_config(config: Path | bytes, destination_dir: Path) -> Path:
     return snapshot
 
 
-def run_batch(batch: BatchSettings, config_path: Path) -> list[PlannedRun]:
-    """Plan afresh from the manifests on disk, then run every pending source.
+def _launch(batch: BatchSettings, config_path: Path) -> tuple[list, list, Path | None]:
+    """Plan, check and freeze a launch from one reading of the config, so they cannot
+    disagree: the plan, its pending rows and the frozen config (None if nothing is pending).
 
-    Planning here rather than reusing an earlier plan means relaunching after a
-    failure never reprocesses runs that completed in the meantime.
+    Raises:
+        RuntimeError: If any run folder conflicts.
+        ValueError: If a pending run would replace output and the config sets overwrite =
+            false.
     """
-    # Plan, check and freeze from one reading of the config, so they cannot disagree.
     config_bytes = Path(config_path).read_bytes()
     settings = settings_from_toml(tomllib.loads(config_bytes.decode()))
     plan = plan_batch(batch, corrected=distortion_corrected(settings))
@@ -420,15 +535,26 @@ def run_batch(batch: BatchSettings, config_path: Path) -> list[PlannedRun]:
         raise RuntimeError(f"Resolve run-directory conflicts before launching:\n{details}")
     pending = [p for p in plan if p.action == "run"]
     if not pending:
-        log.info("Nothing to run.")
-        return plan
+        return plan, pending, None
     replacing = [p.run_dir for p in pending if p.run_dir.exists()]
     if replacing and not settings.overwrite:
         raise ValueError(
             f"{len(replacing)} run(s) would replace existing output (e.g. {replacing[0]}) but "
             "the config sets overwrite = false"
         )
-    frozen_config = snapshot_config(config_bytes, batch.derivatives_subject_dir)
+    return plan, pending, snapshot_config(config_bytes, batch.derivatives_subject_dir)
+
+
+def run_batch(batch: BatchSettings, config_path: Path) -> list[PlannedRun]:
+    """Plan afresh from the manifests on disk, then run every pending source in turn.
+
+    Planning here rather than reusing an earlier plan means relaunching after a
+    failure never reprocesses runs that completed in the meantime.
+    """
+    plan, pending, frozen_config = _launch(batch, config_path)
+    if not pending:
+        log.info("Nothing to run.")
+        return plan
     log.info("Workers use config snapshot %s", frozen_config)
     progress = ProgressLog("Batch", len(pending), log.info)
     for index, row in enumerate(pending, start=1):
@@ -444,3 +570,92 @@ def run_batch(batch: BatchSettings, config_path: Path) -> list[PlannedRun]:
             log.info("COMPLETE: %s", row.run_dir)
             progress.step_done()
     return plan
+
+
+# ---- SLURM array: one job per pending TIFF -----------------------------------------
+
+TASKS_PREFIX = "batch_tasks_"
+
+
+def prepare_array(batch: BatchSettings, config_path: Path) -> Path | None:
+    """Plan and freeze a launch as :func:`run_batch` does, and write its pending runs to
+    ``batch_tasks_<UTC time>.json`` in the derivatives folder for a SLURM array, task ``i``
+    (1-based) running row ``i``. Returns the file, or None if nothing is pending."""
+    _, pending, frozen_config = _launch(batch, config_path)
+    if not pending:
+        return None
+    tasks = {
+        "created_utc": _now(),
+        "config": str(frozen_config),
+        "destripe": batch.destripe,
+        "runs": [
+            {
+                "session": row.session,
+                "source": str(row.source),
+                "run_name": row.run_name,
+                "run_dir": str(row.run_dir),
+                "identity": row.identity,
+            }
+            for row in pending
+        ],
+    }
+    path = frozen_config.with_name(
+        frozen_config.name.replace("batch_config_", TASKS_PREFIX).replace(".toml", ".json")
+    )
+    with path.open("x") as handle:  # each launch has its own task list
+        json.dump(tasks, handle, indent=2)
+    return path
+
+
+def array_task_row(tasks: dict, index: int) -> PlannedRun:
+    """Row *index* (1-based, as ``SLURM_ARRAY_TASK_ID``) of a task list.
+
+    Raises:
+        IndexError: If the list has no such row.
+    """
+    runs = tasks["runs"]
+    if not 1 <= index <= len(runs):
+        raise IndexError(f"Task {index} is outside the list's 1-{len(runs)}")
+    row = runs[index - 1]
+    return PlannedRun(
+        row["session"],
+        Path(row["source"]),
+        row["run_name"],
+        Path(row["run_dir"]),
+        row["identity"],
+        "run",
+        "array task",
+    )
+
+
+def done_since(run_dir: Path, created_utc: str) -> bool:
+    """Whether *run_dir* completed a run started at or after *created_utc*: the same
+    launch already did it, so a resubmitted array task leaves it alone."""
+    run = read_existing_run(run_dir) if Path(run_dir).is_dir() else None
+    if run is None or run.evidence != "manifest" or run.metadata.get("status") != "complete":
+        return False
+    started = run.metadata.get("started_utc")
+    return started is not None and datetime.fromisoformat(started) >= datetime.fromisoformat(
+        created_utc
+    )
+
+
+def run_array_task(tasks_path: Path, index: int) -> str:
+    """Run row *index* of the task list in *tasks_path*; returns ``"complete"`` or, when
+    this launch has already completed it, ``"skipped"``.
+
+    Raises:
+        ValueError: If the raw TIFF changed since the launch (size or modification time).
+        subprocess.CalledProcessError: If the pipeline fails (recorded in the manifest).
+    """
+    tasks = json.loads(Path(tasks_path).read_text())
+    row = array_task_row(tasks, index)
+    if done_since(row.run_dir, tasks["created_utc"]):
+        log.info("Already complete in this launch: %s", row.run_dir)
+        return "skipped"
+    identity = source_identity(row.source)
+    if identity != row.identity:
+        raise ValueError(f"{row.source} changed since the launch ({row.identity} -> {identity})")
+    log.info("Task %d: %s -> %s", index, row.source, row.run_dir)
+    run_one(row, Path(tasks["config"]), tasks["destripe"])
+    return "complete"

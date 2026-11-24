@@ -12,7 +12,9 @@ config's ``[movies]`` section (any setting can be overridden, e.g. ``--session 2
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
 import types
 import typing
 from pathlib import Path
@@ -324,3 +326,56 @@ def print_summary(rows: list[dict]) -> None:
 
 if __name__ == "__main__":
     main()
+
+
+BATCH_ARRAY_SCRIPT = "scripts/slurm/batch_array.sh"
+
+
+def batch_main(argv: list[str] | None = None) -> None:
+    """Plan the batch, or prepare and run it as a SLURM array (one job per TIFF)."""
+    from .batch import format_plan, load_batch_settings, plan_batch, prepare_array, run_array_task
+    from .config import distortion_corrected
+
+    parser = argparse.ArgumentParser(
+        description="The [batch] of a pipeline TOML: 'plan' shows what it would do, 'prepare' "
+        "freezes the config and writes the task list of a SLURM array, and 'task' runs one "
+        f"row of that list (what each job of {BATCH_ARRAY_SCRIPT} does)"
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+    for name in ("plan", "prepare"):
+        sub = commands.add_parser(name)
+        sub.add_argument("--config", type=Path, required=True, help="pipeline TOML with [batch]")
+    task = commands.add_parser("task")
+    task.add_argument("--tasks", type=Path, required=True, help="batch_tasks_<time>.json")
+    task.add_argument(
+        "--index", type=int, default=None,
+        help="row to run, from 1 (default: $SLURM_ARRAY_TASK_ID)",
+    )  # fmt: skip
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
+    if args.command == "task":
+        index = args.index
+        if index is None:
+            if "SLURM_ARRAY_TASK_ID" not in os.environ:
+                parser.error("give --index, or run inside a SLURM array job")
+            index = int(os.environ["SLURM_ARRAY_TASK_ID"])
+        print(f"Task {index}: {run_array_task(args.tasks, index)}")
+        return
+    try:  # only the request is checked here
+        batch = load_batch_settings(args.config)
+        corrected = distortion_corrected(load_settings(args.config))
+        if args.command == "plan":
+            print(format_plan(plan_batch(batch, corrected=corrected)))
+            return
+        tasks = prepare_array(batch, args.config)
+    except (ValueError, FileNotFoundError, RuntimeError, KeyError) as error:
+        parser.error(str(error))
+    if tasks is None:
+        print("Nothing to run.")
+        return
+    n_tasks = len(json.loads(tasks.read_text())["runs"])
+    print(f"{n_tasks} runs to do; task list {tasks}")
+    print(
+        "Submit from the repo folder with:\n"
+        f"  mkdir -p slurm_logs && sbatch --array=1-{n_tasks} {BATCH_ARRAY_SCRIPT} {tasks}"
+    )

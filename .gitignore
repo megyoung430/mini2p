@@ -10,3 +10,4 @@ config/*.toml
 *.tiff
 .DS_Store
 build/
+slurm_logs/

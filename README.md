@@ -36,6 +36,8 @@ CLI and the batch workers all read it, so they cannot drift apart.
   with the settings is refused)
 - **Many sessions:** `notebooks/batch_and_exports.ipynb`. Builds a dry-run plan,
   launches one CLI process per pending TIFF, then exports mean images and PDFs.
+- **Many sessions on the cluster, one job per TIFF:** `mini2p-batch prepare`, then
+  `sbatch --array` (see [Batch as a SLURM array](#batch-as-a-slurm-array)).
 - **Sessions the batch has finished, while it runs:** `notebooks/post_batch_sessions.ipynb`,
   in a second kernel. Exports, Cellpose extraction and an alignment review for the chosen
   sessions, only for runs the batch completed since `rerun_completed_before`.
@@ -145,6 +147,39 @@ summary JSON and PDFs carry the variant in their names.
 `run-XX/suite2p/` itself is the registration the Cellpose masks were drawn on, and
 the batch never changes it. The planner only checks that whatever is recorded
 directly in `run-XX/` came from the same TIFF as the run, and flags a conflict if not.
+
+### Batch as a SLURM array
+
+On the cluster, run the batch as a SLURM array: one job per pending TIFF, in parallel, each
+recorded in its run folder's `source_tiff.json` as in the notebook's batch.
+
+1. **Only the TIFFs that align to behavior (optional).** In magnitude-bandit-analysis, list
+   which of a mouse's TIFFs can be put on pyControl time (the same rsync matching as its
+   frame-times step):
+
+   ```bash
+   uv run --extra funcimg python scripts/funcimg/list_aligned_runs.py \
+       <raw subject dir> 71rtask <derivatives subject dir>/aligned_runs.csv
+   ```
+
+   and point `[batch] aligned_runs_csv` at the CSV. The batch then runs only the TIFFs it
+   marks aligned (the plan says why each other one is skipped), allows gaps in the
+   session range, and refuses a CSV that numbers a TIFF differently or lists TIFFs it
+   cannot find. Run numbers are unchanged: a skipped TIFF keeps its `run-XX`.
+2. **Check the plan:** `uv run mini2p-batch plan --config config/pipeline.toml`.
+3. **Prepare:** `uv run mini2p-batch prepare --config config/pipeline.toml` freezes the
+   config to `batch_config_<time>.toml` and writes `batch_tasks_<time>.json` beside it,
+   one row per pending run, and prints the `sbatch` line.
+4. **Submit**, from the repo folder:
+   `mkdir -p slurm_logs && sbatch --array=1-<N> scripts/slurm/batch_array.sh <tasks json>`
+   (`--array=1-<N>%8` runs at most 8 at once). Each job runs `mini2p-batch task` on its
+   row. Set memory, time and CPUs at the top of `scripts/slurm/batch_array.sh`, and
+   `MINI2P_ENV` if the environment is not `/ceph/python_envs/myoung/mini2p`. It uses the
+   `cpu` partition, where jobs are not preempted as on `cpu_backfill`.
+5. **If some jobs fail**, resubmit the same array: rows this launch already completed are
+   skipped. A new `prepare` plans afresh, as relaunching the notebook's batch does.
+
+One mouse per config (its own `[batch]`): prepare and submit each separately.
 
 ### Suite2p binaries on a local disk
 
