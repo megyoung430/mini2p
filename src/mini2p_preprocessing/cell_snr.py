@@ -22,6 +22,10 @@ same field of view (``scaled_geometry``). The original scaled it by the register
 width instead; the two agree for uncropped frames, and differ for distortion-corrected crops,
 whose pixels are the scan's size. The frame rate is Suite2p's ``fs`` here, given on the
 command line in the original.
+
+``mask_weights`` makes the same traces from segmented cells instead: the mean of each mask
+minus the mean of a ring around it outside every mask, the ring as far from the mask's edge as
+the annulus is from the disc's.
 """
 
 from __future__ import annotations
@@ -30,7 +34,12 @@ from collections.abc import Iterable, Sequence
 
 import numpy as np
 from scipy import sparse
-from scipy.ndimage import gaussian_filter, gaussian_filter1d, maximum_filter
+from scipy.ndimage import (
+    distance_transform_edt,
+    gaussian_filter,
+    gaussian_filter1d,
+    maximum_filter,
+)
 
 N_CELLS = 200
 # px at a 512 px scan: DoG sigmas, peak spacing, margin from the crop edge, disc, annulus
@@ -140,7 +149,7 @@ def cell_measures(disc: np.ndarray, ring: np.ndarray, bin_s: float) -> dict:
     contrast[flash] = np.nan
     noise = robust_sd_of_steps(contrast)
     if not (noise > 0).all():
-        raise ValueError(f"{int((~(noise > 0)).sum())} putative cells have no noise; their "
+        raise ValueError(f"{int((~(noise > 0)).sum())} cells have no noise; their "
                          "traces are constant (empty or saturated pixels?)")  # fmt: skip
     filled = np.where(np.isnan(contrast), np.nanmedian(contrast, axis=0), contrast)
     high_passed = contrast - gaussian_filter1d(filled, HIGHPASS_S / bin_s, axis=0, mode="nearest")
@@ -185,3 +194,83 @@ def binned_traces(
         for traces, weight in zip(out, weights, strict=True):
             traces.append(np.asarray(weight @ binned.T).T)
     return [np.concatenate(traces) for traces in out]
+
+
+def mask_and_ring(
+    labels: np.ndarray, label: int, gap_px: float, width_px: float
+) -> tuple[tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]:
+    """(rows, columns) of one mask's pixels, and of the ring around it: the pixels more than
+    *gap_px* and at most *gap_px* + *width_px* from the mask, outside every mask.
+
+    Raises:
+        ValueError: If the label is not in the image.
+    """
+    labels = np.asarray(labels)
+    inside_all = labels == label
+    if not inside_all.any():
+        raise ValueError(f"Mask {label} is not in the label image")
+    rows, columns = np.nonzero(inside_all)
+    pad = int(np.ceil(gap_px + width_px)) + 1
+    top, left = max(0, rows.min() - pad), max(0, columns.min() - pad)
+    bottom = min(labels.shape[0], rows.max() + pad + 1)
+    right = min(labels.shape[1], columns.max() + pad + 1)
+    box = labels[top:bottom, left:right]
+    distance = distance_transform_edt(box != label)
+    ring = (distance > gap_px) & (distance <= gap_px + width_px) & (box == 0)
+    ring_rows, ring_columns = np.nonzero(ring)
+    return (rows, columns), (ring_rows + top, ring_columns + left)
+
+
+def usable_masks(
+    labels: np.ndarray, gap_px: float, width_px: float, region: tuple[slice, slice]
+) -> tuple[list[int], dict[str, list[int]]]:
+    """The labels whose mask, and all the room its ring needs (*gap_px* + *width_px* around
+    it), lie inside *region* (rows, columns), and that have at least one ring pixel; and the
+    others by reason ("outside region", "no ring"). A ring cut short by the region's edge
+    would sample fewer pixels, so such a mask is left out."""
+    labels = np.asarray(labels)
+    rows, columns = region
+    reach = int(np.ceil(gap_px + width_px))
+    kept, dropped = [], {"outside region": [], "no ring": []}
+    for label in (int(v) for v in np.unique(labels[labels > 0])):
+        (mr, mc), (rr, _) = mask_and_ring(labels, label, gap_px, width_px)
+        rows_fit = rows.start <= mr.min() - reach and mr.max() + reach < rows.stop
+        columns_fit = columns.start <= mc.min() - reach and mc.max() + reach < columns.stop
+        if not (rows_fit and columns_fit):
+            dropped["outside region"].append(label)
+        elif not rr.size:
+            dropped["no ring"].append(label)
+        else:
+            kept.append(label)
+    return kept, dropped
+
+
+def mask_weights(
+    labels: np.ndarray, ids: Sequence[int], gap_px: float, width_px: float
+) -> tuple[sparse.csr_matrix, sparse.csr_matrix]:
+    """(cells, pixels) averaging weights over each mask in *ids* (rows in that order) and over
+    its ring (``mask_and_ring``).
+
+    Raises:
+        ValueError: If *ids* is empty, or a mask is missing or has no ring pixels.
+    """
+    labels = np.asarray(labels)
+    if not len(ids):
+        raise ValueError("No masks to measure")
+    disc_rows, ring_rows = [], []
+    for row, label in enumerate(ids):
+        mask, ring = mask_and_ring(labels, int(label), gap_px, width_px)
+        if not ring[0].size:
+            raise ValueError(f"Mask {label} has no pixels around it outside the other masks")
+        disc_rows.append((row, np.ravel_multi_index(mask, labels.shape)))
+        ring_rows.append((row, np.ravel_multi_index(ring, labels.shape)))
+    return (_averaging(disc_rows, len(ids), labels.size),
+            _averaging(ring_rows, len(ids), labels.size))  # fmt: skip
+
+
+def _averaging(rows: list[tuple[int, np.ndarray]], n_rows: int, n_pixels: int):
+    """A sparse matrix whose row i averages the pixels listed for it."""
+    row_index = np.concatenate([np.full(p.size, r) for r, p in rows])
+    pixels = np.concatenate([p for _, p in rows])
+    values = np.concatenate([np.full(p.size, 1 / p.size) for _, p in rows])
+    return sparse.csr_matrix((values, (row_index, pixels)), shape=(n_rows, n_pixels))

@@ -28,7 +28,10 @@ single pixels, each high-passed over ``detrend_s`` to remove bleaching and drift
   registrations, not recordings;
 - local correlation image: each pixel's correlation with the mean of its 8 neighbours. Cells
   stand out as bright patches; reported as its 99th percentile and its contrast (99th
-  percentile minus median);
+  percentile minus median). Under nonrigid registration it follows the layout of Suite2p's
+  blocks: each pixel is interpolated by its own fraction of a pixel, which correlates it with
+  its neighbours by an amount that varies across the block grid, and the grid changes with the
+  settings, so it does not compare even nonrigid registrations of different settings;
 - green-red correlation: the median correlation of a patch's green and red fluctuations.
   Lower = less of what moves the red (motion, brain movement in z) left in the green.
 
@@ -61,6 +64,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,6 +75,9 @@ from scipy.ndimage import gaussian_filter, uniform_filter, uniform_filter1d
 from skimage.registration import phase_cross_correlation
 
 from . import cell_snr
+from .alignment import load_reference_image
+from .config import FluorescenceSettings, RegistrationSettings
+from .extraction import align_masks
 from .plots import QC_FONTS, SERIES_COLORS
 from .qc import unwrapped_region
 from .raw_previews import save_preview
@@ -89,7 +96,11 @@ MIN_BLOCK_FRAMES = 50
 PATCH_PX = 4
 DETREND_S = 10.0  # keeps calcium transients (seconds), removes bleaching and drift
 CELL_MINUTES = 4.3  # as in the 71R / AB08 comparison
-CHUNK_FRAMES = 600  # frames read at a time for the putative-cell traces
+CHUNK_FRAMES = 600  # frames read at a time for the cell traces
+SEGMENTATION_FOLDER = "cell_segmentation"  # looked for in the aligned folder and above it
+NOT_CELLS = ("vessel", "background")  # _seg.npy files of these names segment something else
+RUN_FOLDER = re.compile(r"run-\d+")  # the segmentation folder is looked for up to here
+IMAGE_SUFFIXES = (".png", ".tif", ".tiff")
 SIGNAL_SMOOTH_FRAMES = 3
 PEAK_PERCENTILE = 99
 BASELINE_PERCENTILE = 20  # F0 of the noise level
@@ -330,6 +341,27 @@ def signal_measures(
 
 
 @dataclass
+class CellMasks:
+    """Cellpose masks and the image they were drawn on."""
+
+    labels: np.ndarray
+    image: np.ndarray
+    seg_file: Path
+    image_file: Path
+
+
+@dataclass
+class SegmentedCells:
+    """The masks on each registration, and the cells every registration keeps."""
+
+    masks: CellMasks
+    on_plane: dict[str, tuple[np.ndarray, int, int]]  # plane folder -> (labels, dy, dx)
+    ids: list[int]  # labels inside every registration's crop, with a ring, in all of them
+    left_out: int  # labels left out (lost in at least one registration)
+    dropped: dict[str, int]  # left-out labels with each reason in at least one registration
+
+
+@dataclass
 class Plan:
     """What every registration is measured on."""
 
@@ -337,9 +369,121 @@ class Plan:
     frames: np.ndarray
     blocks: list[slice]
     fs_hz: float
-    cell_frames: int  # the first frames, a whole number of bins, for the putative cells
+    cell_frames: int  # the first frames, a whole number of bins, for the cell measures
     scan_px: int = cell_snr.SCAN_PX
     n_cells: int = cell_snr.N_CELLS
+    segmented: SegmentedCells | None = None  # None: putative cells
+
+
+def run_folder_of(folder: Path) -> Path | None:
+    """The nearest ``run-XX`` folder at or above *folder*, or None."""
+    return next((p for p in [folder, *folder.parents] if RUN_FOLDER.fullmatch(p.name)), None)
+
+
+def find_segmentation(aligned_folder: Path) -> Path | None:
+    """The ``*_seg.npy`` in the nearest ``cell_segmentation/`` folder at or above
+    *aligned_folder*, looking no higher than its ``run-XX`` folder (only the folder itself
+    outside a run), or None when there is no such folder or it holds none. Files whose names
+    contain "vessel" or "background" segment something else and are ignored.
+
+    Raises:
+        ValueError: If that folder holds several.
+    """
+    folder = Path(aligned_folder).absolute()
+    run = run_folder_of(folder)
+    parents = [folder, *folder.parents]
+    for parent in parents[: parents.index(run) + 1] if run else [folder]:
+        segmentation = parent / SEGMENTATION_FOLDER
+        if not segmentation.is_dir():
+            continue
+        found = sorted(
+            f for f in segmentation.glob("*_seg.npy") if not any(w in f.name for w in NOT_CELLS)
+        )
+        if len(found) > 1:
+            raise ValueError(f"Several _seg.npy files in {segmentation}; choose one with --seg")
+        if not found:
+            logger.warning("%s holds no _seg.npy; using putative cells", segmentation)
+        return found[0] if found else None
+    return None
+
+
+def mask_image_for(seg_file: Path, seg: dict) -> Path:
+    """The image the masks of *seg* (the loaded ``_seg.npy``) were drawn on: beside it with the
+    same name (PNG or TIFF), or the file it names, in its folder.
+
+    Raises:
+        FileNotFoundError: If neither is there.
+    """
+    seg_file = Path(seg_file)
+    stem = seg_file.name.removesuffix("_seg.npy")
+    names = [stem + suffix for suffix in IMAGE_SUFFIXES]
+    if seg.get("filename"):
+        names.append(Path(str(seg["filename"])).name)
+    for name in names:
+        if (seg_file.parent / name).is_file():
+            return seg_file.parent / name
+    raise FileNotFoundError(
+        f"No image the masks of {seg_file.name} were drawn on beside it (looked for {names}); "
+        "pass --mask-image"
+    )
+
+
+def load_masks(seg_file: Path, image_file: Path | None = None) -> CellMasks:
+    """The masks of a Cellpose ``_seg.npy`` and the image they were drawn on."""
+    seg = np.load(seg_file, allow_pickle=True).item()
+    if "masks" not in seg:
+        raise KeyError(f"{seg_file} has no 'masks' entry; is it a Cellpose _seg.npy file?")
+    image_file = Path(image_file) if image_file else mask_image_for(seg_file, seg)
+    labels = np.asarray(seg["masks"])
+    image = load_reference_image(image_file)
+    if labels.shape != image.shape:
+        raise ValueError(f"The masks are {labels.shape} but {image_file.name} is {image.shape}")
+    return CellMasks(labels, image, Path(seg_file), image_file)
+
+
+def ring_geometry(scan_px: int) -> tuple[float, float]:
+    """(gap, width) of the ring around a mask: as far from its edge, and as wide, as the
+    putative cells' annulus is from their disc."""
+    geometry = cell_snr.scaled_geometry(scan_px)
+    return geometry["ring_in"] - geometry["disc_r"], geometry["ring_out"] - geometry["ring_in"]
+
+
+def segment_planes(
+    planes: Sequence[Path],
+    masks: CellMasks,
+    crop: tuple[slice, slice],
+    scan_px: int,
+    fl: FluorescenceSettings,
+    diameter_px: int,
+) -> SegmentedCells:
+    """The masks shifted onto every registration's own mean image (each aligns to its own
+    reference), and the cells every registration keeps: aligned, inside the crop with their
+    ring, and with ring pixels. Every registration is then measured on the same cells.
+
+    Raises:
+        ValueError: If a registration cannot be aligned by one shift, or no cell is kept.
+    """
+    gap, width = ring_geometry(scan_px)
+    all_ids = {int(v) for v in np.unique(masks.labels[masks.labels > 0])}
+    on_plane, kept, reasons = {}, set(all_ids), {}
+    for plane in planes:
+        labels, report = align_masks(masks.labels, masks.image, load_ops(plane), fl, diameter_px)
+        usable, dropped = cell_snr.usable_masks(labels, gap, width, crop)
+        dropped["dropped by alignment"] = list(report["dropped_labels"])
+        on_plane[str(plane)] = (labels, int(report["dy"]), int(report["dx"]))
+        kept &= set(usable)
+        for reason, ids in dropped.items():
+            reasons.setdefault(reason, set()).update(ids)
+    counts = {reason: len(ids - kept) for reason, ids in reasons.items() if ids - kept}
+    if not kept:
+        raise ValueError(
+            f"No mask of {masks.seg_file.name} is usable in every registration: {counts}"
+        )
+    left_out = len(all_ids - kept)
+    if left_out:
+        logger.warning("%d of %d masks left out; reasons, each in at least one registration "
+                       "(a mask can have several): %s", left_out, len(all_ids), counts)  # fmt: skip
+    return SegmentedCells(masks, on_plane, sorted(kept), left_out, counts)
 
 
 def find_registrations(aligned_folder: Path) -> list[Path]:
@@ -422,19 +566,33 @@ def putative_cells(ops: dict, plan: Plan) -> np.ndarray:
     return cell_snr.pick_cells(mean_image, valid, geometry, plan.n_cells)
 
 
-def putative_cell_measures(outputs, plan: Plan) -> dict:
-    """Resting SNR and transients of the putative cells in green, and transients at the same
-    places in red."""
+def cell_weights(ops: dict, plane: Path, plan: Plan) -> tuple[list, dict]:
+    """The (cell, ring) averaging weights of this registration's cells, and what they are:
+    the segmented masks shifted onto it, or else the putative cells."""
+    if plan.segmented is not None:
+        cells = plan.segmented
+        labels, dy, dx = cells.on_plane[str(plane)]
+        weights = list(cell_snr.mask_weights(labels, cells.ids, *ring_geometry(plan.scan_px)))
+        about = {"cells": f"cellpose {cells.masks.seg_file.name}", "n_cells": len(cells.ids),
+                 "mask_dy": dy, "mask_dx": dx}  # fmt: skip
+        return weights, about
     geometry = cell_snr.scaled_geometry(plan.scan_px)
-    cells = putative_cells(outputs.ops, plan)
-    shape = np.shape(outputs.ops["meanImg"])
-    disc_weights = cell_snr.roi_weights(cells, shape, 0, geometry["disc_r"])
-    ring_weights = cell_snr.roi_weights(cells, shape, geometry["ring_in"], geometry["ring_out"])
-    weights = [disc_weights, ring_weights]
+    centres = putative_cells(ops, plan)
+    shape = np.shape(ops["meanImg"])
+    disc = cell_snr.roi_weights(centres, shape, 0, geometry["disc_r"])
+    ring = cell_snr.roi_weights(centres, shape, geometry["ring_in"], geometry["ring_out"])
+    return [disc, ring], {"cells": "putative", "n_cells": len(centres), "mask_dy": None,
+                          "mask_dx": None}  # fmt: skip
+
+
+def cell_snr_measures(outputs, plane: Path, plan: Plan) -> dict:
+    """Resting SNR and transients of the cells (segmented, or else putative) in green, and
+    transients at the same places in red."""
+    weights, about = cell_weights(outputs.ops, plane, plan)
     fpb = cell_snr.frames_per_bin(plan.fs_hz)
     chunk = max(fpb, CHUNK_FRAMES // fpb * fpb)
     minutes = plan.cell_frames / plan.fs_hz / 60
-    row = {}
+    row = dict(about)
     for name in ("functional", "structural"):
         chunks = movie_chunks(getattr(outputs, name), plan.cell_frames, chunk)
         disc, ring = cell_snr.binned_traces(chunks, weights, fpb)
@@ -447,8 +605,7 @@ def putative_cell_measures(outputs, plan: Plan) -> dict:
 def measure_registration(
     plane: Path, plan: Plan, detrend_s: float = DETREND_S, patch_px: int = PATCH_PX
 ) -> tuple[dict, dict]:
-    """One registration's row of measures, and its images (red mean, green local
-    correlation)."""
+    """One registration's row of measures, and its red and green mean images."""
     outputs = load_registered_outputs(plane)
     rows, columns = plan.crop
     row = {"registration": Path(plane).parent.name, **registration_settings(outputs.ops)}
@@ -464,9 +621,9 @@ def measure_registration(
               for name in ("functional", "structural"))
         for block in plan.blocks
     ]  # fmt: skip
-    signal, correlation_image = signal_measures(blocks, plan.fs_hz, detrend_s, patch_px)
-    row |= signal | putative_cell_measures(outputs, plan)
-    return row, {"red_mean": means["structural"], "green_local_corr": correlation_image}
+    signal, _ = signal_measures(blocks, plan.fs_hz, detrend_s, patch_px)
+    row |= signal | cell_snr_measures(outputs, plane, plan)
+    return row, {"red_mean": means["structural"], "green_mean": means["functional"]}
 
 
 def write_table(rows: Sequence[dict], path: Path) -> None:
@@ -490,22 +647,46 @@ def prepare_comparison(
     cell_minutes: float | None = CELL_MINUTES,
     scan_px: int = cell_snr.SCAN_PX,
     n_cells: int = cell_snr.N_CELLS,
+    seg_file: Path | None = None,
+    mask_image: Path | None = None,
+    putative: bool = False,
+    fluorescence: FluorescenceSettings | None = None,
+    diameter_px: int | None = None,
 ) -> tuple[list[Path], Plan]:
     """The registrations in *aligned_folder* and what they are measured on.
 
+    Cells are the Cellpose masks of *seg_file* (drawn on *mask_image*, by default the image of
+    the same name beside it), or of the ``_seg.npy`` in the nearest ``cell_segmentation/``
+    folder at or above *aligned_folder* within its run (``find_segmentation``); with neither,
+    or with *putative*, putative cells. Masks are aligned with the ``[fluorescence]`` mask
+    limits of *fluorescence* and the cell diameter *diameter_px* (the defaults if None).
+
     Raises:
         FileExistsError: If a comparison is there already and *overwrite* is not set.
-        FileNotFoundError: If the folder holds no registration.
+        FileNotFoundError: If the folder holds no registration, or the masks' image is missing.
         KeyError, ValueError: If the registrations are not of one recording, or the request
-            does not fit it (e.g. too few putative cells).
+            does not fit it (e.g. too few putative cells, or masks that do not align or that
+            no registration keeps).
     """
     table_stem, _ = output_stems(aligned_folder)
     if table_stem.with_suffix(".csv").exists() and not overwrite:
         raise FileExistsError(f"{table_stem}.csv exists; pass overwrite to replace it")
     planes = find_registrations(aligned_folder)
+    if putative and (seg_file or mask_image):
+        raise ValueError("Choose putative cells or a segmentation, not both")
+    seg_file = None if putative else seg_file or find_segmentation(aligned_folder)
+    if mask_image and not seg_file:
+        raise ValueError("A mask image needs its segmentation (--seg)")
     plan = plan_comparison(planes, n_frames, n_blocks, block_frames, cell_minutes, scan_px, n_cells)
+    if seg_file:
+        masks = load_masks(seg_file, mask_image)
+        logger.info("Cells: %s, drawn on %s", masks.seg_file, masks.image_file.name)
+        plan.segmented = segment_planes(
+            planes, masks, plan.crop, scan_px, fluorescence or FluorescenceSettings(),
+            diameter_px or RegistrationSettings().diameter_px,
+        )  # fmt: skip
     for plane in planes:  # seconds now, rather than failing after measuring the others
-        putative_cells(load_ops(plane), plan)
+        cell_weights(load_ops(plane), plane, plan)
     return planes, plan
 
 
@@ -550,12 +731,18 @@ def compare_registrations(
     cell_minutes: float | None = CELL_MINUTES,
     scan_px: int = cell_snr.SCAN_PX,
     n_cells: int = cell_snr.N_CELLS,
+    seg_file: Path | None = None,
+    mask_image: Path | None = None,
+    putative: bool = False,
+    fluorescence: FluorescenceSettings | None = None,
+    diameter_px: int | None = None,
 ) -> list[dict]:
     """Measure every registration in *aligned_folder* and save the results (see
     ``prepare_comparison`` and ``run_comparison``). Reads the registrations only."""
     planes, plan = prepare_comparison(
-        aligned_folder, n_frames, n_blocks, block_frames, overwrite, cell_minutes, scan_px, n_cells
-    )
+        aligned_folder, n_frames, n_blocks, block_frames, overwrite, cell_minutes, scan_px,
+        n_cells, seg_file, mask_image, putative, fluorescence, diameter_px,
+    )  # fmt: skip
     return run_comparison(aligned_folder, planes, plan, patch_px, detrend_s)
 
 
@@ -642,28 +829,26 @@ def plot_measures(rows: Sequence[dict], axes=None) -> np.ndarray:
     return axes
 
 
+IMAGE_ROWS = (("red_mean", "Red Mean"), ("green_mean", "Green Mean"))
+DISPLAY_PERCENTILES = (1, 99.5)
+
+
 def plot_images(labels: Sequence[str], images: Sequence[dict], axes=None) -> np.ndarray:
-    """Per registration (columns): the red mean image, and the green local correlation image
-    (one color scale for all)."""
+    """Per registration (columns): the red and the green mean image, each shown from its own
+    1st to 99.5th percentile."""
     if axes is None:
-        _, axes = plt.subplots(2, len(labels), figsize=(3.2 * len(labels), 6.6),
+        _, axes = plt.subplots(len(IMAGE_ROWS), len(labels), figsize=(3.2 * len(labels), 6.6),
                                constrained_layout=True, squeeze=False)  # fmt: skip
-    axes = np.asarray(axes).reshape(2, len(labels))
-    maps = np.stack([image["green_local_corr"] for image in images])
-    vmin, vmax = np.percentile(maps, [1, 99.5])
+    axes = np.asarray(axes).reshape(len(IMAGE_ROWS), len(labels))
     for column, (label, image) in enumerate(zip(labels, images, strict=True)):
-        red = image["red_mean"]
-        axes[0, column].imshow(red, cmap="gray", vmin=np.percentile(red, 1),
-                               vmax=np.percentile(red, 99.5))  # fmt: skip
-        shown = axes[1, column].imshow(image["green_local_corr"], cmap="magma",
-                                       vmin=vmin, vmax=vmax)  # fmt: skip
-        axes[0, column].set_title(label, fontsize=9)
-        for ax in axes[:, column]:
+        for ax, (key, _) in zip(axes[:, column], IMAGE_ROWS, strict=True):
+            low, high = np.percentile(image[key], DISPLAY_PERCENTILES)
+            ax.imshow(image[key], cmap="gray", vmin=low, vmax=high)
             ax.set_xticks([])
             ax.set_yticks([])
-    axes[0, 0].set_ylabel("Red Mean")
-    axes[1, 0].set_ylabel("Green Local Correlation")
-    axes.flat[0].figure.colorbar(shown, ax=axes[1, :].tolist(), shrink=0.8, label="r")
+        axes[0, column].set_title(label, fontsize=9)
+    for ax, (_, name) in zip(axes[:, 0], IMAGE_ROWS, strict=True):
+        ax.set_ylabel(name)
     axes.flat[0].figure.suptitle("Registration Comparison Images")
     return axes
 
@@ -680,11 +865,33 @@ def caption_details(aligned_folder: Path, plan: Plan, patch_px: int, detrend_s: 
         "cell_minutes": plan.cell_frames / plan.fs_hz / 60, "scan_px": plan.scan_px,
         "bin_s": cell_snr.frames_per_bin(plan.fs_hz) / plan.fs_hz,
         "threshold": cell_snr.TRANSIENT_SD, "highpass": cell_snr.HIGHPASS_S,
+        "cells": cells_caption(plan),
     }  # fmt: skip
 
 
+def cells_caption(plan: Plan) -> str:
+    """How the cells of the bottom row were found, for the caption."""
+    cells = plan.segmented
+    if cells is not None:
+        reasons = ", ".join(f"{n} {r}" for r, n in cells.dropped.items())
+        dropped = (f"; {cells.left_out} more were left out because at least one registration "
+                   f"lost them (reasons, a mask can have several: {reasons})"
+                   if cells.left_out else "")  # fmt: skip
+        masks = cells.masks
+        return (f"Cells (bottom row): {len(cells.ids)} Cellpose masks of {masks.seg_file.name}, "
+                f"drawn on {masks.image_file.name} and shifted onto each registration's green "
+                "mean image (mask_dy, mask_dx in the table), the same masks in every "
+                f"registration, each with its ring inside the crop{dropped}; trace = mask minus "
+                "a ring around it outside every mask")  # fmt: skip
+    return (f"Putative cells (bottom row; the measure of the earlier 71R / AB08 / M comparison): "
+            f"the {plan.n_cells} strongest local maxima of the cell-scale structure (difference "
+            "of Gaussians) of each registration's green mean image, within its valid region "
+            f"less a margin, geometry for a {plan.scan_px} px scan; trace = disc minus "
+            "surrounding annulus")  # fmt: skip
+
+
 MEASURES_CAPTION = """Registrations of {recording}. Alignment and signal measures in rows \
-{rows} and columns {columns} (inside every registration's unwrapped region); no cell \
+{rows} and columns {columns} (inside every registration's unwrapped region), without cell \
 segmentation.
 Alignment, on the same {n} evenly spaced frames: frame-to-mean r, each frame against the mean \
 of those frames, both smoothed with a {sigma} px Gaussian (median and 5th percentile across \
@@ -704,10 +911,7 @@ local correlation contrast, 99th percentile minus median of each pixel's correla
 mean of its 8 neighbours; noise level (Rupprecht et al. 2021), median absolute frame-to-frame \
 change of ΔF/F (F0: 20th percentile) over sqrt(frame rate), median over the brighter half of \
 the patches; F0 includes any detector offset, so compare registrations, not recordings.
-Putative cells (bottom row; the measure of the earlier 71R / AB08 / M comparison): the \
-{n_cells} strongest local maxima of the cell-scale structure (difference of Gaussians) of each \
-registration's green mean image, within its valid region less a margin, geometry for a \
-{scan_px} px scan; trace = disc minus surrounding annulus in {bin_s:.2g} s bins over the first \
+{cells} in {bin_s:.2g} s bins over the first \
 {cell_minutes:.1f} min, without bins where the brightness around every cell jumps; noise = \
 robust SD of successive bin differences / sqrt 2. Resting SNR: a cell's mean excess over its \
 surroundings over its noise (median across cells; contrast, not activity). Transients: rising \
@@ -720,19 +924,19 @@ those only among registrations the red measures find equally well aligned. Nonri
 registration interpolates each frame by its own subpixel shifts and rigid registration moves \
 frames by whole pixels; interpolation alone changes the measures that depend on pixel noise \
 (fluctuation, noise level, local correlation, crispness, frame-to-mean r, resting SNR), in \
-either direction, so compare those within one mode (rigid or nonrigid) and, between modes, \
-rely on residual shift and on transient counts against the flipped and red counts. The crop \
+either direction, so compare those within one mode (rigid or nonrigid; local correlation only \
+between rigid registrations, as under nonrigid registration the interpolation varies across \
+Suite2p's block grid, which changes with the settings) and, between modes, rely on residual \
+shift and on transient counts against the flipped and red counts. The crop \
 depends on which registrations are compared, so numbers compare within this comparison only. \
 Y-axes are zoomed on each measure's range (dots, not bars). Table: \
 registration_comparison.csv (also root-mean-square residual shifts and the local \
 correlation's 99th percentile).
 """
 
-IMAGES_CAPTION = """Registrations of {recording}, rows {rows} and columns {columns}. Top: red \
-mean of the {n} evenly spaced frames (1st-99.5th percentile of each). Bottom: green local \
-correlation image, each pixel's correlation with the mean of its 8 neighbours over \
-{n_blocks} blocks of {block_frames} frames high-passed over {detrend:g} s, on one color scale \
-for all registrations. Cells stand out as bright patches. Motion left in a movie, and the \
-interpolation of nonrigid registration, brighten the whole image, so compare registrations \
-of one mode (rigid or nonrigid) whose red measures agree.
+IMAGES_CAPTION = """Registrations of {recording}, rows {rows} and columns {columns}. Mean of \
+the same {n} evenly spaced frames of each registration, red (structural) on top and green \
+(functional) below, each image shown from its own 1st to 99.5th percentile. Misalignment \
+blurs a mean image; differences of a fraction of a pixel may not be visible, and the \
+measures figure quantifies them.
 """

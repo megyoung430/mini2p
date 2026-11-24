@@ -160,3 +160,33 @@ def test_ragged_bins_and_constant_cells_are_refused(rng):
     disc[:, 0] = ring[:, 0] = 5.0
     with pytest.raises(ValueError, match="no noise"):
         cell_measures(disc, ring, bin_s=0.5)
+
+
+def test_mask_weights_average_each_mask_and_a_ring_outside_every_mask():
+    from mini2p_preprocessing.cell_snr import mask_weights
+
+    labels = np.zeros((40, 40), np.uint16)
+    labels[10:15, 10:15] = 3
+    labels[10:15, 17:22] = 7  # 2 px from mask 3: inside its ring distance; ids with gaps
+    disc, ring = mask_weights(labels, [7, 3], gap_px=1, width_px=4)
+    image = np.zeros((40, 40))
+    image[labels == 3] = 10
+    image[labels == 7] = 5
+    assert np.allclose(disc @ image.ravel(), [5, 10])  # rows follow the ids given
+    ring_pixels = ring[1].toarray().reshape(40, 40) > 0
+    assert not (ring_pixels & (labels > 0)).any()
+    assert ring_pixels[8, 12] and not ring_pixels[9, 12]  # 2 px away kept, 1 px (the gap) not
+    with pytest.raises(ValueError, match="No masks"):
+        mask_weights(labels, [], 1, 2)
+
+
+def test_masks_outside_the_region_or_without_a_ring_are_not_usable():
+    from mini2p_preprocessing.cell_snr import usable_masks
+
+    labels = np.zeros((40, 40), int)
+    labels[10:14, 10:14] = 1  # well inside
+    labels[1:4, 18:22] = 2  # its ring would reach past the region's top
+    labels[25:34, 25:34] = 4
+    labels[28:31, 28:31] = 3  # boxed in by mask 4: no ring pixel
+    kept, dropped = usable_masks(labels, 1, 2, (slice(0, 40), slice(0, 40)))
+    assert kept == [1, 4] and dropped == {"outside region": [2], "no ring": [3]}
