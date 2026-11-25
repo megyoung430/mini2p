@@ -491,6 +491,10 @@ def plan_batch(batch: BatchSettings, *, corrected: bool) -> list[PlannedRun]:
         batch.session_last,
         allow_gaps=aligned is not None,
     ):
+        if aligned is not None and not (session_dir / "funcimg").is_dir():
+            # behavior only; a session the CSV lists TIFFs of is checked by
+            # check_listing_covered. Without the CSV such a session still stops the plan.
+            continue
         sources = session_sources(session_dir, batch.source_substring or "")
         derivative_funcimg = batch.derivatives_subject_dir / session_dir.name / "funcimg"
         # The same raw TIFF may already sit under a different run number.
