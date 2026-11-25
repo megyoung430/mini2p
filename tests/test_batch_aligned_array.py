@@ -482,3 +482,31 @@ def test_frame_times_left_from_another_tiff_block_the_run(config):
     np.savez(der / "run-01" / "frame_times.npz", time_s=np.zeros(3), tiff="/raw/71rtask_00001.tif")
     plan = plan_of(config)
     assert plan[1].action == "conflict" and "made from 71rtask_00001.tif" in plan[1].reason
+
+
+def test_sessions_without_imaging_are_passed_over(config):
+    raw = load_batch_settings(config).raw_subject_dir
+    for name in ("ses-001_date-x", "ses-006_date-x"):  # behavior only
+        (raw / name / "behav").mkdir(parents=True)
+    batch = load_batch_settings(config).model_copy(update={"session_first": 1})
+    plan = plan_batch(batch, corrected=True)
+    assert sorted({p.session for p in plan}) == [5, 7]
+
+
+def test_without_a_listing_a_session_without_imaging_still_stops_the_plan(config):
+    raw = load_batch_settings(config).raw_subject_dir
+    (raw / "ses-006_date-x" / "behav").mkdir(parents=True)
+    batch = load_batch_settings(config).model_copy(
+        update={"aligned_runs_csv": None, "source_substring": ""}
+    )
+    with pytest.raises(FileNotFoundError, match="ses-006_date-x"):
+        plan_batch(batch, corrected=True)
+
+
+def test_a_listed_session_whose_imaging_is_missing_is_refused(config):
+    import shutil
+
+    raw = load_batch_settings(config).raw_subject_dir
+    shutil.rmtree(raw / "ses-007_date-x" / "funcimg")
+    with pytest.raises(ValueError, match="did not find"):
+        plan_of(config)
