@@ -159,15 +159,23 @@ recorded in its run folder's `source_tiff.json` as in the notebook's batch.
 
    ```bash
    uv run --extra funcimg python scripts/funcimg/list_aligned_runs.py \
-       <raw subject dir> 71rtask <derivatives subject dir>/aligned_runs.csv
+       <raw subject dir> <derivatives subject dir>/aligned_runs.csv
    ```
 
-   and point `[batch] aligned_runs_csv` at the CSV. The batch then runs only the TIFFs it
-   marks aligned (the plan says why each other one is skipped) and allows gaps in the
-   session range. Run numbers are unchanged: a skipped TIFF keeps its `run-XX`. The plan
-   refuses a CSV that numbers a TIFF differently from the batch, marks aligned a TIFF the
-   batch cannot find, or lists none of a session's TIFFs (list the runs again after
-   recording more sessions).
+   It takes every TIFF of every numbered session, whatever its name, pairs each with its DAQ
+   file by acquisition order and number of frames and the DAQ file with its behavior file by
+   rsync pulses, and numbers the TIFFs that reach a behavior file `run-01`, `run-02`, ... per
+   session in acquisition order. Point `[batch] aligned_runs_csv` at the CSV (and leave
+   `source_substring` unset): the batch then runs only those TIFFs, each into the run folder
+   the CSV gives it, says why each other TIFF is skipped, and allows gaps in the session
+   range. The CSV's numbers hold only for the files that existed when it was written, so
+   list the runs again after adding sessions, TIFFs, DAQ or behavior files: the plan
+   refuses a CSV that does not list a session's TIFF, gives one run folder to two TIFFs,
+   marks aligned a TIFF the batch cannot find, or was written by the older listing script.
+   Output numbered another way before (by `source_substring`) belongs outside
+   `funcimg/run-*`, e.g. in `funcimg/preprocessing-first-round/`: the plan refuses a run
+   folder the CSV does not assign, a TIFF already in another run folder, and a
+   `frame_times.npz` made from another TIFF.
 2. **Check the plan:** `uv run mini2p-batch plan --config config/pipeline.toml`.
 3. **Prepare:** `uv run mini2p-batch prepare --config config/pipeline.toml` freezes the
    config to `batch_config_<time>.toml`, writes `batch_tasks_<time>.json` beside it (one row

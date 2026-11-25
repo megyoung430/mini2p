@@ -12,7 +12,8 @@ from mini2p_preprocessing import batch as batch_module
 from mini2p_preprocessing.batch import (
     MANIFEST_NAME,
     AlignedRun,
-    alignment_decision,
+    BatchSettings,
+    listed_run,
     load_aligned_runs,
     load_batch_settings,
     plan_batch,
@@ -35,9 +36,12 @@ def write_listing(path: Path, rows: list[tuple]) -> Path:
     """rows: (session, run, tiff, aligned, reason), as list_aligned_runs.py writes them."""
     with path.open("w", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["session", "run", "tiff", "h5", "tsv", "aligned", "reason"])
+        writer.writerow(
+            ["session", "run", "tiff", "h5", "tsv", "aligned", "reason",
+             "tiff_start", "tiff_timepoints", "daq_frames"]
+        )  # fmt: skip
         for session, run, tiff, aligned, reason in rows:
-            writer.writerow([session, run, str(tiff), "", "", aligned, reason])
+            writer.writerow([session, run, str(tiff), "", "", aligned, reason, "", 100, 100])
     return path
 
 
@@ -47,7 +51,7 @@ def write_config(path: Path, raw: Path, der: Path, listing: Path | None, extra: 
         f'raw_subject_dir = "{raw}"\n'
         f'derivatives_subject_dir = "{der}"\n'
         "session_first = 5\nsession_last = 7\n"
-        'source_substring = "71rtask"\ndestripe = true\n'
+        "destripe = true\n"
     )
     if listing is not None:
         batch += f'aligned_runs_csv = "{listing}"\n'
@@ -77,8 +81,8 @@ def config(tmp_path):
     listing = write_listing(
         tmp_path / "aligned_runs.csv",
         [
-            ("ses-005_date-x", "run-01", s5 / "71rtask_00001.tif", False, "no behavior file"),
-            ("ses-005_date-x", "run-02", s5 / "71rtask_00002.tif", True, ""),
+            ("ses-005_date-x", "", s5 / "71rtask_00001.tif", False, "no behavior file"),
+            ("ses-005_date-x", "run-01", s5 / "71rtask_00002.tif", True, ""),
             ("ses-007_date-x", "run-01", s7 / "71rtask_00003.tif", True, ""),
             ("ses-007_date-x", "run-02", s7 / "71rtask_00004.tif", True, ""),
         ],
@@ -110,29 +114,22 @@ def stub_worker(monkeypatch, code: str = "pass"):
 # ---- planning with the listing ------------------------------------------------------
 
 
-def test_only_aligned_tiffs_run_and_a_skipped_one_keeps_its_number(config):
+def test_only_aligned_tiffs_run_each_into_the_run_folder_the_listing_gives(config):
     plan = plan_of(config)
     assert [(p.session, p.run_name, p.source.name, p.action) for p in plan] == [
-        (5, "run-01", "71rtask_00001.tif", "skip"),
-        (5, "run-02", "71rtask_00002.tif", "run"),
+        (5, "", "71rtask_00001.tif", "skip"),
+        (5, "run-01", "71rtask_00002.tif", "run"),
         (7, "run-01", "71rtask_00003.tif", "run"),
         (7, "run-02", "71rtask_00004.tif", "run"),
     ]
     assert plan[0].reason == "not aligned to behavior: no behavior file"
-    assert plan[1].run_dir.parts[-3:] == ("run-02", "with_distortion_correction", "with_destriping")
+    assert plan[1].run_dir.parts[-3:] == ("run-01", "with_distortion_correction", "with_destriping")
 
 
 def test_without_a_listing_a_missing_session_still_stops_the_plan(config):
     batch = load_batch_settings(config).model_copy(update={"aligned_runs_csv": None})
     with pytest.raises(FileNotFoundError, match=r"\[6\]"):
         plan_batch(batch, corrected=True)
-
-
-def test_a_new_tiff_of_a_listed_session_is_skipped_as_not_listed(config):
-    raw = load_batch_settings(config).raw_subject_dir
-    (raw / "ses-007_date-x" / "funcimg" / "71rtask_00005.tif").write_bytes(b"tif")
-    plan = plan_of(config)
-    assert (plan[-1].action, plan[-1].reason) == ("skip", "not in aligned_runs.csv")
 
 
 def test_a_session_the_listing_does_not_cover_is_refused(config):
@@ -142,35 +139,33 @@ def test_a_session_the_listing_does_not_cover_is_refused(config):
         plan_of(config)
 
 
-def test_a_listing_that_numbers_a_tiff_differently_stops_the_launch(config, tmp_path):
+def test_a_listing_giving_one_run_folder_to_two_tiffs_is_refused(config):
     batch = load_batch_settings(config)
     rows = list(csv.DictReader(batch.aligned_runs_csv.open()))
-    rows[1]["run"] = "run-01"
+    rows[3]["run"] = "run-01"  # ses-007's second TIFF, already run-01's
     write_listing(
         batch.aligned_runs_csv,
         [(r["session"], r["run"], r["tiff"], r["aligned"], r["reason"]) for r in rows],
     )
-    assert [p.action for p in plan_of(config)][:2] == ["skip", "conflict"]
-    with pytest.raises(RuntimeError, match="numbers this TIFF run-01"):
-        prepare_array(config)
+    with pytest.raises(ValueError, match=r"one run folder to several TIFFs.*ses-007_date-x"):
+        plan_of(config)
 
 
-def test_the_decision_names_both_numbers():
-    listed = AlignedRun("ses-005_date-x", "run-02", True, "")
-    action, reason = alignment_decision(listed, "run-01", "aligned_runs.csv")
-    assert action == "conflict" and "run-02" in reason and "run-01" in reason
+def test_the_listing_and_a_source_substring_are_not_both_allowed(config):
+    with pytest.raises(ValueError, match="not both"):
+        load_batch_settings(config).model_validate(
+            {**load_batch_settings(config).model_dump(), "source_substring": "71rtask"}
+        )
 
 
 def test_output_already_under_another_run_number_conflicts(config, monkeypatch):
     stub_worker(monkeypatch)
     tasks, _ = prepare_array(config)
-    run_array_task(tasks, 1)  # 71rtask_00002 in run-02
-    raw = load_batch_settings(config).raw_subject_dir
-    (raw / "ses-005_date-x" / "funcimg" / "71rtask_00001.tif").unlink()  # 00002 becomes run-01
+    run_array_task(tasks, 1)  # 71rtask_00002 in run-01, as the listing numbers it
     batch = load_batch_settings(config).model_copy(update={"aligned_runs_csv": None})
     batch = batch.model_copy(update={"session_last": 5})
-    plan = plan_batch(batch, corrected=True)
-    assert plan[0].action == "conflict" and "already in run-02" in plan[0].reason
+    plan = plan_batch(batch, corrected=True)  # numbered by counter: 00002 would be run-02
+    assert plan[1].action == "conflict" and "already in run-01" in plan[1].reason
 
 
 def test_a_listing_from_other_raw_data_is_refused(config, tmp_path):
@@ -181,19 +176,6 @@ def test_a_listing_from_other_raw_data_is_refused(config, tmp_path):
     )
     with pytest.raises(ValueError, match="did not find"):
         plan_of(config)
-
-
-def test_listings_with_a_missing_column_a_bad_flag_or_session_are_refused(tmp_path):
-    bad = tmp_path / "bad.csv"
-    bad.write_text("session,run,tiff,aligned\nses-005_x,run-01,/a.tif,True\n")
-    with pytest.raises(ValueError, match="reason"):
-        load_aligned_runs(bad)
-    bad.write_text("session,run,tiff,aligned,reason\nses-005_x,run-01,/a.tif,yes,\n")
-    with pytest.raises(ValueError, match="True or False"):
-        load_aligned_runs(bad)
-    bad.write_text("session,run,tiff,aligned,reason\nses-test_x,run-01,/a.tif,True,\n")
-    with pytest.raises(ValueError, match="ses-<number>"):
-        load_aligned_runs(bad)
 
 
 def test_apple_double_files_are_not_counted_as_tiffs_without_a_listing(config):
@@ -213,7 +195,7 @@ def test_prepare_writes_one_task_per_pending_run_with_the_frozen_config(config):
     assert tasks_path.parent == load_batch_settings(config).derivatives_subject_dir
     assert Path(tasks["config"]).read_text() == config.read_text() and tasks["destripe"] is True
     assert [(r["session"], r["run_name"]) for r in tasks["runs"]] == [
-        (5, "run-02"),
+        (5, "run-01"),
         (7, "run-01"),
         (7, "run-02"),
     ]
@@ -314,14 +296,12 @@ def test_a_later_launch_s_result_is_not_replaced_by_an_older_task(config, monkey
 def test_a_tiff_recorded_in_another_variant_under_another_number_conflicts(config, monkeypatch):
     stub_worker(monkeypatch)
     tasks_path, _ = prepare_array(config)  # with_destriping
-    run_array_task(tasks_path, 1)  # 71rtask_00002 -> run-02/.../with_destriping
-    raw = load_batch_settings(config).raw_subject_dir
-    (raw / "ses-005_date-x" / "funcimg" / "71rtask_00001.tif").unlink()  # 00002 becomes run-01
+    run_array_task(tasks_path, 1)  # 71rtask_00002 -> run-01/.../with_destriping
     batch = load_batch_settings(config).model_copy(
         update={"aligned_runs_csv": None, "session_last": 5, "destripe": False}
     )
-    plan = plan_batch(batch, corrected=True)  # without_destriping: nothing recorded there yet
-    assert plan[0].action == "conflict" and "already in run-02" in plan[0].reason
+    plan = plan_batch(batch, corrected=True)  # without_destriping, 00002 numbered run-02
+    assert plan[1].action == "conflict" and "already in run-01" in plan[1].reason
 
 
 def test_manifests_are_replaced_whole(config, monkeypatch, tmp_path):
@@ -407,3 +387,98 @@ def test_the_command_reports_a_bad_config_as_a_usage_error(tmp_path, capsys):
     with pytest.raises(SystemExit):
         batch_main(["prepare", "--config", str(config)])
     assert "no [batch] table" in capsys.readouterr().err
+
+
+def test_a_tiff_recorded_after_the_listing_stops_the_launch(config):
+    raw = load_batch_settings(config).raw_subject_dir
+    (raw / "ses-007_date-x" / "funcimg" / "71rtask_00005.tif").write_bytes(b"tif")
+    plan = plan_of(config)
+    assert (plan[-1].action, plan[-1].reason) == (
+        "conflict",
+        "not in aligned_runs.csv: list the runs again",
+    )
+
+
+def test_an_aligned_tiff_without_a_run_name_is_refused(tmp_path):
+    bad = tmp_path / "bad.csv"
+    bad.write_text(
+        "session,run,tiff,aligned,reason,tiff_start,tiff_timepoints,daq_frames\nses-005_x,,/a.tif,True,,,100,100\n"
+    )
+    with pytest.raises(ValueError, match="not run-<NN>"):
+        load_aligned_runs(bad)
+
+
+def test_the_decision_follows_the_listing():
+    assert listed_run(None, "a.csv") == ("conflict", "", "not in a.csv: list the runs again")
+    assert listed_run(AlignedRun("ses-005_x", "", False, "no tsv"), "a.csv") == (
+        "skip",
+        "",
+        "not aligned to behavior: no tsv",
+    )
+    assert listed_run(AlignedRun("ses-005_x", "run-03", True, ""), "a.csv") == ("run", "run-03", "")
+
+
+@pytest.mark.parametrize(
+    "text, message",
+    [
+        ("session,run,tiff,aligned,reason\nses-005_x,run-01,/a.tif,True,\n", "tiff_start"),
+        (
+            "session,run,tiff,aligned,reason,tiff_start,tiff_timepoints,daq_frames\nses-005_x,run-01,/a.tif,yes,,,1,1\n",
+            "True or False",
+        ),
+        (
+            "session,run,tiff,aligned,reason,tiff_start,tiff_timepoints,daq_frames\nses-test_x,run-01,/a.tif,True,,,1,1\n",
+            "ses-<number>",
+        ),
+    ],
+)
+def test_bad_or_older_listings_are_refused(tmp_path, text, message):
+    bad = tmp_path / "bad.csv"
+    bad.write_text(text)
+    with pytest.raises(ValueError, match=message):
+        load_aligned_runs(bad)
+
+
+def test_a_config_must_say_how_tiffs_are_chosen(config):
+    fields = load_batch_settings(config).model_dump()
+    with pytest.raises(ValueError, match="set aligned_runs_csv, or source_substring"):
+        BatchSettings.model_validate({**fields, "aligned_runs_csv": None})
+    assert BatchSettings.model_validate(
+        {**fields, "aligned_runs_csv": None, "source_substring": ""}
+    )
+
+
+def earlier_round(config, *, where: str) -> Path:
+    """Old output of 71rtask_00002 under run-02, the old numbering, kept *where*."""
+    der = load_batch_settings(config).derivatives_subject_dir / "ses-005_date-x" / "funcimg"
+    raw = load_batch_settings(config).raw_subject_dir / "ses-005_date-x" / "funcimg"
+    run_folder = der / where / "run-02" if where else der / "run-02"
+    for variant in ("without_destriping", "with_destriping"):
+        (run_folder / variant).mkdir(parents=True)
+        (run_folder / variant / MANIFEST_NAME).write_text(
+            json.dumps(
+                {"source_tiff": str((raw / "71rtask_00002.tif").resolve()), "status": "complete"}
+            )
+        )
+    return run_folder
+
+
+def test_an_earlier_round_moved_out_of_the_run_folders_is_not_looked_at(config):
+    earlier_round(config, where="preprocessing-first-round")
+    assert [p.action for p in plan_of(config)] == ["skip", "run", "run", "run"]
+
+
+def test_run_folders_the_listing_does_not_assign_are_refused(config):
+    earlier_round(config, where="")  # left in funcimg/run-02; the listing gives no run-02
+    with pytest.raises(ValueError, match="gives no TIFF.*run-02"):
+        plan_of(config)
+
+
+def test_frame_times_left_from_another_tiff_block_the_run(config):
+    import numpy as np
+
+    der = load_batch_settings(config).derivatives_subject_dir / "ses-005_date-x" / "funcimg"
+    (der / "run-01").mkdir(parents=True)
+    np.savez(der / "run-01" / "frame_times.npz", time_s=np.zeros(3), tiff="/raw/71rtask_00001.tif")
+    plan = plan_of(config)
+    assert plan[1].action == "conflict" and "made from 71rtask_00001.tif" in plan[1].reason

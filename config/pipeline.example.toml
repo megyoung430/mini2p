@@ -135,9 +135,10 @@ raw_subject_dir = "/path/to/rawdata/cohort-01/sub-03_id-MY_71_R"
 derivatives_subject_dir = "/path/to/derivatives/cohort-01/sub-03_id-MY_71_R"
 session_first = 216
 session_last = 231
-source_substring = "71rtask"
-# Only the TIFFs that align to behavior: the CSV from magnitude-bandit-analysis's
-# scripts/funcimg/list_aligned_runs.py. Missing sessions in the range are then allowed.
+source_substring = "71rtask"     # "" takes every TIFF; numbered by acquisition counter
+# Or only the TIFFs that align to behavior, numbered over those: the CSV from
+# magnitude-bandit-analysis's scripts/funcimg/list_aligned_runs.py (then remove
+# source_substring). Missing sessions in the range are then allowed.
 # aligned_runs_csv = "/path/to/derivatives/cohort-01/sub-03_id-MY_71_R/aligned_runs.csv"
 destripe = false              # false -> run-XX/<distortion>/without_destriping/, true -> .../with_destriping/
                               # <distortion>: with_distortion_correction, or without_... when [distortion] mode = "off"
