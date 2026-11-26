@@ -313,8 +313,19 @@ After a batch, the last cells of the batch notebook (run once per variant, with
 `[exports] run_subdir` set to it):
 
 1. **Contrast exports:** green and red mean images per run, as raw TIFFs and as
-   contrast PNGs with a red/green overlay, using the `[exports]` contrast.
+   contrast PNGs with a red/green overlay, using the `[exports]` contrast; and the same
+   cropped to the region no frame's registration shifts wrap into
+   (`meanImg_cropped_green_functional_contrast.png`, `..._red_structural_...`, raw TIFFs and
+   `meanImg_cropped_fixed_contrast_settings.json`; the contrast taken over the cropped
+   image). They are named apart from the QC notebook's hand-tuned `meanImg_cropped_*` files,
+   which they never replace. A run whose shifts leave no region is reported and not cropped.
 2. **Review PDFs** of those mean images across runs.
+
+Steps 1 and 2 also run without the notebook, e.g. on the cluster after an array batch:
+`uv run mini2p-export-means --config config/pipeline.toml [--pdf meanImg_aligned_runs.pdf]
+[--high-resolution]`. It needs exactly `[exports] expected_runs` registered runs of
+`run_subdir` in the session range, and keeps existing files unless `overwrite` /
+`pdf_overwrite`.
 3. **Cellpose extraction:** `run-XX/<cellpose_seg>`, drawn on `run-XX/<cellpose_image>`,
    is aligned onto the variant's mean image and extracted into its `suite2p/plane0`
    (`stat`, `F`, `Fneu`, `iscell`, `spks`, red traces, `cellpose_extraction.json`).

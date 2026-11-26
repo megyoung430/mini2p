@@ -15,6 +15,8 @@ from mini2p_preprocessing.config import PipelineSettings  # noqa: E402
 from mini2p_preprocessing.contrast import scale_contrast  # noqa: E402
 from mini2p_preprocessing.exports import (  # noqa: E402
     Contrast,
+    export_all_mean_images,
+    export_cropped_mean_images,
     export_mean_images,
     find_run_planes,
     load_contrast_choice,
@@ -625,3 +627,124 @@ def test_a_record_without_the_binary_says_to_register_again(tmp_path):
     local.write_bytes(b"frames")
     with pytest.raises(RuntimeError, match="records no reg_file binary"):
         resolve_registered_binary({"reg_file": str(local)}, sweep, "reg_file", "data.bin")
+
+
+def registered_fake_plane(
+    root, session, run, rng, subdir="with_distortion_correction/with_destriping", nonrigid=False
+):
+    """A plane whose ops.npy has registration shifts: rows 2-9, columns 3-12 never wrap
+    (nonrigid: the block shifts reach one pixel further at the bottom and right)."""
+    plane = fake_plane(root, session, run, rng, subdir)
+    ops = np.load(plane / "ops.npy", allow_pickle=True).item()
+    ops.update(Ly=12, Lx=16, yoff=np.array([-2, 0, 2]), xoff=np.array([3, -3, 0]))
+    if nonrigid:
+        ops.update(yoff1=np.array([[0.0, 1.0]] * 3), xoff1=np.array([[0.0, 1.0]] * 3))
+    np.save(plane / "ops.npy", ops, allow_pickle=True)
+    return plane
+
+
+CROPPED = {
+    "green": "meanImg_cropped_green_functional_contrast.png",
+    "settings": "meanImg_cropped_fixed_contrast_settings.json",
+}
+
+
+@pytest.mark.parametrize(
+    "nonrigid, region", [(False, ([2, 10], [3, 13])), (True, ([2, 9], [3, 12]))]
+)
+def test_runs_are_also_exported_cropped_to_the_region_no_frame_wraps_into(
+    tmp_path, rng, nonrigid, region
+):
+    plane = registered_fake_plane(tmp_path, 1, 1, rng, nonrigid=nonrigid)
+    contrast = Contrast(1, 99.8, 1.0)
+    assert export_cropped_mean_images(plane, contrast) == "saved"
+    record = json.loads((plane / CROPPED["settings"]).read_text())
+    assert (record["rows"], record["columns"]) == region
+    rows, cols = slice(*region[0]), slice(*region[1])
+    green = np.load(plane / "ops.npy", allow_pickle=True).item()["meanImg"][rows, cols]
+    assert record["green"]["black_value"] == pytest.approx(np.percentile(green, 1))
+    image = matplotlib.image.imread(plane / CROPPED["green"])
+    assert image.shape[:2] == green.shape
+    assert export_cropped_mean_images(plane, contrast) == "existing"
+    (plane / "meanImg_cropped_red_structural_raw.tif").unlink()  # a file gone: redone
+    assert export_cropped_mean_images(plane, contrast) == "saved"
+
+
+def test_the_qc_notebook_s_hand_tuned_crop_is_never_replaced(tmp_path, rng):
+    from mini2p_preprocessing.exports import save_cropped_contrast_choice
+
+    plane = registered_fake_plane(tmp_path, 1, 1, rng)
+    ops = np.load(plane / "ops.npy", allow_pickle=True).item()
+    save_cropped_contrast_choice(plane, ops["meanImg"], ops["meanImg_chan2"], Contrast(5, 95, 2.0),
+                                 Contrast(5, 95, 2.0), (slice(0, 6), slice(0, 6)))  # fmt: skip
+    hand_tuned = (plane / "meanImg_cropped.json").read_text()
+    export_cropped_mean_images(plane, Contrast(), overwrite=True)
+    assert (plane / "meanImg_cropped.json").read_text() == hand_tuned
+
+
+def test_a_run_whose_shifts_leave_no_region_is_reported_and_the_rest_exported(tmp_path, rng):
+    for run in (1, 2, 3):
+        registered_fake_plane(tmp_path, 1, run, rng)
+    bad = find_run_planes(tmp_path, 1, 1, "with_distortion_correction/with_destriping")[1].plane_dir
+    ops = np.load(bad / "ops.npy", allow_pickle=True).item()
+    np.save(bad / "ops.npy", {**ops, "yoff": np.array([-7, 7])}, allow_pickle=True)
+    runs = find_run_planes(tmp_path, 1, 1, "with_distortion_correction/with_destriping")
+    summary = json.loads(export_all_mean_images(runs, tmp_path, "t", Contrast()).read_text())
+    cropped = [run["states"]["cropped"] for run in summary["runs"]]
+    assert cropped[0] == cropped[2] == "saved" and cropped[1].startswith("not cropped: Shifts")
+
+
+def test_a_plane_without_registration_shifts_is_not_cropped(tmp_path, rng):
+    plane = fake_plane(tmp_path, 1, 1, rng)
+    assert export_cropped_mean_images(plane, Contrast()).startswith("not cropped")
+    assert not (plane / CROPPED["settings"]).exists()
+
+
+def export_config(tmp_path, expected_runs=2, pdf_overwrite=False):
+    config = tmp_path / "pipeline.toml"
+    config.write_text(
+        "[exports]\n"
+        f'subject_dir = "{tmp_path}"\nsession_first = 1\nsession_last = 999\n'
+        f"expected_runs = {expected_runs}\n"
+        'run_subdir = "with_distortion_correction/with_destriping"\n'
+        "black_percentile = 1.0\nwhite_percentile = 99.8\ngamma = 1.0\n"
+        f"pdf_overwrite = {str(pdf_overwrite).lower()}\n"
+    )
+    return config
+
+
+def test_the_export_command_writes_every_run_and_the_named_pdfs(tmp_path, rng):
+    from mini2p_preprocessing.cli import export_means_main
+
+    for run in (1, 2):
+        registered_fake_plane(tmp_path, 5, run, rng)
+    config = export_config(tmp_path)
+    export_means_main(
+        ["--config", str(config), "--pdf", "meanImg_aligned_runs.pdf", "--high-resolution"]
+    )
+    assert page_count(tmp_path / "meanImg_aligned_runs.pdf") == 2
+    assert page_count(next(tmp_path.glob("meanImg_high_resolution_4_pages_*.pdf"))) == 4
+    assert len(list(tmp_path.glob(f"ses-*/funcimg/run-*/**/{CROPPED['settings']}"))) == 2
+
+
+@pytest.mark.parametrize(
+    "args, expected_runs, message",
+    [
+        ([], 3, "Expected 3 runs but found 2"),
+        (["--pdf", "../elsewhere.pdf"], 2, "file name ending in .pdf"),
+        (["--pdf", "meanImg_aligned_runs.pdf"], 2, "exists; set .exports. pdf_overwrite"),
+    ],
+)
+def test_the_export_command_refuses_before_writing_anything(
+    tmp_path, rng, capsys, args, expected_runs, message
+):
+    from mini2p_preprocessing.cli import export_means_main
+
+    for run in (1, 2):
+        registered_fake_plane(tmp_path, 5, run, rng)
+    (tmp_path / "meanImg_aligned_runs.pdf").write_bytes(b"%PDF")
+    with pytest.raises(SystemExit) as stop:
+        export_means_main(["--config", str(export_config(tmp_path, expected_runs)), *args])
+    assert stop.value.code == 2
+    assert re.search(message, capsys.readouterr().err)
+    assert not list(tmp_path.glob(f"ses-*/funcimg/run-*/**/{CROPPED['settings']}"))
