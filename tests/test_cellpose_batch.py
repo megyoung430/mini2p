@@ -169,3 +169,13 @@ def test_review_page_survives_masks_deleted_after_extraction(derivatives, tmp_pa
     (planes["run-01"].parents[4] / SEG).unlink()
     pdf = write_mask_alignment_pdf(rows, tmp_path / "m.pdf", Contrast(), "t")
     assert pdf.is_file()
+
+
+def test_a_plane_without_a_settings_record_is_extracted_but_reported_without_qc(derivatives):
+    subject_dir, _ = derivatives
+    rows = extract_all(subject_dir, 1, 1, VARIANT, SEG, IMAGE, SETTINGS, 3,
+                       qc_contrast=Contrast(1, 99.8, 1.0))  # fmt: skip
+    extracted = [r for r in rows if r["status"] == "extracted"]
+    assert extracted
+    assert all(r["fluorescence_qc"].startswith("not saved:") for r in extracted)
+    assert all("fluorescence_qc" not in r for r in rows if r["status"] != "extracted")

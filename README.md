@@ -513,6 +513,18 @@ notebook belong to whichever registration ran last before the change, and can be
 Plots behind a slider (manual chunk offset, contrast preview, one ROI at a time) are not saved;
 the contrast you choose is.
 
+The batch saves the same plots for every run it processes (`[batch] save_qc = true`, the
+default), into the same folders, each caption saying it was saved by the batch:
+`raw_mean/`, `bidiphase/`, `destriping/`, `distortion_correction/`, and in the registration's
+`motion_registration/` the before/after registration, shift traces, nonrigid offsets, cropped
+registered means and focus QC. `frame_order/` is checked only with `qc_frame_order = true`, as it
+reads every stage's TIFF again. The fluorescence plots need the Cellpose masks, so the batch
+extraction (`extract_all` in `batch_and_exports.ipynb`) saves them for each newly extracted run,
+at the `[exports]` contrast, and its summary's `fluorescence_qc` says whether it could. A plot
+that fails is logged and skipped rather than failing the run; what was saved or why not is in
+`batch_qc_summary.json` in the registration's `quality_control/`. The interactive plots (the contrast you
+choose, a chosen ROI) are only drawn in the notebook.
+
 The mean images stay beside `ops.npy`: `meanImg_{green,red}_contrast.png` and
 `meanImg_{green,red}_raw.tif` (the whole frame), and `meanImg_cropped_{green,red}_contrast.png`
 and `meanImg_cropped_{green,red}_raw.tif`, cropped to the region no frame's registration shifts

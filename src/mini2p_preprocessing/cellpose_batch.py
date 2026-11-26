@@ -151,6 +151,21 @@ def extract_run(
     return row_from_record(row, _read_record(plane_dir), "extracted")
 
 
+def fluorescence_qc_status(plane_dir: Path, settings: PipelineSettings, contrast: Contrast) -> str:
+    """Save the QC notebook's fluorescence plots for a newly extracted plane (see
+    :func:`run_qc.save_fluorescence_qc`) and say how that went, for the summary row: a plot
+    that cannot be drawn is reported, not raised, as the extraction itself succeeded."""
+    from .run_qc import run_qc_for_plane, save_fluorescence_qc
+
+    try:
+        run = run_qc_for_plane(plane_dir, settings)
+    except FileNotFoundError as missing:
+        log.warning("No fluorescence QC for %s: %s", plane_dir, missing)
+        return f"not saved: {missing}"
+    result = save_fluorescence_qc(run, contrast)["fluorescence"]
+    return result if isinstance(result, str) else "saved"
+
+
 def extract_all(
     subject_dir: Path,
     first_session: int,
@@ -162,9 +177,14 @@ def extract_all(
     expected_runs: int,
     overwrite: bool = False,
     alignment: MotionSource = "auto",
+    qc_contrast: Contrast | None = None,
 ) -> list[dict]:
     """Extract every registered ``run-XX/<variant>`` plane (of *alignment*, see
-    ``find_registered_plane``) from ``run-XX/<seg_relative>``."""
+    ``find_registered_plane``) from ``run-XX/<seg_relative>``.
+
+    With *qc_contrast*, each newly extracted plane also gets the QC notebook's fluorescence
+    plots in its ``quality_control/fluorescence/`` (mean image at that contrast); the row's
+    ``fluorescence_qc`` says whether they were saved."""
     if variant not in VARIANTS:
         raise ValueError(f"variant must be one of {VARIANTS}, not {variant!r}")
     runs = find_run_planes(subject_dir, first_session, last_session, variant, alignment)
@@ -185,6 +205,10 @@ def extract_all(
                 row,
             )
         )
+        if qc_contrast is not None and rows[-1]["status"] == "extracted":
+            rows[-1]["fluorescence_qc"] = fluorescence_qc_status(
+                run.plane_dir, settings, qc_contrast
+            )
         log.info("ses-%d %s %s: %s", run.session, run.run_name, variant, rows[-1]["status"])
         progress.step_done()
     return rows

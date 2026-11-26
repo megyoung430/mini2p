@@ -71,6 +71,10 @@ class BatchSettings(BaseModel):
     # time zone, e.g. 2026-10-21T09:00:00+01:00). Relaunching with the same time never
     # redoes a run the rerun has already replaced.
     rerun_completed_before: AwareDatetime | None = None
+    # Save the QC notebook's preprocessing and registration plots for each run (run_qc);
+    # the frame-order check rereads every stage, so it is off unless asked for.
+    save_qc: bool = True
+    qc_frame_order: bool = False
     # Cellpose masks for run-XX and the image they were drawn on, relative to run-XX/.
     cellpose_seg: str = "suite2p/plane0/meanImg_green_functional_contrast_seg.npy"
     cellpose_image: str = "suite2p/plane0/meanImg_green_functional_contrast.png"
@@ -658,7 +662,20 @@ def worker_command(row: PlannedRun, config_path: Path, destripe: bool) -> list[s
         str(row.run_dir.resolve()),
         "--destripe",
         "1" if destripe else "0",
+        *qc_flags(config_path),
     ]
+
+
+def qc_flags(config_path: Path) -> list[str]:
+    """The QC options of the config's ``[batch]`` (``save_qc``, ``qc_frame_order``) as the
+    worker's command-line flags; none for a config without ``[batch]``."""
+    document = tomllib.loads(Path(config_path).read_text())
+    if "batch" not in document:
+        return []
+    batch = batch_settings_from_toml(document, config_path)
+    if not batch.save_qc:
+        return []
+    return ["--qc", *(["--qc-frame-order"] if batch.qc_frame_order else [])]
 
 
 def run_one(row: PlannedRun, config_path: Path, destripe: bool) -> None:

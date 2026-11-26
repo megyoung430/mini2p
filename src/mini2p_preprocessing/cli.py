@@ -53,6 +53,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--destripe", choices=["0", "1"], help="override destripe.enabled from the config"
     )
+    parser.add_argument(
+        "--qc", action="store_true",
+        help="also save the QC notebook's preprocessing and registration plots "
+        "(quality_control/<step>/)",
+    )  # fmt: skip
+    parser.add_argument(
+        "--qc-frame-order", action="store_true",
+        help="with --qc, also check every stage's frame order (rereads each stage)",
+    )  # fmt: skip
     return parser.parse_args(argv)
 
 
@@ -62,7 +71,18 @@ def main(argv: list[str] | None = None) -> None:
     settings = load_settings(args.config)
     if args.destripe is not None:
         settings = with_destriping(settings, args.destripe == "1")
-    run_pipeline(args.input, args.output_dir, settings)
+    result = run_pipeline(args.input, args.output_dir, settings)
+    if args.qc:
+        import matplotlib
+
+        matplotlib.use("Agg")  # a worker has no display to draw on
+        from .run_qc import RunQc, save_run_qc
+
+        run = RunQc(
+            Path(args.input).resolve(), Path(args.output_dir).resolve(), result.corrected_tiff,
+            result.suite2p_input_tiff, result.plane_dir, settings,
+        )  # fmt: skip
+        save_run_qc(run, result.correction.frame_phases, frame_order=args.qc_frame_order)
 
 
 def extract_main(argv: list[str] | None = None) -> None:
