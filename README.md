@@ -514,8 +514,8 @@ Plots behind a slider (manual chunk offset, contrast preview, one ROI at a time)
 the contrast you choose is.
 
 The batch saves the same plots for every run it processes (`[batch] save_qc = true`, the
-default), into the same folders (the captions, apart from the raw mean's, say the batch saved
-them): `raw_mean/`,
+default), into the same folders (the captions, apart from the raw mean's, say the batch
+saved them): `raw_mean/`,
 `bidiphase/`, `destriping/`, `distortion_correction/`, and in the registration's
 `motion_registration/` the before/after registration, shift traces, nonrigid offsets, cropped
 registered means and focus QC. `frame_order/` is checked only with `qc_frame_order = true`, as it

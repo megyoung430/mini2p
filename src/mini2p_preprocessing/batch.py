@@ -1090,19 +1090,21 @@ def run_array_task(tasks_path: Path, index: int) -> str:
         qc = None if qc is None else QcRequest(**qc)
         run_one(row, Path(tasks["config"]), tasks["destripe"], qc)
     except _Terminated:
-        _mark_interrupted(row.run_dir)
+        _mark_interrupted(row.run_dir, tasks["config"])
         raise
     finally:
         signal.signal(signal.SIGTERM, previous)
     return "complete"
 
 
-def _mark_interrupted(run_dir: Path) -> None:
+def _mark_interrupted(run_dir: Path, launch_config: str) -> None:
     """Record in the run's manifest that its task was terminated, so it is retried; a run
-    already complete (terminated during its QC) stays complete, with only its QC marked."""
+    this launch (*launch_config*) already completed (terminated during its QC) stays
+    complete, with only its QC marked."""
     manifest_path = Path(run_dir) / MANIFEST_NAME
     manifest = _read_json(manifest_path) or {}
-    if manifest.get("status") == "complete":
+    completed_here = manifest.get("pipeline_config") == launch_config
+    if manifest.get("status") == "complete" and completed_here:
         qc = manifest.get("qc")
         if qc is not None and qc.get("status") == "running":
             qc.update(status="interrupted", finished_utc=_now())

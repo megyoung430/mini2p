@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -178,6 +179,40 @@ def test_a_photon_free_level_that_cannot_be_measured_leaves_the_other_plots(proc
     assert summary["photon_free_level"].startswith("not subtracted: ValueError")
 
 
+def test_the_extraction_says_when_the_photon_free_level_is_not_subtracted(processed_run):
+    from mini2p_preprocessing.cellpose_batch import fluorescence_qc_status
+
+    extract_masks(processed_run)
+    fluorescence = processed_run.settings.fluorescence.model_copy(
+        update={"subtract_photon_free_level": True}
+    )
+    settings = processed_run.settings.model_copy(update={"fluorescence": fluorescence})
+    status = fluorescence_qc_status(processed_run.plane_dir, settings, Contrast(1, 99.8, 1.0))
+    assert status == (
+        "some plots failed: fluorescence/photon_free_levels; "
+        "drawn without the photon-free level subtracted"
+    )
+
+
+def test_a_photon_free_plot_that_fails_after_measuring_says_the_level_was_subtracted(
+    processed_run, monkeypatch
+):
+    from mini2p_preprocessing import photon_free_io
+    from mini2p_preprocessing.cellpose_batch import fluorescence_qc_status
+
+    extract_masks(processed_run)
+    levels = SimpleNamespace(green=None, red=None)  # measured; the plot then fails to draw
+    monkeypatch.setattr(photon_free_io, "raw_levels", lambda *args: levels)
+    monkeypatch.setattr(photon_free_io, "traces_without_level", lambda traces, levels: traces)
+    monkeypatch.setattr(photon_free_io, "background_without_level", lambda bg, levels: bg)
+    fluorescence = processed_run.settings.fluorescence.model_copy(
+        update={"subtract_photon_free_level": True}
+    )
+    settings = processed_run.settings.model_copy(update={"fluorescence": fluorescence})
+    status = fluorescence_qc_status(processed_run.plane_dir, settings, Contrast(1, 99.8, 1.0))
+    assert status == "some plots failed: fluorescence/photon_free_levels"
+
+
 def test_a_plane_gives_back_the_run_with_the_extraction_s_fluorescence(processed_run):
     run = processed_run
     fluorescence = run.settings.fluorescence.model_copy(update={"min_f0": 7.0})
@@ -198,13 +233,11 @@ def test_the_qc_process_exits_with_its_own_code_when_some_plots_fail(processed_r
     monkeypatch.setattr(run_qc, "focus_plot", broken)
     with pytest.raises(SystemExit) as stopped:
         run_qc.main(["--variant-dir", str(processed_run.variant_dir)])
-    assert stopped.value.code == run_qc.EXIT_SOME_FAILED
+    assert stopped.value.code == run_qc.QC_EXIT_SOME_FAILED
 
 
 def test_the_batch_s_qc_process_saves_a_processed_run(processed_run, monkeypatch):
     """The real ``python -m mini2p_preprocessing.run_qc``, as the batch starts it."""
-    from types import SimpleNamespace
-
     from mini2p_preprocessing import batch
 
     monkeypatch.setattr(batch, "qc_command", real_qc_command)
@@ -242,5 +275,20 @@ def test_the_first_frames_are_read_without_counting_the_whole_tiff(recording, mo
         raise AssertionError("counted every page")
 
     monkeypatch.setattr(tiff_io, "count_timepoints", counted)
+    monkeypatch.setattr(qc, "count_timepoints", counted)
     frames = qc.first_frames(recording[0], 20, 2)
     assert [f.shape[0] for f in frames] == [20, 20]
+
+
+def test_a_whole_recording_second_pass_keeps_the_first_pass_plot(tmp_path, recording, monkeypatch):
+    raw_tiff, _ = recording
+    monkeypatch.setattr(pipeline_module, "run_registration", fake_registration)
+    phase = SETTINGS["phase"] | {"method": "chunked", "second_pass_mode": "whole"}
+    settings = PipelineSettings.model_validate(SETTINGS | {"phase": phase})
+    out = tmp_path / "run-01" / "without_distortion_correction" / "with_destriping"
+    pipeline_module.run_pipeline(raw_tiff, out, settings)
+    results = run_qc.save_run_qc(run_qc.run_qc_for_variant(out))
+    assert run_qc.failures(results) == []
+    assert Path(results["bidiphase/before_after_first_bidiphase"] + ".png").is_file()
+    for step in ("bidiphase/before_after_second_bidiphase", "destriping/before_after_destriping"):
+        assert results[step].startswith('not drawn: second_pass_mode = "whole"')

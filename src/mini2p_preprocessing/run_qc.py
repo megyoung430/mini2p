@@ -61,7 +61,6 @@ RAW_MEAN_FRAMES = 500  # as the notebook's raw-mean cell
 REGISTRATION_FRAMES = QCRun.model_fields["qc_registration_frames"].default
 DISTORTION_FRAMES = QCRun.model_fields["qc_distortion_frames"].default
 N_TOP_ROIS = 20
-EXIT_SOME_FAILED = QC_EXIT_SOME_FAILED  # the QC process's exit code when some plots fail
 
 
 @dataclass(frozen=True)
@@ -753,6 +752,10 @@ def photon_free_note(run: RunQc, loads: _Loads) -> str:
     if not run.settings.fluorescence.subtract_photon_free_level:
         return "off"
     try:
+        loads["plane"]
+    except Exception as error:  # noqa: BLE001 - every fluorescence plot fails with it
+        return f"not measured: the plane's traces cannot be read ({error!r})"
+    try:
         loads["levels"]
     except Exception as error:  # noqa: BLE001 - its own plot fails with it
         return f"not subtracted: {error!r}"
@@ -765,6 +768,8 @@ def caption_note(photon_free: str) -> str:
         return ""
     if photon_free == "subtracted":
         return " The photon-free level is subtracted first."
+    if photon_free.startswith("not measured"):
+        return ""  # no plot can be drawn without the traces
     return (
         " The photon-free level could not be measured "
         f"({photon_free.removeprefix('not subtracted: ')}), so it is NOT subtracted here, "
@@ -907,7 +912,7 @@ def save_fluorescence_qc(run: RunQc, contrast: Contrast) -> dict[str, str]:
 
 def main(argv: list[str] | None = None) -> None:
     """``mini2p-run-qc``: the preprocessing and registration QC of one processed variant
-    folder. Exits with :data:`EXIT_SOME_FAILED` when some plots could not be drawn (the
+    folder. Exits with :data:`QC_EXIT_SOME_FAILED` when some plots could not be drawn (the
     others are saved)."""
     parser = argparse.ArgumentParser(description=main.__doc__)
     parser.add_argument(
@@ -927,7 +932,7 @@ def main(argv: list[str] | None = None) -> None:
     failed = failures(results)
     if failed:
         log.warning("QC plots that failed: %s", ", ".join(failed))
-        raise SystemExit(EXIT_SOME_FAILED)
+        raise SystemExit(QC_EXIT_SOME_FAILED)
 
 
 if __name__ == "__main__":
