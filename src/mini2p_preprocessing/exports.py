@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict
 from .config import MotionSource, find_registered_plane, variant_label
 from .contrast import red_green_overlay, scale_contrast
 from .progress import PROGRESS_EVERY_S, ProgressLog
-from .qc import suite2p_mean_images
+from .qc import suite2p_mean_images, unwrapped_region
 
 log = logging.getLogger(__name__)
 SESSION_PATTERN = re.compile(r"^ses-(\d+)_")
@@ -219,6 +219,73 @@ def export_mean_images(
     return states
 
 
+FIXED_CROPPED_SETTINGS_JSON = "meanImg_cropped_fixed_contrast_settings.json"
+
+
+def cropped_export_paths(plane_dir: Path) -> dict[str, Path]:
+    """The fixed-contrast cropped exports' files: named apart from the QC notebook's
+    hand-tuned ``meanImg_cropped_*`` files, which they must never replace."""
+    plane_dir = Path(plane_dir)
+    return {
+        "green PNG": plane_dir / "meanImg_cropped_green_functional_contrast.png",
+        "red PNG": plane_dir / "meanImg_cropped_red_structural_contrast.png",
+        "green raw TIFF": plane_dir / "meanImg_cropped_green_functional_raw.tif",
+        "red raw TIFF": plane_dir / "meanImg_cropped_red_structural_raw.tif",
+        "settings JSON": plane_dir / FIXED_CROPPED_SETTINGS_JSON,
+    }
+
+
+def cropped_means(ops: dict, contrast: Contrast) -> tuple[dict, dict]:
+    """The green and red mean images cropped to the region no frame's registration shifts
+    wrap into (``qc.unwrapped_region``), scaled for display with the contrast taken over
+    the crop, and the record of the crop and contrast.
+
+    Raises:
+        KeyError, ValueError: If *ops* lacks registration shifts or they leave no region.
+    """
+    green_raw, red_raw = suite2p_mean_images(ops)
+    rows, cols = crop_within(unwrapped_region(ops), green_raw.shape)
+    images, record = (
+        {},
+        {
+            "rows": [rows.start, rows.stop],
+            "columns": [cols.start, cols.stop],
+            "full_shape": [int(n) for n in green_raw.shape],
+            "note": "rows/columns: crop of the full registered frame (Python slice, end excluded)",
+        },
+    )
+    for name, raw in (("green", green_raw), ("red", red_raw)):
+        images[f"{name} raw"] = np.asarray(raw[rows, cols], dtype=np.float32)
+        images[f"{name} display"], record[name] = scaled_with_record(
+            images[f"{name} raw"], contrast
+        )
+    return images, record
+
+
+def export_cropped_mean_images(plane_dir: Path, contrast: Contrast, overwrite: bool = False) -> str:
+    """The fixed-contrast mean images cropped as :func:`cropped_means` crops them, beside
+    ``ops.npy`` (:func:`cropped_export_paths`). Returns ``"saved"``, ``"existing"`` (all
+    files there and not *overwrite*), or ``"not cropped: <why>"`` for a plane whose shifts
+    give no region, which is logged as a warning and leaves the other runs' exports alone.
+    """
+    plane_dir = Path(plane_dir)
+    paths = cropped_export_paths(plane_dir)
+    if not overwrite and all(path.exists() for path in paths.values()):
+        return "existing"
+    ops = np.load(plane_dir / "ops.npy", allow_pickle=True).item()
+    try:
+        images, record = cropped_means(ops, contrast)
+    except (KeyError, ValueError) as error:
+        log.warning("%s: not cropped: %s", plane_dir, error)
+        return f"not cropped: {error}"
+    record["ops_path"] = str(plane_dir / "ops.npy")
+    for name in ("green", "red"):
+        plt.imsave(paths[f"{name} PNG"], images[f"{name} display"], cmap="gray", vmin=0, vmax=1)
+        tifffile.imwrite(paths[f"{name} raw TIFF"], images[f"{name} raw"])
+    paths["settings JSON"].write_text(json.dumps(record, indent=2))  # last: marks it done
+    return "saved"
+
+
 def export_all_mean_images(
     runs: list[RunPlane],
     subject_dir: Path,
@@ -226,11 +293,13 @@ def export_all_mean_images(
     contrast: Contrast,
     overwrite: bool = False,
 ) -> Path:
-    """Export every run's mean images; write ``meanImg_export_summary_<label>.json``."""
+    """Export every run's mean images, full and cropped (:func:`export_mean_images`,
+    :func:`export_cropped_mean_images`); write ``meanImg_export_summary_<label>.json``."""
     summary = []
     progress = ProgressLog("Mean-image exports", len(runs), log.info, PROGRESS_EVERY_S)
     for index, run in enumerate(runs, start=1):
         states = export_mean_images(run.plane_dir, contrast, overwrite)
+        states["cropped"] = export_cropped_mean_images(run.plane_dir, contrast, overwrite)
         summary.append(
             {
                 "session": run.session,
