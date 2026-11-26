@@ -409,5 +409,62 @@ def _batch_task(args: argparse.Namespace, parser: argparse.ArgumentParser) -> No
     print(f"Task {index}: {run_array_task(args.tasks, index)}")
 
 
+def export_means_main(argv: list[str] | None = None) -> None:
+    """Export every run's mean images (and cropped ones) and a review PDF, from [exports]."""
+    from .exports import (
+        export_all_mean_images,
+        find_run_planes,
+        load_export_settings,
+        require_run_count,
+        write_comparison_pdf,
+        write_high_resolution_pdf,
+    )
+
+    parser = argparse.ArgumentParser(
+        description="For every run of [exports] run_subdir in the session range: the green and "
+        "red mean images (raw TIFFs, fixed-contrast PNGs, overlay) and the same cropped to the "
+        "region no frame's shifts wrap into, beside each ops.npy; then one PDF with green and "
+        "red side by side, a page per run, in the subject folder (as the batch notebook's "
+        "export cells)"
+    )
+    parser.add_argument("--config", type=Path, required=True, help="pipeline TOML with [exports]")
+    parser.add_argument(
+        "--pdf", default=None, help="PDF file name (default: meanImg_contrast_<sessions>.pdf)"
+    )
+    parser.add_argument("--high-resolution", action="store_true",
+                        help="also the PDF with green and red on separate full pages")  # fmt: skip
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
+    try:  # only the request is checked here
+        exports = load_export_settings(args.config)
+        runs = find_run_planes(exports.subject_dir, exports.session_first, exports.session_last,
+                               exports.run_subdir, exports.alignment)  # fmt: skip
+        require_run_count(runs, exports.expected_runs)
+        label = exports.session_label
+        pdf_name = args.pdf or f"meanImg_contrast_{label}.pdf"
+        if Path(pdf_name).name != pdf_name or not pdf_name.endswith(".pdf"):
+            raise ValueError(f"--pdf must be a file name ending in .pdf, not {pdf_name!r}")
+        pdf = exports.subject_dir / pdf_name
+        if pdf.exists() and not exports.pdf_overwrite:
+            raise FileExistsError(f"{pdf} exists; set [exports] pdf_overwrite = true to replace")
+    except (ValueError, KeyError, FileNotFoundError, FileExistsError, RuntimeError) as error:
+        parser.error(str(error))
+    print(f"{len(runs)} runs in run-XX/{exports.run_subdir}/")
+    summary = export_all_mean_images(
+        runs, exports.subject_dir, label, exports.contrast, exports.overwrite
+    )
+    print("Summary:", summary)
+    print("Saved:", write_comparison_pdf(runs, pdf, exports.contrast,
+                                         f"Mini2P registered mean images, {label}",
+                                         overwrite=exports.pdf_overwrite))  # fmt: skip
+    if args.high_resolution:
+        high_res = (
+            exports.subject_dir / f"meanImg_high_resolution_{2 * len(runs)}_pages_{label}.pdf"
+        )
+        print("Saved:", write_high_resolution_pdf(
+            runs, high_res, exports.contrast, f"Mini2P high-resolution mean images, {label}",
+            dpi=exports.high_resolution_dpi, overwrite=exports.pdf_overwrite))  # fmt: skip
+
+
 if __name__ == "__main__":
     main()
