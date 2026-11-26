@@ -9,6 +9,7 @@ import tifffile
 
 from mini2p_preprocessing import pipeline as pipeline_module
 from mini2p_preprocessing import run_qc
+from mini2p_preprocessing.batch import qc_command as real_qc_command  # before conftest stubs it
 from mini2p_preprocessing.config import PipelineSettings
 from mini2p_preprocessing.exports import Contrast
 from mini2p_preprocessing.qc_figures import QC_FOLDER
@@ -74,7 +75,11 @@ def test_the_notebook_s_preprocessing_and_registration_plots_are_saved(processed
     if run.settings.phase.method == "per_frame":
         assert common | {"frame_phases", "before_after_bidiphase"} == saved_names(results)
     else:
-        assert common | {"phase_trace", "before_after_first_bidiphase"} <= saved_names(results)
+        chunked = {"phase_trace", "before_after_first_bidiphase", "before_after_second_bidiphase"}
+        names = saved_names(results)
+        score_curves = {n for n in names if n.startswith("score_curve_lowest_chunk_")}
+        assert len(score_curves) == 1  # the default "wide" estimator
+        assert common | chunked | score_curves == names
     assert results["motion_registration/nonrigid_offsets"].startswith("not drawn: rigid")
     assert results["distortion_correction"].startswith("not drawn")
     for step in ("raw_mean", "bidiphase", "destriping"):
@@ -145,6 +150,16 @@ def test_the_fluorescence_plots_are_saved_after_the_extraction(processed_run):
     assert saved_names(results) == FLUORESCENCE_PLOTS
     summary = json.loads(run_qc.summary_path(run).read_text())
     assert set(summary) == {"fluorescence"}
+    assert summary["fluorescence"]["photon_free_level"] == "off"
+
+
+def test_the_extraction_reports_the_fluorescence_qc_saved(processed_run):
+    from mini2p_preprocessing.cellpose_batch import fluorescence_qc_status
+
+    extract_masks(processed_run)
+    status = fluorescence_qc_status(processed_run.plane_dir, processed_run.settings,
+                                    Contrast(1, 99.8, 1.0))  # fmt: skip
+    assert status == "saved"
 
 
 def test_a_photon_free_level_that_cannot_be_measured_leaves_the_other_plots(processed_run):
@@ -158,7 +173,9 @@ def test_a_photon_free_level_that_cannot_be_measured_leaves_the_other_plots(proc
     assert run_qc.failures(results) == ["fluorescence/photon_free_levels"]  # too few pixels
     assert saved_names(results) == FLUORESCENCE_PLOTS
     caption = Path(results["fluorescence/f0_overview"] + ".caption.txt").read_text()
-    assert "could not be measured" in caption and "not subtracted" in caption
+    assert "could not be measured" in caption and "NOT subtracted" in caption
+    summary = json.loads(run_qc.summary_path(run).read_text())["fluorescence"]
+    assert summary["photon_free_level"].startswith("not subtracted: ValueError")
 
 
 def test_a_plane_gives_back_the_run_with_the_extraction_s_fluorescence(processed_run):
@@ -182,3 +199,48 @@ def test_the_qc_process_exits_with_its_own_code_when_some_plots_fail(processed_r
     with pytest.raises(SystemExit) as stopped:
         run_qc.main(["--variant-dir", str(processed_run.variant_dir)])
     assert stopped.value.code == run_qc.EXIT_SOME_FAILED
+
+
+def test_the_batch_s_qc_process_saves_a_processed_run(processed_run, monkeypatch):
+    """The real ``python -m mini2p_preprocessing.run_qc``, as the batch starts it."""
+    from types import SimpleNamespace
+
+    from mini2p_preprocessing import batch
+
+    monkeypatch.setattr(batch, "qc_command", real_qc_command)
+    row = SimpleNamespace(run_dir=processed_run.variant_dir)
+    assert batch.run_qc_after(row, batch.QcRequest())["status"] == "saved"
+    assert Path(processed_run.variant_dir / "qc.log").read_text()
+    assert json.loads(run_qc.summary_path(processed_run).read_text())
+
+
+def test_the_saved_per_frame_phases_load_back(tmp_path):
+    from mini2p_preprocessing.correction import frame_phase_record, load_frame_phases
+    from mini2p_preprocessing.frame_phase import FramePhases
+
+    n = 6
+    for structural in (False, True):
+        extra = (
+            {"structural_px": np.arange(n), "structural_consistency": np.ones(n),
+             "structural_loss": np.zeros(n)}
+            if structural else {}
+        )  # fmt: skip
+        chosen = FramePhases(np.arange(n), np.zeros(n, bool), np.arange(n), np.arange(n),
+                             np.zeros(n), **extra)  # fmt: skip
+        settings = PipelineSettings.model_validate(SETTINGS)
+        path = tmp_path / f"s{structural}.phase_frames.npz"
+        np.savez(path, **frame_phase_record(np.zeros((n, 2, 17)), chosen, settings))
+        loaded = load_frame_phases(path)
+        assert np.array_equal(loaded.phase_px, chosen.phase_px)
+        assert (loaded.structural_px is None) == (not structural)
+
+
+def test_the_first_frames_are_read_without_counting_the_whole_tiff(recording, monkeypatch):
+    from mini2p_preprocessing import qc, tiff_io
+
+    def counted(*args, **kwargs):
+        raise AssertionError("counted every page")
+
+    monkeypatch.setattr(tiff_io, "count_timepoints", counted)
+    frames = qc.first_frames(recording[0], 20, 2)
+    assert [f.shape[0] for f in frames] == [20, 20]

@@ -19,8 +19,9 @@ is its own step; one that fails is logged with its traceback and listed with the
 the registration's ``quality_control/batch_qc_summary.json`` (:func:`summary_path`), and
 the others are still saved. QC is advisory: a failed plot never fails the run.
 
-Modules that pull in Suite2p and torch (registration, extraction, background) are imported
-inside the steps that need them, so importing this module stays quick.
+The modules behind the fluorescence plots (Suite2p's extraction and torch), the run's
+records (``movies``) and the pipeline are imported inside the functions that need them, so
+the preprocessing QC and ``cellpose_batch`` do not load them just by importing this one.
 """
 
 from __future__ import annotations
@@ -35,7 +36,9 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-from . import plots, qc, raw_previews
+from . import plots, qc, raw_previews, registration
+from .batch import QC_EXIT_SOME_FAILED
+from .bidiphase import select_alignment
 from .config import (
     PipelineSettings,
     QCRun,
@@ -45,8 +48,10 @@ from .config import (
     variant_dir_of,
 )
 from .contrast import scale_contrast
+from .correction import correction_stages, load_frame_phases
+from .destripe import detrend_chunk
 from .exports import Contrast
-from .frame_phase import FramePhases
+from .frame_phase import FramePhases, apply_frame_phases
 from .qc_figures import QC_FOLDER, REGISTRATION_STEPS, figure_of, qc_step_dir, save_qc_figure
 
 log = logging.getLogger(__name__)
@@ -56,7 +61,7 @@ RAW_MEAN_FRAMES = 500  # as the notebook's raw-mean cell
 REGISTRATION_FRAMES = QCRun.model_fields["qc_registration_frames"].default
 DISTORTION_FRAMES = QCRun.model_fields["qc_distortion_frames"].default
 N_TOP_ROIS = 20
-EXIT_SOME_FAILED = 2  # the QC process's exit code when some plots could not be drawn
+EXIT_SOME_FAILED = QC_EXIT_SOME_FAILED  # the QC process's exit code when some plots fail
 
 
 @dataclass(frozen=True)
@@ -220,6 +225,7 @@ def _run_steps(steps: dict[str, Callable[[], Path]]) -> dict[str, str]:
     still run."""
     results = {}
     for name, step in steps.items():
+        open_before = set(plt.get_fignums())
         try:
             results[name] = str(step())
         except NotDrawn as why:
@@ -227,6 +233,9 @@ def _run_steps(steps: dict[str, Callable[[], Path]]) -> dict[str, str]:
         except Exception as error:  # noqa: BLE001 - deliberate: QC never fails the run
             log.exception("QC plot %s failed", name)
             results[name] = f"failed: {error!r}"
+        finally:  # a plot that failed half-drawn (others close their own figure)
+            for number in set(plt.get_fignums()) - open_before:
+                plt.close(number)
     return results
 
 
@@ -241,9 +250,10 @@ def summary_path(run: RunQc) -> Path:
     return run.plane_dir.parent / QC_FOLDER / SUMMARY_FILE
 
 
-def _write_summary(run: RunQc, part: str, results: dict[str, str]) -> Path:
-    """Records *results* under *part* in the run's :func:`summary_path`, keeping the other
-    parts (an unreadable summary is replaced: it only lists plots that are on disk)."""
+def _write_summary(run: RunQc, part: str, results: dict[str, str], **notes: str) -> Path:
+    """Records *results* (and any *notes*) under *part* in the run's :func:`summary_path`,
+    keeping the other parts (an unreadable summary is replaced: it only lists plots that are
+    on disk)."""
     path = summary_path(run)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -251,7 +261,7 @@ def _write_summary(run: RunQc, part: str, results: dict[str, str]) -> Path:
     except json.JSONDecodeError:
         log.warning("Replacing unreadable %s", path)
         summary = {}
-    summary[part] = {"plane_dir": str(run.plane_dir), "plots": results}
+    summary[part] = {"plane_dir": str(run.plane_dir), "plots": results, **notes}
     path.write_text(json.dumps(summary, indent=2))
     return path
 
@@ -302,8 +312,6 @@ def phase_trace_plot(run: RunQc, trace: list[dict]) -> Path:
 def score_curve_plot(run: RunQc, trace: list[dict]) -> Path:
     """The score against the phase tried, for the chunk that scored lowest ("wide"
     estimator only)."""
-    from .bidiphase import select_alignment
-
     settings = run.settings
     if settings.phase.estimator != "wide":
         raise NotDrawn(f"phase.estimator = {settings.phase.estimator!r}, not 'wide'")
@@ -338,9 +346,6 @@ def per_frame_stages(
     raw: list[np.ndarray], phases: FramePhases, settings: PipelineSettings
 ) -> dict:
     """The first frames after the per-frame bidiphase correction, and destriped."""
-    from .destripe import detrend_chunk
-    from .frame_phase import apply_frame_phases
-
     after = [apply_frame_phases(c, phases.phase_px[: len(raw[0])]) for c in raw]
     destriped = [detrend_chunk(c, settings.destripe.preserve_frame_mean) for c in after]
     return {"raw": raw, "after_phase": after, "destriped": destriped}
@@ -348,17 +353,14 @@ def per_frame_stages(
 
 def chunked_stages(raw: list[np.ndarray], settings: PipelineSettings) -> dict:
     """The first frames after each pass of the chunked correction, as the notebook's
-    ``correction_stages``.
-
-    Raises:
-        NotDrawn: For ``second_pass_mode = "whole"``, whose second phase comes from the
-            whole recording (the QC notebook works it out).
-    """
-    from .correction import correction_stages
-
+    ``correction_stages``. With ``second_pass_mode = "whole"`` only the first pass is
+    worked out (its second phase comes from the whole recording): the later stages are then
+    the first pass's, and their plots are refused (:func:`bidiphase_steps`)."""
     phase = settings.phase
     if phase.run_second_pass and phase.second_pass_mode == "whole":
-        raise NotDrawn('second_pass_mode = "whole" needs the whole-recording phase (QC notebook)')
+        settings = settings.model_copy(
+            update={"phase": phase.model_copy(update={"run_second_pass": False})}
+        )
     return {"raw": raw, "stages": correction_stages(raw, 0, settings)}
 
 
@@ -366,8 +368,10 @@ def bidiphase_steps(run: RunQc, loads: _Loads) -> dict[str, Callable[[], Path]]:
     """The notebook's bidiphase and destriping plots for the run's phase method, over its
     first ``phase.chunk_frames`` timepoints (the notebook's ``qc_start_timepoint`` = 0)."""
     settings = run.settings
-    n = settings.phase.chunk_frames
-    span = f"Mean of timepoints 0:{n} of each channel"
+
+    def span() -> str:  # the frames actually read: fewer in a shorter recording
+        return f"Mean of timepoints 0:{len(loads['raw'][0])} of each channel"
+
     if settings.phase.method == "per_frame":
         steps = {
             "bidiphase/frame_phases": lambda: frame_phases_plot(run, loads["phases"]),
@@ -378,7 +382,7 @@ def bidiphase_steps(run: RunQc, loads: _Loads) -> dict[str, Callable[[], Path]]:
                 ("Before", "After per-frame bidiphase"),
                 "bidiphase",
                 "before_after_bidiphase",
-                f"{span} before and after the per-frame bidiphase correction.",
+                f"{span()} before and after the per-frame bidiphase correction.",
             ),
         }
         if settings.destripe.enabled:
@@ -389,12 +393,44 @@ def bidiphase_steps(run: RunQc, loads: _Loads) -> dict[str, Callable[[], Path]]:
                 ("Before destriping", "After destriping"),
                 "destriping",
                 "before_after_destriping",
-                f"{span}, bidiphase-corrected, before and after destriping.",
+                f"{span()}, bidiphase-corrected, before and after destriping.",
             )
         return steps
 
     def stages():
         return loads["chunked"]["stages"]
+
+    def refuse_whole_second_pass():
+        """The plots after a ``second_pass_mode = "whole"`` second pass need its phase from
+        the whole recording (the QC notebook works it out)."""
+        if settings.phase.run_second_pass and settings.phase.second_pass_mode == "whole":
+            raise NotDrawn('second_pass_mode = "whole" needs the whole-recording phase')
+
+    def second_pass_plot() -> Path:
+        refuse_whole_second_pass()
+        mode = settings.phase.second_pass_mode
+        return stage_pair_plot(
+            run,
+            stages().after_first,
+            stages().after_second,
+            ("After first bidiphase", f"After second ({mode})"),
+            "bidiphase",
+            "before_after_second_bidiphase",
+            f"{span()} after the first bidiphase pass and after the second ({mode}, "
+            f"{stages().second_phase_px:+d} px).",
+        )
+
+    def destriping_plot() -> Path:
+        refuse_whole_second_pass()
+        return stage_pair_plot(
+            run,
+            stages().after_second,
+            stages().corrected,
+            ("Before destriping", "After destriping"),
+            "destriping",
+            "before_after_destriping",
+            f"{span()}, bidiphase-corrected, before and after destriping.",
+        )
 
     steps = {
         "bidiphase/phase_trace": lambda: phase_trace_plot(run, loads["trace"]),
@@ -406,31 +442,14 @@ def bidiphase_steps(run: RunQc, loads: _Loads) -> dict[str, Callable[[], Path]]:
             ("Before", "After first bidiphase"),
             "bidiphase",
             "before_after_first_bidiphase",
-            f"{span} before and after the first bidiphase pass ({stages().first_phase_px:+d} px).",
+            f"{span()} before and after the first bidiphase pass "
+            f"({stages().first_phase_px:+d} px).",
         ),
     }
     if settings.phase.run_second_pass:
-        mode = settings.phase.second_pass_mode
-        steps["bidiphase/before_after_second_bidiphase"] = lambda: stage_pair_plot(
-            run,
-            stages().after_first,
-            stages().after_second,
-            ("After first bidiphase", f"After second ({mode})"),
-            "bidiphase",
-            "before_after_second_bidiphase",
-            f"{span} after the first bidiphase pass and after the second ({mode}, "
-            f"{stages().second_phase_px:+d} px).",
-        )
+        steps["bidiphase/before_after_second_bidiphase"] = second_pass_plot
     if settings.destripe.enabled:
-        steps["destriping/before_after_destriping"] = lambda: stage_pair_plot(
-            run,
-            stages().after_second,
-            stages().corrected,
-            ("Before destriping", "After destriping"),
-            "destriping",
-            "before_after_destriping",
-            f"{span}, bidiphase-corrected, before and after destriping.",
-        )
+        steps["destriping/before_after_destriping"] = destriping_plot
     return steps
 
 
@@ -589,9 +608,6 @@ def _preprocessing_loads(run: RunQc) -> _Loads:
     """What the preprocessing and registration plots share: the per-frame phases, the
     first raw frames and their corrected stages, the chunk phase trace, the registration
     and its first registered frames, each loaded when a plot first needs it."""
-    from .correction import load_frame_phases
-    from .registration import load_registered_outputs
-
     settings = run.settings
     n_channels = settings.channels.n_channels
     loads = _Loads({})
@@ -600,7 +616,7 @@ def _preprocessing_loads(run: RunQc) -> _Loads:
         return qc.first_frames(run.input_tiff, settings.phase.chunk_frames, n_channels)
 
     def registered():
-        return load_registered_outputs(run.plane_dir)
+        return registration.load_registered_outputs(run.plane_dir)
 
     loads.loaders.update(
         phases=lambda: load_frame_phases(run.frame_phases_file),
@@ -669,18 +685,15 @@ class _Fluorescence:
     red_why: str
 
 
-def _fluorescence(run: RunQc, contrast: Contrast, levels) -> _Fluorescence:
+def _fluorescence(run: RunQc, contrast: Contrast, traces, levels) -> _Fluorescence:
     """A plane's traces (less the photon-free *levels*, unless None), standard ΔF/F0,
     contrast-scaled mean image, non-ROI background and its corrected ΔF/F0."""
     from .background import dff_versions
     from .background_io import load_non_roi_traces
     from .fluorescence import compute_dff
     from .photon_free_io import background_without_level, traces_without_level
-    from .plane import load_plane_traces
-    from .registration import NoPerFrameRecord, load_registered_outputs, red_usable
 
     settings, fl = run.settings, run.settings.fluorescence
-    traces = load_plane_traces(run.plane_dir)
     if levels is not None:
         traces = traces_without_level(traces, levels)
     green = compute_dff(traces.f, traces.fneu, traces.fs, fl)
@@ -688,7 +701,7 @@ def _fluorescence(run: RunQc, contrast: Contrast, levels) -> _Fluorescence:
         traces.ops["meanImg"], contrast.black_percentile, contrast.white_percentile, contrast.gamma
     )
     background = load_non_roi_traces(
-        load_registered_outputs(run.plane_dir), run.plane_dir, traces.labels, settings
+        registration.load_registered_outputs(run.plane_dir), run.plane_dir, traces.labels, settings
     )
     trace_background = (
         background_without_level(background, levels) if levels is not None else background
@@ -697,8 +710,8 @@ def _fluorescence(run: RunQc, contrast: Contrast, levels) -> _Fluorescence:
         red_ok, red_why = False, "no red"
     else:
         try:
-            red_ok, red_why = red_usable(run.suite2p_input, settings)
-        except NoPerFrameRecord as error:
+            red_ok, red_why = registration.red_usable(run.suite2p_input, settings)
+        except registration.NoPerFrameRecord as error:
             red_ok, red_why = False, f"cannot tell whether red is usable: {error}"
     versions = dff_versions(
         traces.f,
@@ -734,15 +747,29 @@ def photon_free_levels_plot(run: RunQc, levels, fs: float) -> Path:
         )
 
 
-def level_note(run: RunQc, loads: _Loads) -> str:
-    """What the fluorescence captions say about the photon-free level."""
+def photon_free_note(run: RunQc, loads: _Loads) -> str:
+    """Whether the photon-free level was subtracted: ``off``, ``subtracted``, or ``not
+    subtracted: <why>`` when it could not be measured."""
     if not run.settings.fluorescence.subtract_photon_free_level:
-        return ""
+        return "off"
     try:
         loads["levels"]
-    except Exception as error:  # noqa: BLE001 - reported in the caption; its own step fails
-        return f" The photon-free level could not be measured ({error!r}), so it is not subtracted."
-    return " The photon-free level is subtracted first."
+    except Exception as error:  # noqa: BLE001 - its own plot fails with it
+        return f"not subtracted: {error!r}"
+    return "subtracted"
+
+
+def caption_note(photon_free: str) -> str:
+    """What the fluorescence captions add about the photon-free level."""
+    if photon_free == "off":
+        return ""
+    if photon_free == "subtracted":
+        return " The photon-free level is subtracted first."
+    return (
+        " The photon-free level could not be measured "
+        f"({photon_free.removeprefix('not subtracted: ')}), so it is NOT subtracted here, "
+        "unlike the standard ΔF/F0."
+    )
 
 
 def f0_overview_plot(run: RunQc, data: _Fluorescence, note: str) -> Path:
@@ -845,33 +872,24 @@ def top_rois_plot(run: RunQc, data: _Fluorescence, note: str) -> Path:
 def save_fluorescence_qc(run: RunQc, contrast: Contrast) -> dict[str, str]:
     """The QC notebook's fluorescence plots for a run whose Cellpose masks are extracted, on
     all frames, with the mean image at *contrast*; also written to the run's
-    :func:`summary_path`. A photon-free level that cannot be measured fails its own plot; the
-    others are drawn without subtracting it, and say so."""
+    :func:`summary_path`, with ``photon_free_level`` (:func:`photon_free_note`). A
+    photon-free level that cannot be measured fails its own plot; the others are drawn
+    without subtracting it, and their captions and the summary say so."""
     from .photon_free_io import raw_levels
     from .plane import load_plane_traces
 
-    fl = run.settings.fluorescence
-
-    def levels():
-        n_frames = load_plane_traces(run.plane_dir).f.shape[1]
-        return raw_levels(run.input_tiff, run.plane_dir, n_frames, run.settings)
-
-    loads = _Loads({"levels": levels})
-
-    def usable_levels():
-        if not fl.subtract_photon_free_level:
-            return None
-        try:
-            return loads["levels"]
-        except Exception:  # noqa: BLE001 - the photon_free_levels step reports it
-            return None
-
-    loads.loaders["data"] = lambda: _fluorescence(run, contrast, usable_levels())
-    note = level_note(run, loads)
+    loads = _Loads({"plane": lambda: load_plane_traces(run.plane_dir)})
+    loads.loaders["levels"] = lambda: raw_levels(
+        run.input_tiff, run.plane_dir, loads["plane"].f.shape[1], run.settings
+    )
+    photon_free = photon_free_note(run, loads)
+    levels = loads["levels"] if photon_free == "subtracted" else None
+    loads.loaders["data"] = lambda: _fluorescence(run, contrast, loads["plane"], levels)
+    note = caption_note(photon_free)
     steps = {}
-    if fl.subtract_photon_free_level:
+    if photon_free != "off":
         steps["fluorescence/photon_free_levels"] = lambda: photon_free_levels_plot(
-            run, loads["levels"], loads["data"].traces.fs
+            run, loads["levels"], loads["plane"].fs
         )
     steps |= {
         "fluorescence/f0_overview": lambda: f0_overview_plot(run, loads["data"], note),
@@ -880,7 +898,7 @@ def save_fluorescence_qc(run: RunQc, contrast: Contrast) -> dict[str, str]:
         "fluorescence/top_rois_dff": lambda: top_rois_plot(run, loads["data"], note),
     }
     results = _run_steps(steps)
-    _write_summary(run, "fluorescence", results)
+    _write_summary(run, "fluorescence", results, photon_free_level=photon_free)
     return results
 
 

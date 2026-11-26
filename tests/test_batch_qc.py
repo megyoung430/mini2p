@@ -37,7 +37,7 @@ def manifest_of(row) -> dict:
     ("code", "status"),
     [
         ("pass", "saved"),
-        ("raise SystemExit(2)", "some plots failed"),
+        ("raise SystemExit(3)", "some plots failed"),
         ("raise ValueError('bug')", "failed (exit code 1)"),
     ],
 )
@@ -62,26 +62,39 @@ def test_a_run_whose_pipeline_fails_gets_no_qc(row, monkeypatch):
     assert commands == [] and "qc" not in manifest_of(row)
 
 
-def test_sigterm_during_qc_is_recorded_and_the_run_stays_complete(row, monkeypatch):
+def test_a_qc_that_cannot_start_is_recorded_and_the_run_stays_complete(row, monkeypatch):
     row, config = row
 
-    def terminated(*args, **kwargs):
-        raise batch_module._Terminated("signal 15")
+    def no_space(row, qc):
+        raise OSError("Disk quota exceeded")
 
-    stub_qc(monkeypatch, "pass")
-    real_run = batch_module.subprocess.run
-    calls = []
-
-    def run_then_terminate(command, **kwargs):
-        calls.append(command)
-        if len(calls) == 2:  # the QC process, after the pipeline
-            terminated()
-        return real_run(command, **kwargs)
-
-    monkeypatch.setattr(batch_module.subprocess, "run", run_then_terminate)
+    monkeypatch.setattr(batch_module, "run_qc_after", no_space)
     run_one(row, config, destripe=False, qc=QcRequest())
     manifest = manifest_of(row)
+    assert manifest["status"] == "complete"
+    assert manifest["qc"]["status"] == "failed: OSError('Disk quota exceeded')"
+
+
+def test_ctrl_c_during_qc_is_recorded_and_passed_on(row, monkeypatch):
+    row, config = row
+
+    def interrupted(row, qc):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(batch_module, "run_qc_after", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        run_one(row, config, destripe=False, qc=QcRequest())
+    manifest = manifest_of(row)
     assert manifest["status"] == "complete" and manifest["qc"]["status"] == "interrupted"
+    assert {"log", "frame_order", "started_utc", "finished_utc"} <= set(manifest["qc"])
+
+
+def test_a_qc_usage_error_is_not_mistaken_for_failed_plots(row, monkeypatch):
+    row, config = row
+    no_folder = [sys.executable, "-m", "mini2p_preprocessing.run_qc"]
+    monkeypatch.setattr(batch_module, "qc_command", lambda row, qc: no_folder)
+    run_one(row, config, destripe=False, qc=QcRequest())  # no --variant-dir: argparse exits 2
+    assert manifest_of(row)["qc"]["status"] == "failed (exit code 2)"
 
 
 def test_without_qc_requested_none_runs(row, monkeypatch):

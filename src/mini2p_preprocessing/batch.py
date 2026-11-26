@@ -689,34 +689,54 @@ def qc_command(row: PlannedRun, qc: QcRequest) -> list[str]:
     ]
 
 
+# The QC process's exit code when some plots could not be drawn (the others are saved);
+# not 1 or 2, which Python uses for an exception and argparse for a usage error.
+QC_EXIT_SOME_FAILED = 3
+
+
 def run_qc_after(row: PlannedRun, qc: QcRequest) -> dict:
     """Run the QC of a completed run in a fresh process, logging to ``qc.log``, and say how
-    it went, for the manifest's ``qc``. QC is advisory: a QC process that fails, or is
-    stopped by SIGTERM (the time limit, scancel), is recorded here and never changes the
-    run's status. Ctrl-C (KeyboardInterrupt) is passed on, for :func:`run_one` to record."""
-    from .run_qc import EXIT_SOME_FAILED
-
+    it ended, for the manifest's ``qc``: ``saved``, ``some plots failed`` or ``failed (exit
+    code …)``."""
     log_path = row.run_dir / "qc.log"
-    record = {"log": str(log_path), "frame_order": qc.frame_order, "started_utc": _now()}
-    previous = signal.signal(signal.SIGTERM, _raise_terminated)
-    try:
-        with log_path.open("w") as qc_log:
-            completed = subprocess.run(
-                qc_command(row, qc),
-                stdout=qc_log,
-                stderr=subprocess.STDOUT,
-                env={**os.environ, "MPLBACKEND": "Agg"},  # a worker has no display
-            )
-    except _Terminated:
-        return {**record, "status": "interrupted", "finished_utc": _now()}
-    finally:
-        signal.signal(signal.SIGTERM, previous)
-    status = {0: "saved", EXIT_SOME_FAILED: "some plots failed"}.get(
+    with log_path.open("w") as qc_log:
+        completed = subprocess.run(
+            qc_command(row, qc),
+            stdout=qc_log,
+            stderr=subprocess.STDOUT,
+            env={**os.environ, "MPLBACKEND": "Agg"},  # a worker has no display
+        )
+    status = {0: "saved", QC_EXIT_SOME_FAILED: "some plots failed"}.get(
         completed.returncode, f"failed (exit code {completed.returncode})"
     )
     if status != "saved":
         log.warning("QC of %s: %s (log: %s)", row.run_dir, status, log_path)
-    return {**record, "status": status, "finished_utc": _now()}
+    return {"status": status, "finished_utc": _now()}
+
+
+def _record_qc(row: PlannedRun, qc: QcRequest, manifest: dict, manifest_path: Path) -> None:
+    """Run :func:`run_qc_after` for a run whose manifest already says complete, keeping
+    ``manifest["qc"]`` up to date: ``running`` while it runs (so a QC killed with its job is
+    visible), then how it ended. QC is advisory, so an error starting it is recorded, not
+    raised; SIGTERM and Ctrl-C are recorded as ``interrupted`` and passed on, and the run
+    stays complete (:func:`_mark_interrupted` leaves a complete run alone)."""
+    manifest["qc"] = {
+        "status": "running",
+        "log": str(row.run_dir / "qc.log"),
+        "frame_order": qc.frame_order,
+        "started_utc": _now(),
+    }
+    _write_json(manifest_path, manifest)
+    try:
+        manifest["qc"] |= run_qc_after(row, qc)
+    except (_Terminated, KeyboardInterrupt):  # SIGTERM or Ctrl-C: record, then stop as asked
+        manifest["qc"] |= {"status": "interrupted", "finished_utc": _now()}
+        raise
+    except Exception as error:  # noqa: BLE001 - deliberate: QC never fails a completed run
+        log.exception("Could not run the QC of %s", row.run_dir)
+        manifest["qc"] |= {"status": f"failed: {error!r}", "finished_utc": _now()}
+    finally:
+        _write_json(manifest_path, manifest)
 
 
 def run_one(
@@ -759,13 +779,7 @@ def run_one(
     manifest.update(status="complete", finished_utc=_now())
     _write_json(manifest_path, manifest)
     if qc is not None:
-        try:
-            manifest["qc"] = run_qc_after(row, qc)
-        except KeyboardInterrupt:
-            manifest["qc"] = {"status": "interrupted", "finished_utc": _now()}
-            raise
-        finally:
-            _write_json(manifest_path, manifest)
+        _record_qc(row, qc, manifest, manifest_path)
 
 
 def snapshot_config(config: Path | bytes, destination_dir: Path) -> Path:
@@ -975,7 +989,7 @@ def prepare_array(config_path: Path, allow_queued: bool = False) -> tuple[Path |
         "created_utc": _now(),
         "config": str(launch.config),
         "destripe": batch.destripe,
-        "qc": None if qc is None else vars(qc),  # fixed now: a list without QC never gains it
+        "qc": None if qc is None else vars(qc),  # a list without it runs no QC
         "runs": [
             {
                 "session": row.session,
@@ -1084,8 +1098,14 @@ def run_array_task(tasks_path: Path, index: int) -> str:
 
 
 def _mark_interrupted(run_dir: Path) -> None:
-    """Record in the run's manifest that its task was terminated, so it is retried."""
+    """Record in the run's manifest that its task was terminated, so it is retried; a run
+    already complete (terminated during its QC) stays complete, with only its QC marked."""
     manifest_path = Path(run_dir) / MANIFEST_NAME
     manifest = _read_json(manifest_path) or {}
-    manifest.update(status="interrupted", finished_utc=_now(), error="terminated (SIGTERM)")
+    if manifest.get("status") == "complete":
+        qc = manifest.get("qc")
+        if qc is not None and qc.get("status") == "running":
+            qc.update(status="interrupted", finished_utc=_now())
+    else:
+        manifest.update(status="interrupted", finished_utc=_now(), error="terminated (SIGTERM)")
     _write_json(manifest_path, manifest)

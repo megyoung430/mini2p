@@ -514,14 +514,16 @@ Plots behind a slider (manual chunk offset, contrast preview, one ROI at a time)
 the contrast you choose is.
 
 The batch saves the same plots for every run it processes (`[batch] save_qc = true`, the
-default), into the same folders, each caption saying it was saved by the batch: `raw_mean/`,
+default), into the same folders (the captions, apart from the raw mean's, say the batch saved
+them): `raw_mean/`,
 `bidiphase/`, `destriping/`, `distortion_correction/`, and in the registration's
 `motion_registration/` the before/after registration, shift traces, nonrigid offsets, cropped
 registered means and focus QC. `frame_order/` is checked only with `qc_frame_order = true`, as it
 reads every stage's TIFF again. The QC runs once the run's manifest says `complete`, in its own
 process logging to `qc.log` beside the manifest, so a QC failure, or the job's time limit
 reached during QC, never fails or reruns the run: the manifest's `qc.status` says `saved`,
-`some plots failed`, `failed (exit code …)` or `interrupted`. Each plot is drawn on its own;
+`some plots failed`, `failed (exit code …)` or `interrupted` (`running` if the job was
+killed outright). Each plot is drawn on its own;
 `batch_qc_summary.json` in the registration's `quality_control/` lists each one's file, why it
 was not drawn (e.g. `nonrigid_offsets` of a rigid registration) or why it failed (the traceback
 is in `qc.log`). The choice is fixed when `mini2p-batch prepare` writes the task list, so a task
@@ -532,7 +534,8 @@ The fluorescence plots need the Cellpose masks, so the batch extraction (`extrac
 `batch_and_exports.ipynb`) saves them for each newly extracted run, at the `[exports]`
 contrast, when `save_qc` is on; its summary's `fluorescence_qc` says `saved`, `some plots
 failed: …` or `not saved: …`. A photon-free level that cannot be measured fails its own plot;
-the others are then drawn without subtracting it, and their captions say so. The interactive
+the others are then drawn without subtracting it: their captions, `fluorescence_qc` and the
+QC summary's `photon_free_level` say so. The interactive
 plots (the contrast you choose, a chosen ROI, the vessel background) are only drawn in the
 notebook.
 

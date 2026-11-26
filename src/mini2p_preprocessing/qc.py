@@ -30,9 +30,15 @@ def load_chunk(tiff: Path, start: int, end: int, n_channels: int) -> list[np.nda
 def first_frames(tiff: Path, n_frames: int, n_channels: int) -> list[np.ndarray]:
     """The first *n_frames* timepoints of each channel (fewer if the TIFF is shorter),
     reading only their pages: unlike :func:`load_chunk`, the rest of a long TIFF is not
-    counted (``leading_timepoints``)."""
+    counted (``leading_timepoints``).
+
+    Raises:
+        ValueError: If the TIFF has no whole timepoint.
+    """
     with tifffile.TiffFile(tiff) as tif:
         n = min(n_frames, leading_timepoints(tif, n_frames, n_channels))
+        if n == 0:
+            raise ValueError(f"{tiff} has no whole timepoint")
         return read_all_channels(tif, 0, n, n_channels)
 
 

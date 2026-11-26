@@ -532,3 +532,34 @@ def test_the_qc_choice_is_fixed_when_the_tasks_are_prepared(config, monkeypatch,
     older_path.write_text(json.dumps(older))
     run_array_task(older_path, 2)
     assert len(commands) == 1
+
+
+def test_sigterm_during_a_task_s_qc_kills_it_and_leaves_the_run_complete(config, monkeypatch):
+    import time
+
+    stub_worker(monkeypatch)
+    # the QC process asks for its task's SIGTERM, as the time limit would, then lingers
+    code = "import os, signal, time; os.kill(os.getppid(), signal.SIGTERM); time.sleep(60)"
+    monkeypatch.setattr(batch_module, "qc_command", lambda row, qc: [sys.executable, "-c", code])
+    tasks_path, _ = prepare_array(config)
+    started = time.monotonic()
+    with pytest.raises(batch_module._Terminated):
+        run_array_task(tasks_path, 1)
+    assert time.monotonic() - started < 30  # the QC process was killed, not waited for
+    run_dir = Path(tasks_of(tasks_path)["runs"][0]["run_dir"])
+    manifest = json.loads((run_dir / MANIFEST_NAME).read_text())
+    assert manifest["status"] == "complete" and manifest["qc"]["status"] == "interrupted"
+
+
+def test_sigterm_between_completion_and_qc_leaves_the_run_complete(config, monkeypatch):
+    stub_worker(monkeypatch)
+
+    def terminated(*args):
+        raise batch_module._Terminated("signal 15")
+
+    monkeypatch.setattr(batch_module, "_record_qc", terminated)
+    tasks_path, _ = prepare_array(config)
+    with pytest.raises(batch_module._Terminated):
+        run_array_task(tasks_path, 1)
+    run_dir = Path(tasks_of(tasks_path)["runs"][0]["run_dir"])
+    assert json.loads((run_dir / MANIFEST_NAME).read_text())["status"] == "complete"
