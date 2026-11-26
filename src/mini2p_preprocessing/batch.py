@@ -662,24 +662,68 @@ def worker_command(row: PlannedRun, config_path: Path, destripe: bool) -> list[s
         str(row.run_dir.resolve()),
         "--destripe",
         "1" if destripe else "0",
-        *qc_flags(config_path),
     ]
 
 
-def qc_flags(config_path: Path) -> list[str]:
-    """The QC options of the config's ``[batch]`` (``save_qc``, ``qc_frame_order``) as the
-    worker's command-line flags; none for a config without ``[batch]``."""
-    document = tomllib.loads(Path(config_path).read_text())
-    if "batch" not in document:
-        return []
-    batch = batch_settings_from_toml(document, config_path)
-    if not batch.save_qc:
-        return []
-    return ["--qc", *(["--qc-frame-order"] if batch.qc_frame_order else [])]
+@dataclass(frozen=True)
+class QcRequest:
+    """The QC notebook's plots to save after each run (``[batch] save_qc``)."""
+
+    frame_order: bool = False  # [batch] qc_frame_order
+
+    @classmethod
+    def from_batch(cls, batch: BatchSettings) -> QcRequest | None:
+        """The request ``[batch]`` makes, or None when ``save_qc = false``."""
+        return cls(batch.qc_frame_order) if batch.save_qc else None
 
 
-def run_one(row: PlannedRun, config_path: Path, destripe: bool) -> None:
-    """Run the pipeline for one source in a fresh process, tracking it in the manifest."""
+def qc_command(row: PlannedRun, qc: QcRequest) -> list[str]:
+    """The QC process for a run the pipeline has finished (``run_qc.main``)."""
+    return [
+        sys.executable,
+        "-m",
+        "mini2p_preprocessing.run_qc",
+        "--variant-dir",
+        str(row.run_dir.resolve()),
+        *(["--frame-order"] if qc.frame_order else []),
+    ]
+
+
+def run_qc_after(row: PlannedRun, qc: QcRequest) -> dict:
+    """Run the QC of a completed run in a fresh process, logging to ``qc.log``, and say how
+    it went, for the manifest's ``qc``. QC is advisory: a QC process that fails, or is
+    stopped by SIGTERM (the time limit, scancel), is recorded here and never changes the
+    run's status. Ctrl-C (KeyboardInterrupt) is passed on, for :func:`run_one` to record."""
+    from .run_qc import EXIT_SOME_FAILED
+
+    log_path = row.run_dir / "qc.log"
+    record = {"log": str(log_path), "frame_order": qc.frame_order, "started_utc": _now()}
+    previous = signal.signal(signal.SIGTERM, _raise_terminated)
+    try:
+        with log_path.open("w") as qc_log:
+            completed = subprocess.run(
+                qc_command(row, qc),
+                stdout=qc_log,
+                stderr=subprocess.STDOUT,
+                env={**os.environ, "MPLBACKEND": "Agg"},  # a worker has no display
+            )
+    except _Terminated:
+        return {**record, "status": "interrupted", "finished_utc": _now()}
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    status = {0: "saved", EXIT_SOME_FAILED: "some plots failed"}.get(
+        completed.returncode, f"failed (exit code {completed.returncode})"
+    )
+    if status != "saved":
+        log.warning("QC of %s: %s (log: %s)", row.run_dir, status, log_path)
+    return {**record, "status": status, "finished_utc": _now()}
+
+
+def run_one(
+    row: PlannedRun, config_path: Path, destripe: bool, qc: QcRequest | None = None
+) -> None:
+    """Run the pipeline for one source in a fresh process, tracking it in the manifest;
+    then, with *qc*, its QC plots (:func:`run_qc_after`), once the run is recorded complete."""
     row.run_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = row.run_dir / MANIFEST_NAME
     log_path = row.run_dir / "preprocess.log"
@@ -714,6 +758,14 @@ def run_one(row: PlannedRun, config_path: Path, destripe: bool) -> None:
         raise
     manifest.update(status="complete", finished_utc=_now())
     _write_json(manifest_path, manifest)
+    if qc is not None:
+        try:
+            manifest["qc"] = run_qc_after(row, qc)
+        except KeyboardInterrupt:
+            manifest["qc"] = {"status": "interrupted", "finished_utc": _now()}
+            raise
+        finally:
+            _write_json(manifest_path, manifest)
 
 
 def snapshot_config(config: Path | bytes, destination_dir: Path) -> Path:
@@ -779,7 +831,7 @@ def run_batch(batch: BatchSettings, config_path: Path) -> list[PlannedRun]:
     for index, row in enumerate(launch.pending, start=1):
         log.info("[%d/%d] %s -> %s", index, len(launch.pending), row.source, row.run_dir)
         try:
-            run_one(row, launch.config, batch.destripe)
+            run_one(row, launch.config, batch.destripe, QcRequest.from_batch(batch))
         except subprocess.CalledProcessError:
             log.error("FAILED: %s (log: %s)", row.source, row.run_dir / "preprocess.log")
             if batch.stop_on_error:
@@ -918,10 +970,12 @@ def prepare_array(config_path: Path, allow_queued: bool = False) -> tuple[Path |
     launch = _launch(batch, config_bytes)
     if not launch.pending:
         return None, launch
+    qc = QcRequest.from_batch(batch)
     tasks = {
         "created_utc": _now(),
         "config": str(launch.config),
         "destripe": batch.destripe,
+        "qc": None if qc is None else vars(qc),  # fixed now: a list without QC never gains it
         "runs": [
             {
                 "session": row.session,
@@ -1018,7 +1072,9 @@ def run_array_task(tasks_path: Path, index: int) -> str:
     log.info("Task %d: %s -> %s", index, row.source, row.run_dir)
     previous = signal.signal(signal.SIGTERM, _raise_terminated)
     try:
-        run_one(row, Path(tasks["config"]), tasks["destripe"])
+        qc = tasks.get("qc")  # absent from task lists prepared before QC existed
+        qc = None if qc is None else QcRequest(**qc)
+        run_one(row, Path(tasks["config"]), tasks["destripe"], qc)
     except _Terminated:
         _mark_interrupted(row.run_dir)
         raise

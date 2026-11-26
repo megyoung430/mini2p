@@ -27,6 +27,7 @@ mini2p-natex = "mini2p_preprocessing.cli:natex_main"
 mini2p-raw-means = "mini2p_preprocessing.cli:raw_means_main"
 mini2p-compare-registrations = "mini2p_preprocessing.cli:compare_registrations_main"
 mini2p-batch = "mini2p_preprocessing.cli:batch_main"
+mini2p-run-qc = "mini2p_preprocessing.run_qc:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0", "ruff>=0.4"]

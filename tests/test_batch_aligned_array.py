@@ -510,3 +510,25 @@ def test_a_listed_session_whose_imaging_is_missing_is_refused(config):
     shutil.rmtree(raw / "ses-007_date-x" / "funcimg")
     with pytest.raises(ValueError, match="did not find"):
         plan_of(config)
+
+
+def test_the_qc_choice_is_fixed_when_the_tasks_are_prepared(config, monkeypatch, tmp_path):
+    stub_worker(monkeypatch)
+    commands = []
+
+    def record(row, qc):
+        commands.append(qc)
+        return [sys.executable, "-c", "pass"]
+
+    monkeypatch.setattr(batch_module, "qc_command", record)
+    tasks_path, _ = prepare_array(config)
+    assert tasks_of(tasks_path)["qc"] == {"frame_order": False}
+    run_array_task(tasks_path, 1)
+    assert commands == [batch_module.QcRequest(frame_order=False)]
+
+    older = tasks_of(tasks_path)  # a task list prepared before QC existed
+    del older["qc"]
+    older_path = tmp_path / "batch_tasks_older.json"
+    older_path.write_text(json.dumps(older))
+    run_array_task(older_path, 2)
+    assert len(commands) == 1

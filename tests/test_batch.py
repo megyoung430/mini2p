@@ -154,9 +154,9 @@ def test_relaunch_replans_and_never_redoes_completed_runs(tmp_path, monkeypatch)
     monkeypatch.setattr(
         batch_module,
         "run_one",
-        lambda row, cfg, destripe: (
+        lambda row, cfg, destripe, qc=None: (
             launched.append((row.run_name, cfg)),
-            real_run_one(row, cfg, destripe),
+            real_run_one(row, cfg, destripe, qc),
         ),
     )
     first = batch_module.run_batch(batch, config)

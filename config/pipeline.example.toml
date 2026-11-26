@@ -144,7 +144,7 @@ destripe = false              # false -> run-XX/<distortion>/without_destriping/
                               # <distortion>: with_distortion_correction, or without_... when [distortion] mode = "off"
 stop_on_error = true
 retry_incomplete_runs = true
-save_qc = true                # each run also saves the QC notebook's plots in quality_control/ (and at extraction, its fluorescence plots)
+save_qc = true                # after each run, save the QC notebook's plots in quality_control/ (and at extraction, its fluorescence plots)
 qc_frame_order = false        # also the frame-order check (reads every stage's TIFF again: slower)
 # Register again, replacing them, the runs that finished before this time; keep the
 # same time when relaunching after a failure. Needs overwrite = true.

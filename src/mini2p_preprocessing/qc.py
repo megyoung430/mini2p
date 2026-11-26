@@ -27,6 +27,15 @@ def load_chunk(tiff: Path, start: int, end: int, n_channels: int) -> list[np.nda
         return read_all_channels(tif, start, min(end, n_timepoints), n_channels)
 
 
+def first_frames(tiff: Path, n_frames: int, n_channels: int) -> list[np.ndarray]:
+    """The first *n_frames* timepoints of each channel (fewer if the TIFF is shorter),
+    reading only their pages: unlike :func:`load_chunk`, the rest of a long TIFF is not
+    counted (``leading_timepoints``)."""
+    with tifffile.TiffFile(tiff) as tif:
+        n = min(n_frames, leading_timepoints(tif, n_frames, n_channels))
+        return read_all_channels(tif, 0, n, n_channels)
+
+
 def phase_trace(tiff: Path, settings: PipelineSettings) -> list[dict]:
     """First-pass phase estimate for every chunk, without writing anything."""
     n_channels = settings.channels.n_channels

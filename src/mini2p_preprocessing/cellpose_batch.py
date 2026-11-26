@@ -155,15 +155,15 @@ def fluorescence_qc_status(plane_dir: Path, settings: PipelineSettings, contrast
     """Save the QC notebook's fluorescence plots for a newly extracted plane (see
     :func:`run_qc.save_fluorescence_qc`) and say how that went, for the summary row: a plot
     that cannot be drawn is reported, not raised, as the extraction itself succeeded."""
-    from .run_qc import run_qc_for_plane, save_fluorescence_qc
+    from .run_qc import failures, run_qc_for_plane, save_fluorescence_qc
 
     try:
-        run = run_qc_for_plane(plane_dir, settings)
-    except FileNotFoundError as missing:
-        log.warning("No fluorescence QC for %s: %s", plane_dir, missing)
-        return f"not saved: {missing}"
-    result = save_fluorescence_qc(run, contrast)["fluorescence"]
-    return result if isinstance(result, str) else "saved"
+        results = save_fluorescence_qc(run_qc_for_plane(plane_dir, settings), contrast)
+    except Exception as error:  # noqa: BLE001 - deliberate: QC never stops the extraction
+        log.exception("No fluorescence QC for %s", plane_dir)
+        return f"not saved: {error!r}"
+    failed = failures(results)
+    return f"some plots failed: {', '.join(failed)}" if failed else "saved"
 
 
 def extract_all(
