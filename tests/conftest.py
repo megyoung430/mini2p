@@ -162,3 +162,14 @@ def scanimage_tiff(path, frame_numbers, shape=(4, 4), software=None):
                 description=f"frameNumbers = {number}\nacquisitionNumbers = 1\n",
             )
     return path
+
+
+@pytest.fixture(autouse=True)
+def no_qc_processes(monkeypatch):
+    """Batch tests stub the pipeline worker; the QC process it would start after each run
+    is stubbed too (tests of the QC itself call ``run_qc`` directly)."""
+    import sys
+
+    from mini2p_preprocessing import batch as batch_module
+
+    monkeypatch.setattr(batch_module, "qc_command", lambda row, qc: [sys.executable, "-c", "pass"])

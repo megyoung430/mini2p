@@ -142,7 +142,7 @@ files = [
 
 [[group]]
 name = "4. QC, comparisons, exports and movies"
-about = "Step 7: the computations behind the QC notebook's figures, the figures themselves, where they are saved, mean-image exports, raw previews, comparing registrations, and movies of each stage (with the behavior video beside them)."
+about = "Step 7: the computations behind the QC notebook's figures, the figures themselves, where they are saved, the same figures saved for every batch run, mean-image exports, raw previews, comparing registrations, and movies of each stage (with the behavior video beside them)."
 files = [
   "src/mini2p_preprocessing/qc.py",
   "src/mini2p_preprocessing/focus.py",
@@ -150,6 +150,7 @@ files = [
   "src/mini2p_preprocessing/contrast.py",
   "src/mini2p_preprocessing/plots.py",
   "src/mini2p_preprocessing/qc_figures.py",
+  "src/mini2p_preprocessing/run_qc.py",
   "src/mini2p_preprocessing/exports.py",
   "src/mini2p_preprocessing/raw_previews.py",
   "src/mini2p_preprocessing/registration_comparison.py",

@@ -260,6 +260,24 @@ def frame_phase_record(curves: np.ndarray, chosen: FramePhases, settings: Pipeli
     return record
 
 
+def load_frame_phases(path: Path) -> FramePhases:
+    """The per-frame phases saved in a ``.phase_frames.npz`` sidecar
+    (:func:`frame_phase_record`); the ``structural_*`` fields are None when it has none."""
+    with np.load(path) as record:
+        optional = {
+            name: record[name] if name in record else None
+            for name in ("structural_px", "structural_consistency", "structural_loss")
+        }
+        return FramePhases(
+            phase_px=record["phase_px"],
+            used_structural=record["used_structural"],
+            functional_px=record["functional_px"],
+            fallback_px=record["fallback_px"],
+            functional_loss=record["functional_loss"],
+            **optional,
+        )
+
+
 def frames_at_search_boundary(phases_px: np.ndarray, phase: PhaseSettings) -> np.ndarray:
     """Frames whose phase is within ``boundary_warning_px`` of ±``max_shift_px``: the true
     phase may lie outside the searched range."""
